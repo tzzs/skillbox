@@ -1,39 +1,54 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { main, parseCommand } from './index.js'
+import { describe, expect, it } from 'vitest'
+import { main, type CliDeps } from './index.js'
 
-afterEach(() => {
-  vi.restoreAllMocks()
-})
-
-function spyConsole(): void {
-  vi.spyOn(console, 'log').mockImplementation(() => {})
-  vi.spyOn(console, 'error').mockImplementation(() => {})
+/**
+ * Captures the CLI's stdout/stderr streams instead of the real process
+ * streams, so tests can assert on full output without touching the console.
+ */
+function capture(): CliDeps & { out(): string; err(): string } {
+  const chunks: string[] = []
+  const errorChunks: string[] = []
+  return {
+    stdout: (chunk: string) => chunks.push(chunk),
+    stderr: (chunk: string) => errorChunks.push(chunk),
+    out: () => chunks.join(''),
+    err: () => errorChunks.join(''),
+  }
 }
 
 describe('cli', () => {
-  it('prints the version for --version', () => {
-    spyConsole()
-    const exit = main(['--version'])
+  it('prints the version for --version', async () => {
+    const io = capture()
+    const exit = await main(['--version'], io)
     expect(exit).toBe(0)
-    expect(console.log).toHaveBeenCalledWith('0.1.0')
+    expect(io.out()).toContain('0.1.0')
   })
 
-  it('prints help for --help', () => {
-    spyConsole()
-    const exit = main(['--help'])
+  it('prints the version for -v', async () => {
+    const io = capture()
+    const exit = await main(['-v'], io)
     expect(exit).toBe(0)
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Usage:'))
+    expect(io.out()).toContain('0.1.0')
   })
 
-  it('returns a non-zero exit code for unknown arguments', () => {
-    spyConsole()
-    const exit = main(['bogus'])
+  it('prints help for --help', async () => {
+    const io = capture()
+    const exit = await main(['--help'], io)
+    expect(exit).toBe(0)
+    expect(io.out()).toContain('Usage:')
+  })
+
+  it('returns a non-zero exit code for unknown arguments', async () => {
+    const io = capture()
+    const exit = await main(['bogus'], io)
     expect(exit).toBe(1)
-    expect(console.error).toHaveBeenCalled()
+    expect(io.err()).toContain('error:')
   })
 
-  it('parses version aliases', () => {
-    expect(parseCommand(['-v'])).toBe('version')
-    expect(parseCommand(['version'])).toBe('version')
+  it('lists skills in a repository with no manifest', async () => {
+    const io = capture()
+    const exit = await main(['list', '--json'], io)
+    expect(exit).toBe(0)
+    expect(io.out()).toContain('"skills"')
   })
 })

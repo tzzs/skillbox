@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "@skillbox/core": "workspace:*",
-    "@skillbox/shared": "workspace:*"
+    "@skillbox/shared": "workspace:*",
+    "commander": "^13.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

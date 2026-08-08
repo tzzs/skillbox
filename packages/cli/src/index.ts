@@ -1,41 +1,39 @@
-import { version } from '@skillbox/core'
-import { assertNever } from '@skillbox/shared'
+import { CommanderError } from 'commander'
+import { isSkillboxError, SkillboxFsError } from '@skillbox/core'
+import { buildContext, buildProgram, type CliDeps } from './program.js'
+import { ExitCode, exitCodeForError } from './exit-codes.js'
 
-export type CliCommand = 'help' | 'version' | 'unknown'
+export * from './exit-codes.js'
+export { buildContext, buildProgram } from './program.js'
+export type { CliContext, CliDeps } from './program.js'
 
-export function helpText(): string {
-  return [
-    'skillbox - manage your agent skills',
-    '',
-    'Usage:',
-    '  skillbox --help      Show this help',
-    '  skillbox --version   Print the current version',
-    '',
-    'Run `skillbox <command> --help` for command-specific help.',
-  ].join('\n')
-}
+/**
+ * Runs the CLI. Returns the process exit code:
+ * 0 success / 1 generic / 2 validation / 3 conflict / 4 security.
+ */
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  deps: CliDeps = {},
+): Promise<number> {
+  const ctx = buildContext(deps)
+  const program = buildProgram(ctx)
 
-export function parseCommand(args: string[]): CliCommand {
-  const [arg] = args
-  if (arg === '--help' || arg === '-h' || arg === 'help') return 'help'
-  if (arg === '--version' || arg === '-v' || arg === 'version') return 'version'
-  return 'unknown'
-}
-
-export function main(argv: string[] = process.argv.slice(2)): number {
-  const command = parseCommand(argv)
-  switch (command) {
-    case 'help':
-      console.log(helpText())
-      return 0
-    case 'version':
-      console.log(version)
-      return 0
-    case 'unknown':
-      console.error(`Unknown argument: ${argv[0] ?? ''}`)
-      console.error('Run "skillbox --help" for usage.')
-      return 1
-    default:
-      return assertNever(command)
+  try {
+    await program.parseAsync(argv, { from: 'user' })
+    return ExitCode.SUCCESS
+  } catch (error) {
+    if (error instanceof CommanderError) {
+      return error.exitCode
+    }
+    if (isSkillboxError(error) || error instanceof SkillboxFsError) {
+      ctx.err(`skillbox: ${error.message}\n`)
+      return exitCodeForError(error)
+    }
+    if (error instanceof Error) {
+      ctx.err(`skillbox: ${error.message}\n`)
+      return ExitCode.GENERIC
+    }
+    ctx.err(`skillbox: ${String(error)}\n`)
+    return ExitCode.GENERIC
   }
 }
