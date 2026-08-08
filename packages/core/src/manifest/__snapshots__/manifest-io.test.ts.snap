@@ -1,0 +1,7 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`serializeManifest > serializes the minimal manifest deterministically 1`] = `
+"version: 1
+skills: {}
+"
+`;
