@@ -166,3 +166,24 @@ export async function writeLockfile(
   const filePath = path.join(repositoryRoot, LOCKFILE_FILE_NAME)
   await atomicWriteFile(filePath, serializeLockfile(lockfile))
 }
+
+/**
+ * Idempotent variant: only writes when the serialized form changed. Returns
+ * `true` when the file was rewritten. Reconcile relies on this so that a
+ * second run produces "no changes".
+ */
+export async function writeLockfileIfChanged(
+  repositoryRoot: string,
+  lockfile: SkillboxLockfile,
+): Promise<boolean> {
+  const filePath = path.join(repositoryRoot, LOCKFILE_FILE_NAME)
+  const serialized = serializeLockfile(lockfile)
+  const fs = new FilesystemService()
+  if (await fs.exists(filePath)) {
+    if ((await fs.readFile(filePath)) === serialized) {
+      return false
+    }
+  }
+  await atomicWriteFile(filePath, serialized)
+  return true
+}
