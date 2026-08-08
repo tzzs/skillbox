@@ -1,0 +1,41 @@
+{
+  "name": "@skillbox/cli",
+  "version": "0.1.0",
+  "description": "Skillbox CLI entry point",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "skillbox": "./bin/skillbox.mjs"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "lint": "eslint src bin --max-warnings 0",
+    "format": "prettier --write src bin"
+  },
+  "dependencies": {
+    "@skillbox/core": "workspace:*",
+    "@skillbox/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.2",
+    "vitest": "^3.0.0"
+  }
+}

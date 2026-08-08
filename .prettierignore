@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+*.tsbuildinfo
+pnpm-lock.yaml
+docs
+PRD.md
+ARCHITECTURE.md
+SKILLBOX_SPEC.md
+MVP_TASKS.md
+idea.md
