@@ -2,17 +2,28 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Plus } from 'lucide-react'
 import { errorMessage } from '../format.js'
-import { useCreateSkill } from '../queries.js'
+import { useAgents, useCreateSkill } from '../queries.js'
 
 /**
- * M11.3 — Create Skill — scaffolds a new skill with an optional description.
- * On success the UI navigates to the new skill's detail page.
+ * M11.3 + GAP 1.4 — Create Skill — scaffolds a new skill with an optional
+ * description and an optional Agent assignment multi-select (detected agents
+ * only). On success the UI navigates to the new skill's detail page.
  */
 export function CreateSkillPage() {
   const navigate = useNavigate()
   const create = useCreateSkill()
+  const agentsQuery = useAgents()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [selected, setSelected] = useState<string[]>([])
+
+  const detectedAgents = (agentsQuery.data ?? []).filter((agent) => agent.detected)
+
+  const toggleAgent = (id: string) => {
+    setSelected((current) =>
+      current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
+    )
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -20,9 +31,12 @@ export function CreateSkillPage() {
     if (trimmed.length === 0 || create.isPending) {
       return
     }
-    const input: { name: string; description?: string } = { name: trimmed }
+    const input: { name: string; description?: string; agents?: string[] } = { name: trimmed }
     if (description.trim().length > 0) {
       input.description = description.trim()
+    }
+    if (selected.length > 0) {
+      input.agents = selected
     }
     create.mutate(input, {
       onSuccess: (created) => navigate(`/skills/${encodeURIComponent(created.name)}`),
@@ -62,6 +76,42 @@ export function CreateSkillPage() {
           />
           <p className="field-hint">
             Lowercase letters, digits and dashes. This becomes the directory name.
+          </p>
+        </div>
+
+        <div className="field">
+          <span className="field-label">Enable for agents</span>
+          {agentsQuery.isLoading ? (
+            <div className="loading-row">
+              <span className="spinner" />
+              Detecting agents…
+            </div>
+          ) : agentsQuery.isError ? (
+            <p className="field-hint">
+              Agents are unavailable ({errorMessage(agentsQuery.error)}). You can still create the
+              skill and assign it later from its detail page.
+            </p>
+          ) : detectedAgents.length === 0 ? (
+            <p className="field-hint">No agents detected on this machine — assign later.</p>
+          ) : (
+            <div className="agent-check-grid">
+              {detectedAgents.map((agent) => (
+                <label key={agent.id} className="agent-check">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(agent.id)}
+                    onChange={() => toggleAgent(agent.id)}
+                  />
+                  <span className="agent-check-text">
+                    <span className="agent-name">{agent.name}</span>
+                    <span className="agent-id">{agent.id}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="field-hint">
+            Selected agents get the skill enabled immediately after it is created.
           </p>
         </div>
 

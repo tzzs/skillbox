@@ -94,6 +94,26 @@ export interface RepositoryStatus {
   agents: AgentSummary[]
 }
 
+export type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
+
+/** Machine config persisted at `~/.skillbox/config.json` (GAP 1.2). */
+export interface RuntimeSettingsInput {
+  linkStrategy?: LinkStrategy
+  web?: { port?: number; open?: boolean }
+  agents?: Record<string, { path?: string; executable?: string }>
+}
+
+/**
+ * The editable subset of the Machine Config accepted by `PUT /api/settings`.
+ * Agent overrides carry a `path` (a non-empty string sets it; an empty string
+ * removes the override).
+ */
+export interface SettingsPatch {
+  linkStrategy?: LinkStrategy
+  web?: { port?: number; open?: boolean }
+  agents?: Record<string, { path: string }>
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -161,6 +181,8 @@ export interface ApiClient {
   skillContent(name: string): Promise<SkillContent>
   agents(): Promise<AgentSummary[]>
   status(): Promise<RepositoryStatus>
+  settings(): Promise<RuntimeSettingsInput>
+  saveSettings(patch: SettingsPatch): Promise<RuntimeSettingsInput>
   createSkill(input: { name: string; description?: string }): Promise<CreatedSkill>
   saveSkillContent(name: string, content: string): Promise<SavedSkillContent>
   removeSkill(name: string): Promise<void>
@@ -202,6 +224,19 @@ export const api: ApiClient = {
 
   async status() {
     return request<RepositoryStatus>('/api/status')
+  },
+
+  async settings() {
+    const response = await request<{ settings: RuntimeSettingsInput }>('/api/settings')
+    return response.settings
+  },
+
+  async saveSettings(patch) {
+    const response = await request<{ settings: RuntimeSettingsInput }>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ settings: patch }),
+    })
+    return response.settings
   },
 
   async createSkill(input) {

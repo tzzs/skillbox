@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw, Search } from 'lucide-react'
 import type { SkillStatusEntry } from '../api.js'
 import { errorMessage } from '../format.js'
-import { useReconcile, useSkills } from '../queries.js'
+import { useAgents, useReconcile, useSkills } from '../queries.js'
 import { AgentTags, ModePill, StatusPill } from '../components/Pills.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 
@@ -12,18 +12,34 @@ const STATUS_OPTIONS = ['ready', 'modified', 'outdated', 'conflict', 'missing', 
 type StatusFilter = 'all' | (typeof STATUS_OPTIONS)[number]
 
 /**
- * M11.1 — Library — the full skill catalog with a name search and a status
- * filter. Each row links to its detail page; the toolbar offers "New skill"
+ * M11.1 + GAP 1.3 — Library — the full skill catalog with a name search, a
+ * status filter and an optional `?agent=` filter (Entered from the Agents
+ * page). Each row links to its detail page; the toolbar offers "New skill"
  * and "Reconcile".
  */
 export function LibraryPage() {
   const skillsQuery = useSkills()
   const reconcile = useReconcile()
+  const agentsQuery = useAgents()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const agentFilter = searchParams.get('agent') ?? 'all'
 
   const skills = skillsQuery.data ?? []
+  const agents = agentsQuery.data ?? []
   const counts = useMemo(() => statusCounts(skills), [skills])
+  const agentCounts = useMemo(() => skillsByAgent(skills), [skills])
+
+  const setAgentFilter = (value: string) => {
+    const next = new URLSearchParams(searchParams)
+    if (value === 'all') {
+      next.delete('agent')
+    } else {
+      next.set('agent', value)
+    }
+    setSearchParams(next, { replace: true })
+  }
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -31,9 +47,12 @@ export function LibraryPage() {
       if (statusFilter !== 'all' && skill.status !== statusFilter) {
         return false
       }
+      if (agentFilter !== 'all' && !skill.agents.includes(agentFilter)) {
+        return false
+      }
       return needle.length === 0 || skill.name.toLowerCase().includes(needle)
     })
-  }, [skills, query, statusFilter])
+  }, [skills, query, statusFilter, agentFilter])
 
   return (
     <section className="page">
@@ -97,6 +116,23 @@ export function LibraryPage() {
             <option key={value} value={value}>
               {valueLabel(value)}
               {(counts[value] ?? 0) > 0 ? ` (${counts[value] ?? 0})` : ''}
+            </option>
+          ))}
+        </select>
+        <select
+          className="filter-select"
+          value={agentFilter}
+          onChange={(event) => setAgentFilter(event.target.value)}
+          aria-label="Filter by agent"
+        >
+          <option value="all">All agents</option>
+          {agentFilter !== 'all' && !agents.some((agent) => agent.id === agentFilter) && (
+            <option value={agentFilter}>{agentFilter}</option>
+          )}
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name}
+              {(agentCounts[agent.id] ?? 0) > 0 ? ` (${agentCounts[agent.id] ?? 0})` : ''}
             </option>
           ))}
         </select>
@@ -182,6 +218,16 @@ function statusCounts(skills: SkillStatusEntry[]): Record<string, number> {
   }
   for (const skill of skills) {
     counts[skill.status] = (counts[skill.status] ?? 0) + 1
+  }
+  return counts
+}
+
+function skillsByAgent(skills: SkillStatusEntry[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const skill of skills) {
+    for (const agent of skill.agents) {
+      counts[agent] = (counts[agent] ?? 0) + 1
+    }
   }
   return counts
 }

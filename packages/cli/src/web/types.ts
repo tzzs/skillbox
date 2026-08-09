@@ -2,6 +2,8 @@ import type {
   AgentRegistry,
   ReconcileResult,
   RepositoryStatus,
+  RuntimeConfig,
+  RuntimeConfigService,
   SkillService,
   StatusService,
 } from '@skillbox/core'
@@ -15,6 +17,8 @@ export interface WebServices {
   registry: AgentRegistry
   skills: SkillService
   status: StatusService
+  /** Machine config ("~/.skillbox/config.json") read/write (GAP 1.2). */
+  config: RuntimeConfigService
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
@@ -57,6 +61,11 @@ export interface AgentsResponse {
 /** Success shape of `POST /api/reconcile`. */
 export interface ReconcileResponse {
   reconcile: ReconcileResult
+}
+
+/** Success shape of `GET /api/settings` / `PUT /api/settings`. */
+export interface SettingsResponse {
+  settings: RuntimeConfig
 }
 
 /** Options accepted by {@link createWebApp}. */

@@ -1,12 +1,14 @@
 import { RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { AgentSummary } from '../api.js'
 import { errorMessage } from '../format.js'
 import { useAgents, useReconcile } from '../queries.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 
 /**
- * M11.4 — Agents — the detected agent registry: capabilities, detected status,
- * skill counts and the directories each agent looks at.
+ * M11.4 + GAP 1.3 — Agents — the detected agent registry: capabilities,
+ * detected status, skill counts and the directories each agent looks at.
+ * Every card links into the Library pre-filtered to that agent's skills.
  */
 export function AgentsPage() {
   const agentsQuery = useAgents()
@@ -66,7 +68,7 @@ export function AgentsPage() {
       ) : (
         <div className="agent-grid">
           {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} />
+            <AgentCardLink key={agent.id} agent={agent} />
           ))}
         </div>
       )}
@@ -81,6 +83,18 @@ const CAPABILITY_LABELS: Array<{ key: keyof AgentSummary['capabilities']; label:
   { key: 'supportsNestedSkillDirectories', label: 'Nested dirs' },
   { key: 'requiresRestartAfterChange', label: 'Needs restart' },
 ]
+
+function AgentCardLink({ agent }: { agent: AgentSummary }) {
+  return (
+    <Link
+      to={`/?agent=${encodeURIComponent(agent.id)}`}
+      className="agent-card-anchor"
+      aria-label={`View the skills assigned to ${agent.name}`}
+    >
+      <AgentCard agent={agent} />
+    </Link>
+  )
+}
 
 function AgentCard({ agent }: { agent: AgentSummary }) {
   return (
@@ -140,6 +154,8 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
           </ul>
         </div>
       )}
+
+      <div className="agent-card-cta">View skills for this agent →</div>
     </article>
   )
 }

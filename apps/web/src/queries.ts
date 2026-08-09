@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type SkillStatusEntry } from './api.js'
+import { api, type SettingsPatch, type SkillStatusEntry } from './api.js'
 
 export const queryKeys = {
   health: ['health'],
@@ -8,6 +8,7 @@ export const queryKeys = {
   skillContent: (name: string) => ['skills', name, 'content'],
   agents: ['agents'],
   status: ['status'],
+  settings: ['settings'],
 } as const
 
 export function useHealth() {
@@ -57,12 +58,40 @@ export function useStatus() {
   })
 }
 
+export function useSettings() {
+  return useQuery({
+    queryKey: queryKeys.settings,
+    queryFn: () => api.settings(),
+  })
+}
+
+export function useSaveSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (patch: SettingsPatch) => api.saveSettings(patch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.settings })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    },
+  })
+}
+
 export function useCreateSkill() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: { name: string; description?: string }) => api.createSkill(input),
+    mutationFn: async (input: { name: string; description?: string; agents?: string[] }) => {
+      const { agents, ...rest } = input
+      const created = await api.createSkill(rest)
+      for (const agent of agents ?? []) {
+        await api.enableSkill(created.name, agent)
+      }
+      return created
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
     },
   })
 }

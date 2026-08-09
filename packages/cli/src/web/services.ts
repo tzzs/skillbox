@@ -1,9 +1,11 @@
 import {
   createDefaultAgentRegistry,
+  RuntimeConfigService,
   SkillService,
   StatusService,
   type AgentRegistry,
 } from '@skillbox/core'
+import { SkillboxHome } from '@skillbox/core'
 import type { WebServices } from './types.js'
 
 export interface CreateWebServicesOptions {
@@ -22,10 +24,14 @@ export interface CreateWebServicesOptions {
 export function createWebServices(options: CreateWebServicesOptions): WebServices {
   const registry = options.registry ?? createDefaultAgentRegistry()
   const { repositoryRoot, homeRoot } = options
+  const config = new RuntimeConfigService({
+    configFilePath: new SkillboxHome({ root: homeRoot }).configFilePath(),
+  })
   return {
     registry,
     repositoryRoot,
     homeRoot,
+    config,
     skills: new SkillService({
       repositoryRoot,
       homeRoot,

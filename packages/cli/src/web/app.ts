@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import type { RuntimeConfig } from '@skillbox/core'
 import type {
   AgentsResponse,
   HealthResponse,
   ReconcileResponse,
+  SettingsResponse,
   SkillResponse,
   SkillsResponse,
   WebAppOptions,
@@ -72,6 +74,20 @@ export function createWebApp(options: WebAppOptions): Hono {
   app.get('/api/status', async (c) => {
     const report = await services.status.status()
     return c.json(report)
+  })
+
+  app.get('/api/settings', async (c) => {
+    const settings = await services.config.load()
+    return c.json<SettingsResponse>({ settings })
+  })
+
+  app.put('/api/settings', async (c) => {
+    const body = await requireJsonBody(c)
+    const patch = parseSettingsPatch(body)
+    const current = await services.config.load()
+    const merged = mergeSettings(current, patch)
+    await services.config.save(merged)
+    return c.json<SettingsResponse>({ settings: merged })
   })
 
   /* ---- mutating API (M10.7) ---- */
@@ -191,4 +207,144 @@ function toStatusCode(status: number): ContentfulStatusCode {
     return 500
   }
   return status as ContentfulStatusCode
+}
+
+/* ---- /api/settings helpers (GAP 1.2) ---- */
+
+type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
+
+const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction', 'copy']
+
+interface SettingsWebPatch {
+  linkStrategy?: LinkStrategy
+  web?: { port?: number; open?: boolean }
+  agents?: Record<string, { path?: string }>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Validates the editable subset of the Machine Config received by
+ * `PUT /api/settings`. Only linkStrategy / web / agents are accepted; unknown
+ * or malformed fields produce an `INVALID_REQUEST` envelope.
+ */
+function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
+  if (!isRecord(body.settings)) {
+    throw new WebApiError('INVALID_REQUEST', 'Body field "settings" must be a JSON object')
+  }
+  const raw = body.settings
+  const patch: SettingsWebPatch = {}
+
+  if (raw.linkStrategy !== undefined) {
+    const value = raw.linkStrategy
+    if (typeof value !== 'string' || !LINK_STRATEGIES.includes(value as LinkStrategy)) {
+      throw new WebApiError(
+        'INVALID_REQUEST',
+        `Field "linkStrategy" must be one of ${LINK_STRATEGIES.join(', ')}`,
+      )
+    }
+    patch.linkStrategy = value as LinkStrategy
+  }
+
+  if (raw.web !== undefined) {
+    if (!isRecord(raw.web)) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "web" must be an object')
+    }
+    const web: SettingsWebPatch['web'] = {}
+    if (raw.web.port !== undefined) {
+      if (
+        typeof raw.web.port !== 'number' ||
+        !Number.isInteger(raw.web.port) ||
+        raw.web.port < 1 ||
+        raw.web.port > 65535
+      ) {
+        throw new WebApiError(
+          'INVALID_REQUEST',
+          'Field "web.port" must be an integer between 1 and 65535',
+        )
+      }
+      web.port = raw.web.port
+    }
+    if (raw.web.open !== undefined) {
+      if (typeof raw.web.open !== 'boolean') {
+        throw new WebApiError('INVALID_REQUEST', 'Field "web.open" must be a boolean')
+      }
+      web.open = raw.web.open
+    }
+    patch.web = web
+  }
+
+  if (raw.agents !== undefined) {
+    if (!isRecord(raw.agents)) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "agents" must be an object')
+    }
+    const agents: NonNullable<SettingsWebPatch['agents']> = {}
+    for (const [agentId, value] of Object.entries(raw.agents)) {
+      if (value === undefined) {
+        continue
+      }
+      if (!isRecord(value) || typeof value.path !== 'string') {
+        throw new WebApiError(
+          'INVALID_REQUEST',
+          `Agent override "${agentId}" must be an object with a "path" string (empty removes it)`,
+        )
+      }
+      agents[agentId] = { path: value.path }
+    }
+    patch.agents = agents
+  }
+
+  return patch
+}
+
+/**
+ * Deep-merges a validated settings patch into the persisted Machine Config.
+ * Only the fields the client sent are touched, so untouched settings (e.g. a
+ * manually configured `repository`) survive an update.
+ */
+function mergeSettings(current: RuntimeConfig, patch: SettingsWebPatch): RuntimeConfig {
+  const next: RuntimeConfig = { ...current }
+  if (patch.linkStrategy !== undefined) {
+    next.linkStrategy = patch.linkStrategy
+  }
+  if (patch.web !== undefined) {
+    const mergedWeb: NonNullable<RuntimeConfig['web']> = { ...current.web }
+    if (patch.web.port !== undefined) {
+      mergedWeb.port = patch.web.port
+    }
+    if (patch.web.open !== undefined) {
+      mergedWeb.open = patch.web.open
+    }
+    next.web = mergedWeb
+  }
+  if (patch.agents !== undefined) {
+    const mergedAgents: NonNullable<RuntimeConfig['agents']> = { ...current.agents }
+    let touched = false
+    for (const [agentId, override] of Object.entries(patch.agents)) {
+      const existing = mergedAgents[agentId]
+      const entry: { path?: string; executable?: string } = {}
+      if (existing !== undefined) {
+        if (existing.path !== undefined) entry.path = existing.path
+        else if (existing.executable !== undefined) entry.executable = existing.executable
+      }
+      touched = true
+      if (!(typeof override.path === 'string' && override.path.length > 0)) {
+        delete mergedAgents[agentId]
+        continue
+      }
+      entry.path = override.path
+      delete entry.executable
+      mergedAgents[agentId] = entry
+    }
+    if (touched) {
+      if (Object.keys(mergedAgents).length === 0) {
+        delete next.agents
+      } else {
+        next.agents = mergedAgents
+      }
+    }
+  }
+  return next
 }
