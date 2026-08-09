@@ -1,7 +1,8 @@
 /**
- * Temporary CI-scenario verification: on Windows runners TEMP is an 8.3 short
- * path (`RUNNER~1`). Simulates it locally with `%~sI` to prove checkSymlink
- * compares canonical paths (long form) on both sides. Deleted after CI passes.
+ * CI-scenario regression: on Windows runners TEMP is an 8.3 short path
+ * (`RUNNER~1`) while `fs.realpath` returns the long form (`runneradmin`).
+ * Simulates the mismatch locally via `dir /x` to prove checkSymlink compares
+ * canonical paths on both sides. Skipped when 8.3 names are unavailable.
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
