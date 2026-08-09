@@ -1,6 +1,7 @@
 import {
   createDefaultAgentRegistry,
   defaultRegistry,
+  diffSkill,
   ErrorCode,
   fromManifestSource,
   GitHubProvider,
@@ -20,9 +21,11 @@ import {
   type RegistrySearchResult as CoreRegistrySearchResult,
   type SkillboxLockfile,
   type SkillboxManifest,
+  type SkillDiff,
 } from '@skillbox/core'
 import { SkillboxHome } from '@skillbox/core'
 import type {
+  DiffService,
   InstallInput,
   InstallResult,
   InstallService,
@@ -58,6 +61,12 @@ export interface CreateWebServicesOptions {
    * transaction; tests inject fakes to override.
    */
   install?: InstallService
+  /**
+   * V0.4 skill diff computation. Defaults to the Core `diffSkill` engine
+   * (read-only: current/base/latest content against the process-wide
+   * `defaultRegistry`); tests inject fakes to override.
+   */
+  diff?: DiffService
 }
 
 /**
@@ -88,6 +97,25 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     search: options.search ?? createSearchService(),
     updates: options.updates ?? createUpdatesService(repositoryRoot),
     install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
+    diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
+  }
+}
+
+/**
+ * V0.4 skill diff computation (M19.5). Delegates to the Core `diffSkill`
+ * engine — a pure read (repository + provider lookups, temp downloads) that
+ * never writes back. Errors keep their Skillbox code (SKILL_NOT_FOUND,
+ * DIFF_UPSTREAM_UNAVAILABLE, …) so the M10.8 envelope maps them correctly.
+ */
+function createDiffService(repositoryRoot: string, homeRoot: string): DiffService {
+  return {
+    async diffSkill(name: string): Promise<SkillDiff> {
+      return diffSkill(name, {
+        repositoryRoot,
+        homeRoot,
+        registry: defaultRegistry,
+      })
+    },
   }
 }
 

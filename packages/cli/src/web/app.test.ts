@@ -9,6 +9,7 @@ import {
   LocalProvider,
   SkillboxError,
   addSkill,
+  computeSkillIntegrity,
   createLockedSkill,
   emptyLockfile,
   emptyManifest,
@@ -31,6 +32,7 @@ import type {
   ResolvedSource,
 } from '@skillbox/core'
 import type {
+  DiffService,
   InstallResult,
   InstallService,
   OutdatedSkill,
@@ -39,6 +41,7 @@ import type {
   RegistrySearchService,
   UpdatesService,
 } from './types.js'
+import type { SkillDiff } from '@skillbox/core'
 import { createWebServices } from './services.js'
 import { createWebApp } from './app.js'
 
@@ -547,6 +550,40 @@ class FakeGithubProvider implements RegistryProvider {
   }
 }
 
+/**
+ * GitHub provider serving per-revision fixture directories (used by the diff
+ * tests to simulate upstream history): `download` copies the fixture of the
+ * requested revision, and "latest" is whatever the test pins.
+ */
+class RevisionsGithubProvider implements RegistryProvider {
+  readonly id = 'github'
+
+  constructor(
+    private readonly revisions: Map<string, string>,
+    private readonly latestRevision: string,
+  ) {}
+
+  async search(): Promise<CoreRegistrySearchResult[]> {
+    return []
+  }
+
+  async resolve(source: NormalizedSource): Promise<ResolvedSource> {
+    return { source, revision: this.latestRevision }
+  }
+
+  async download(_source: NormalizedSource, revision: string, targetDir: string): Promise<void> {
+    const fixture = this.revisions.get(revision)
+    if (fixture === undefined) {
+      throw new Error(`unknown revision ${revision}`)
+    }
+    await cp(fixture, targetDir, { recursive: true })
+  }
+
+  async getLatestRevision(): Promise<string> {
+    return this.latestRevision
+  }
+}
+
 /** Fake agent adapter materializing links as plain directories (no real agent config). */
 class FakeAgentAdapter implements AgentAdapter {
   readonly name: string
@@ -783,5 +820,333 @@ describe('V0.3 registry API — real Core-backed services', () => {
       const body = (await response.json()) as { error: { code: string } }
       expect(body.error.code).toBe('SOURCE_INVALID')
     })
+  })
+})
+
+/* ---- V0.4 skill diff API (M19.5) ---- */
+
+const MANAGED_DIFF: SkillDiff = {
+  name: 'hello',
+  mode: 'managed',
+  unchanged: false,
+  views: [
+    {
+      label: 'Current vs Latest',
+      files: [
+        { path: 'SKILL.md', status: 'modified', patch: '-# Hello\n+# Hello (updated)\n' },
+        { path: 'logo.png', status: 'modified', patch: '', binary: true },
+      ],
+    },
+  ],
+}
+
+const FORKED_DIFF: SkillDiff = {
+  name: 'hello',
+  mode: 'forked',
+  unchanged: false,
+  views: [
+    {
+      label: 'Base vs Local',
+      files: [{ path: 'SKILL.md', status: 'modified', patch: '-a\n+b\n' }],
+    },
+    { label: 'Local vs Latest', files: [] },
+    {
+      label: 'Base vs Latest',
+      files: [
+        { path: 'SKILL.md', status: 'modified', patch: '-a\n+c\n' },
+        { path: 'README.md', status: 'added', patch: '+readme\n' },
+      ],
+    },
+  ],
+}
+
+describe('GET /api/skills/:id/diff', () => {
+  it('returns the diff envelope of a managed skill (one Current vs Latest view)', async () => {
+    const calls: string[] = []
+    await withDiffApp(
+      { diffResult: MANAGED_DIFF, onDiff: (name) => calls.push(name) },
+      async (app) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as { diff: SkillDiff }
+        expect(body.diff.name).toBe('hello')
+        expect(body.diff.mode).toBe('managed')
+        expect(body.diff.views.map((view) => view.label)).toEqual(['Current vs Latest'])
+        expect(body.diff.views[0]?.files[1]).toMatchObject({ path: 'logo.png', binary: true })
+        expect(calls).toEqual(['hello'])
+      },
+    )
+  })
+
+  it('returns the three forked views as-is', async () => {
+    await withDiffApp({ diffResult: FORKED_DIFF }, async (app) => {
+      const response = await app.request('/api/skills/hello/diff')
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as { diff: SkillDiff }
+      expect(body.diff.views.map((view) => view.label)).toEqual([
+        'Base vs Local',
+        'Local vs Latest',
+        'Base vs Latest',
+      ])
+      expect(body.diff.views[0]?.files[0]?.status).toBe('modified')
+      expect(body.diff.views[2]?.files[1]?.status).toBe('added')
+    })
+  })
+
+  it('maps SKILL_NOT_FOUND to a 404 envelope', async () => {
+    await withDiffApp(
+      {
+        diffError: new SkillboxError(
+          ErrorCode.SKILL_NOT_FOUND,
+          'Skill "nope" is not in the manifest',
+          {
+            context: { name: 'nope' },
+          },
+        ),
+      },
+      async (app) => {
+        const response = await app.request('/api/skills/nope/diff')
+        expect(response.status).toBe(404)
+        const body = (await response.json()) as { error: { code: string; recoverable: boolean } }
+        expect(body.error.code).toBe('SKILL_NOT_FOUND')
+        expect(body.error.recoverable).toBe(false)
+      },
+    )
+  })
+
+  it('maps DIFF_UPSTREAM_UNAVAILABLE to a 409 envelope', async () => {
+    await withDiffApp(
+      {
+        diffError: new SkillboxError(ErrorCode.DIFF_UPSTREAM_UNAVAILABLE, 'no upstream', {
+          context: { name: 'hello', mode: 'local' },
+        }),
+      },
+      async (app) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(409)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('DIFF_UPSTREAM_UNAVAILABLE')
+      },
+    )
+  })
+})
+
+interface DiffFakes {
+  diffResult?: SkillDiff
+  diffError?: unknown
+  onDiff?: (name: string) => void
+}
+
+/** App wired with a fake diff service (M19.5 route wiring + envelope tests). */
+async function withDiffApp(fakes: DiffFakes, run: (app: Hono) => Promise<void>): Promise<void> {
+  const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-diff-repo-'))
+  const home = await mkdtemp(join(tmpdir(), 'skillbox-web-diff-home-'))
+  try {
+    const diff: DiffService = {
+      async diffSkill(name) {
+        if (fakes.diffError !== undefined) {
+          throw fakes.diffError
+        }
+        if (fakes.diffResult === undefined) {
+          throw new Error('no diffResult fake configured')
+        }
+        fakes.onDiff?.(name)
+        return fakes.diffResult
+      },
+    }
+    const services = createWebServices({ repositoryRoot: repository, homeRoot: home, diff })
+    const app = createWebApp({ services })
+    await run(app)
+  } finally {
+    await rm(repository, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+describe('GET /api/skills/:id/diff — real Core-backed diff service', () => {
+  it('answers "unchanged" for a managed skill pinned at the latest revision', async () => {
+    await withRealRegistryApp(
+      async ({ app }) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as { diff: SkillDiff }
+        expect(body.diff).toMatchObject({
+          name: 'hello',
+          mode: 'managed',
+          unchanged: true,
+        })
+        expect(body.diff.views.map((view) => view.label)).toEqual(['Current vs Latest'])
+        expect(body.diff.views[0]?.files).toEqual([])
+      },
+      async ({ repository, home }) => {
+        const rev1 = join(home, 'seed-rev1')
+        await mkdir(rev1)
+        await writeFile(join(rev1, 'SKILL.md'), '# Hello\n')
+        const source = { type: 'github' as const, repo: 'acme/skillz', ref: 'main' }
+        const manifest = addSkill(emptyManifest(), 'hello', { source })
+        await writeManifest(repository, manifest)
+        const lockfile = emptyLockfile()
+        const locked = createLockedSkill({
+          mode: 'managed',
+          source,
+          integrity: `sha256:${'a'.repeat(64)}`,
+        })
+        locked.revision = 'rev1'
+        locked.upstream = { source, baseRevision: 'rev1', latestRevision: 'rev1' }
+        lockfile.skills.hello = locked
+        await writeLockfile(repository, lockfile)
+        registerProvider(new FakeGithubProvider(rev1, 'rev1'))
+      },
+    )
+  })
+
+  it('reports modified/deleted files with unified patches for a managed skill behind upstream', async () => {
+    await withRealRegistryApp(
+      async ({ app }) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as { diff: SkillDiff }
+        expect(body.diff).toMatchObject({ name: 'hello', mode: 'managed', unchanged: false })
+        expect(body.diff.views).toHaveLength(1)
+        const files = body.diff.views[0]?.files ?? []
+        expect(files.map((file) => file.path).sort()).toEqual(['README.md', 'SKILL.md'])
+        expect(files.find((file) => file.path === 'SKILL.md')?.status).toBe('modified')
+        expect(files.find((file) => file.path === 'SKILL.md')?.patch).toContain(
+          '+# Hello (updated)',
+        )
+        expect(files.find((file) => file.path === 'README.md')?.status).toBe('deleted')
+      },
+      async ({ repository, home }) => {
+        const rev1 = join(home, 'seed-rev1')
+        await mkdir(rev1)
+        await writeFile(join(rev1, 'SKILL.md'), '# Hello\n')
+        await writeFile(join(rev1, 'README.md'), 'readme\n')
+        const rev2 = join(home, 'seed-rev2')
+        await mkdir(rev2)
+        await writeFile(join(rev2, 'SKILL.md'), '# Hello (updated)\n')
+        const source = { type: 'github' as const, repo: 'acme/skillz', ref: 'main' }
+        const manifest = addSkill(emptyManifest(), 'hello', { source })
+        await writeManifest(repository, manifest)
+        const lockfile = emptyLockfile()
+        const locked = createLockedSkill({
+          mode: 'managed',
+          source,
+          integrity: `sha256:${'a'.repeat(64)}`,
+        })
+        locked.revision = 'rev1'
+        locked.upstream = { source, baseRevision: 'rev1', latestRevision: 'rev2' }
+        lockfile.skills.hello = locked
+        await writeLockfile(repository, lockfile)
+        registerProvider(
+          new RevisionsGithubProvider(
+            new Map([
+              ['rev1', rev1],
+              ['rev2', rev2],
+            ]),
+            'rev2',
+          ),
+        )
+      },
+    )
+  })
+
+  it('returns the three forked views Base vs Local / Local vs Latest / Base vs Latest', async () => {
+    await withRealRegistryApp(
+      async ({ app }) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as { diff: SkillDiff }
+        expect(body.diff).toMatchObject({ name: 'hello', mode: 'forked', unchanged: false })
+        expect(body.diff.views.map((view) => view.label)).toEqual([
+          'Base vs Local',
+          'Local vs Latest',
+          'Base vs Latest',
+        ])
+        const [baseLocal, localLatest, baseLatest] = body.diff.views
+        expect(baseLocal?.files.map((file) => file.path).sort()).toEqual(['SKILL.md', 'notes.md'])
+        expect(baseLocal?.files.find((file) => file.path === 'SKILL.md')?.status).toBe('modified')
+        expect(localLatest?.files.map((file) => file.path).sort()).toEqual([
+          'README.md',
+          'SKILL.md',
+          'notes.md',
+        ])
+        expect(baseLatest?.files.map((file) => file.path).sort()).toEqual(['README.md', 'SKILL.md'])
+      },
+      async ({ repository, home }) => {
+        const localDir = join(repository, 'skills', 'hello')
+        await mkdir(localDir, { recursive: true })
+        await writeFile(join(localDir, 'SKILL.md'), '# Hello (local edit)\n')
+        await writeFile(join(localDir, 'notes.md'), 'local notes\n')
+        const rev1 = join(home, 'seed-rev1')
+        await mkdir(rev1)
+        await writeFile(join(rev1, 'SKILL.md'), '# Hello\n')
+        const rev2 = join(home, 'seed-rev2')
+        await mkdir(rev2)
+        await writeFile(join(rev2, 'SKILL.md'), '# Hello (upstream)\n')
+        await writeFile(join(rev2, 'README.md'), 'upstream readme\n')
+        const source = { type: 'local' as const, path: 'skills/hello' }
+        const manifest = addSkill(emptyManifest(), 'hello', {
+          source,
+          mode: 'forked',
+          upstream: { type: 'github', repo: 'acme/skillz' },
+        })
+        await writeManifest(repository, manifest)
+        const lockfile = emptyLockfile()
+        const locked = createLockedSkill({
+          mode: 'forked',
+          source,
+          integrity: await computeSkillIntegrity(localDir),
+        })
+        locked.upstream = {
+          source: { type: 'github', repo: 'acme/skillz' },
+          baseRevision: 'rev1',
+          latestRevision: 'rev2',
+        }
+        lockfile.skills.hello = locked
+        await writeLockfile(repository, lockfile)
+        registerProvider(
+          new RevisionsGithubProvider(
+            new Map([
+              ['rev1', rev1],
+              ['rev2', rev2],
+            ]),
+            'rev2',
+          ),
+        )
+      },
+    )
+  })
+
+  it('answers a 404 SKILL_NOT_FOUND envelope for an unknown skill', async () => {
+    await withRealRegistryApp(
+      async ({ app }) => {
+        const response = await app.request('/api/skills/nope/diff')
+        expect(response.status).toBe(404)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('SKILL_NOT_FOUND')
+      },
+      async ({ repository }) => {
+        await writeManifest(repository, emptyManifest())
+        await writeLockfile(repository, emptyLockfile())
+      },
+    )
+  })
+
+  it('answers a 409 DIFF_UPSTREAM_UNAVAILABLE envelope for a local skill without upstream', async () => {
+    await withRealRegistryApp(
+      async ({ app }) => {
+        const response = await app.request('/api/skills/hello/diff')
+        expect(response.status).toBe(409)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('DIFF_UPSTREAM_UNAVAILABLE')
+      },
+      async ({ repository }) => {
+        const manifest = addSkill(emptyManifest(), 'hello', {
+          source: { type: 'local', path: 'skills/hello' },
+        })
+        await writeManifest(repository, manifest)
+        await writeLockfile(repository, emptyLockfile())
+      },
+    )
   })
 })

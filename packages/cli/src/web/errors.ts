@@ -46,6 +46,10 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
   [ErrorCode.INSTALL_CONFLICT]: 409,
   [ErrorCode.INSTALL_AGENT_LINK_FAILED]: 409,
   [ErrorCode.INSTALL_ROLLBACK_FAILED]: 500,
+  /* V0.4 diff layer (M19.5): the skill exists but has no diffable upstream /
+     base snapshot in its current state. */
+  [ErrorCode.DIFF_UPSTREAM_UNAVAILABLE]: 409,
+  [ErrorCode.DIFF_BASE_UNAVAILABLE]: 409,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */

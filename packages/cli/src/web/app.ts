@@ -10,6 +10,7 @@ import type {
   RegistrySearchOptions,
   RegistrySearchResponse,
   SettingsResponse,
+  SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
   WebAppOptions,
@@ -55,6 +56,18 @@ export function createWebApp(options: WebAppOptions): Hono {
     const id = c.req.param('id')
     const doc = await services.skills.readSkillMarkdown({ name: id })
     return c.json({ skill: { name: doc.name, path: doc.path, markdown: doc.markdown } })
+  })
+
+  /**
+   * M19.5 — skill diff view. Read-only: managed skills compare the current
+   * runtime against the latest upstream revision (one `Current vs Latest`
+   * view); forked skills get the three Base/Local/Upstream views. Skills in
+   * local/vendored mode have no upstream and answer `DIFF_UPSTREAM_UNAVAILABLE`.
+   */
+  app.get('/api/skills/:id/diff', async (c) => {
+    const id = c.req.param('id')
+    const diff = await services.diff.diffSkill(id)
+    return c.json<SkillDiffResponse>({ diff })
   })
 
   app.get('/api/skills/:id', async (c) => {

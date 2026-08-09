@@ -4,6 +4,7 @@ import type {
   RepositoryStatus,
   RuntimeConfig,
   RuntimeConfigService,
+  SkillDiff,
   SkillService,
   StatusService,
 } from '@skillbox/core'
@@ -125,6 +126,15 @@ export interface InstallService {
 }
 
 /**
+ * V0.4 skill diff computation (M19.5). Delegates to Core `diffSkill` — reads
+ * the repository and the upstream provider only, never writes anything.
+ */
+export interface DiffService {
+  /** Computes the diff views of one skill against its upstream. */
+  diffSkill(name: string): Promise<SkillDiff>
+}
+
+/**
  * The Core services the Web layer is allowed to talk to. Every API route goes
  * through one of these services; the web layer never touches skill files or
  * manifests directly (M10.6).
@@ -141,6 +151,8 @@ export interface WebServices {
   updates: UpdatesService
   /** V0.3 remote install transaction (agent 2 contract). */
   install: InstallService
+  /** V0.4 skill diff computation (agent 2 contract). */
+  diff: DiffService
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
@@ -203,6 +215,11 @@ export interface OutdatedResponse {
 /** Success shape of `POST /api/registry/install`. */
 export interface InstallResponse {
   installed: InstallResult
+}
+
+/** Success shape of `GET /api/skills/:id/diff` (M19.5). */
+export interface SkillDiffResponse {
+  diff: SkillDiff
 }
 
 /** Options accepted by {@link createWebApp}. */
