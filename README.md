@@ -60,12 +60,57 @@ skillbox remove <name>   移除 Skill（-f 同时删除文件）
 skillbox enable <name>   -a <agent>   为指定 Agent 启用 Skill
 skillbox disable <name>  -a <agent>   为指定 Agent 停用 Skill
 skillbox install         安装/恢复仓库（reconcile Skill 与 Agent 链接）
-skillbox status          完整仓库状态（Repository/Skills/Agents）
-skillbox web             启动本地 Web UI（默认 http://127.0.0.1:43821）
-skillbox -v, --version   显示版本
+skillbox install --frozen-lockfile  校验 lockfile 与 manifest 一致，不一致则失败退出
+skillbox install --ci     与 --frozen-lockfile 相同，适用于 CI（无交互）
+skillbox status           完整仓库状态（Repository/Skills/Agents/Git）
+skillbox sync             一键同步：Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push
+skillbox pull             拉取远端并重新 reconcile 本地 Skills / lockfile
+skillbox push             推送本地变更到远端（需先 connect）
+skillbox connect          通过 GitHub Device Flow 授权并关联远端仓库
+skillbox disconnect       移除本地 GitHub 授权信息（不改远端）
+skillbox web              启动本地 Web UI（默认 http://127.0.0.1:43821）
+skillbox -v, --version    显示版本
 ```
 
 运行 `skillbox --help` 查看完整用法，`skillbox <command> --help` 查看子命令参数。
+
+### 多设备指南（Multi-device Restore）
+
+Skillbox 用 Git 作为多设备间的同步通道：仓库里 `skillbox.yaml` + `skillbox.lock` 描述全部 Skills 的期望状态，`npx skillbox install` 在任何一台机器上都能把仓库内容恢复成可用的本地安装。
+
+**首次在一台新设备上使用：**
+
+```bash
+# 1) 克隆 Skill 仓库（Git 与 GitHub 授权在 connect 时完成）
+git clone https://github.com/<you>/<skills-repo>.git
+cd <skills-repo>
+
+# 2) 恢复本地安装：reconcile manifest → 重建 canonical library → 链接到各 Agent
+npx skillbox install
+```
+
+`install` 会恢复（restore）以下内容：
+
+- **Local**（`local:` source）—— 校验磁盘内容与 lockfile integrity，缺失/损坏则从仓库恢复
+- **Forked / Vendored** —— 按 manifest 中的来源重新检出
+- **Managed**（git/github source，0.2+）—— 从远端重新下载并锁定 integrity
+
+**同步到远端（推）：**
+
+```bash
+skillbox connect           # 首次：GitHub Device Flow 授权并绑定 origin
+skillbox sync              # 之后：扫描 → 检测 → 秘钥扫描 → pull → resolve → commit → push
+```
+
+**在仓库停滞时恢复本地一致性：**
+
+```bash
+skillbox pull              # 拉取远端他人变更，重新 reconcile 并更新 lockfile
+skillbox status            # 查看 Skills / Agents / Git 三块状态
+```
+
+> `sync` 只自动提交 skillbox 管理的路径（`skillbox.yaml` / `skillbox.lock` / `skills/` / `.skillbox/`），
+> 不会碰你在仓库里手动添加的其他文件。推送到远端前要求 GitHub 已连接，否则命令明确报错并提示先运行 `skillbox connect`。
 
 ### 首次使用视角：一个最小例子
 
@@ -123,6 +168,8 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
 ## Roadmap
 
 - **0.2 — Git Sync**：Git client、GitHub App device flow、私仓、`skillbox sync/pull/push`、secret scan、multi-device
+  - 已落地：`skillbox sync/pull/push/connect/disconnect/status`（CLI 层）、secret scan 集成、`install --frozen-lockfile/--ci`、多设备恢复文档见上
+  - 依赖：GitHub Device Flow 后端（`@skillbox/core/github`）落定后 `connect/push` 完整可用
 - **0.3 — Marketplace / Registry**：`skillbox search`、`add <source>`、managed cache、updates
 - **0.4 — Skill Lifecycle**：`fork` / `vendor` / `diff` / 3-way merge、rollback
 - **安全层（P1）**：安装前 Security Scan、Web 风险展示
