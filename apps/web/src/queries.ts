@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type SettingsPatch, type SkillStatusEntry } from './api.js'
+import {
+  api,
+  type InstallInput,
+  type RegistrySearchParams,
+  type SettingsPatch,
+  type SkillStatusEntry,
+} from './api.js'
 
 export const queryKeys = {
   health: ['health'],
@@ -9,6 +15,17 @@ export const queryKeys = {
   agents: ['agents'],
   status: ['status'],
   settings: ['settings'],
+  /* V0.3 registry API */
+  registrySearch: (params: RegistrySearchParams) => [
+    'registry',
+    'search',
+    params.q ?? '',
+    params.provider ?? '',
+    params.sort ?? '',
+    params.trending === true ? 'trending' : '',
+    params.official === true ? 'official' : '',
+  ],
+  outdated: ['registry', 'outdated'],
 } as const
 
 export function useHealth() {
@@ -144,6 +161,45 @@ export function useReconcile() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
       void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    },
+  })
+}
+
+/* ---- V0.3 registry API (M14.7 Explore / M16.3 Updates) ---- */
+
+/**
+ * Aggregated registry search (M14.7). The caller debounces the input; every
+ * param change is a fresh cached query key so the Explore filters compose.
+ */
+export function useRegistrySearch(params: RegistrySearchParams) {
+  return useQuery({
+    queryKey: queryKeys.registrySearch(params),
+    queryFn: () => api.registrySearch(params),
+  })
+}
+
+/** Installed-but-outdated skills (M16.3). */
+export function useOutdated() {
+  return useQuery({
+    queryKey: queryKeys.outdated,
+    queryFn: () => api.outdated(),
+  })
+}
+
+/**
+ * Remote install / update transaction (M15 + M16.3 Update button). On success
+ * the library, status and outdated views are refreshed.
+ */
+export function useInstallRegistrySkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: InstallInput) => api.installRegistrySkill(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.outdated })
+      void queryClient.invalidateQueries({ queryKey: ['registry', 'search'] })
     },
   })
 }

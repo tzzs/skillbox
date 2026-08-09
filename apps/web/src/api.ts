@@ -114,6 +114,102 @@ export interface SettingsPatch {
   agents?: Record<string, { path: string }>
 }
 
+/* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
+
+/** Aggregated risk level of a remote skill per the Security Scanner. */
+export type RegistryRisk = 'low' | 'medium' | 'high'
+
+/** A single Security Scanner finding attached to a registry result. */
+export interface RegistryFinding {
+  severity: 'info' | 'warning' | 'high'
+  /** Rule id that produced the finding, e.g. `network-access`. */
+  rule: string
+  /** Human readable explanation of the finding. */
+  message: string
+}
+
+/** One result of the aggregated registry search (GAP §3 Explore). */
+export interface RegistrySearchResult {
+  /** Skill name as shown to the user. */
+  name: string
+  /** Normalized source that can be passed back to install, e.g. `github:acme/react-skill`. */
+  source: string
+  /** Registry provider this result came from, e.g. `github` | `skills-sh` | `local`. */
+  provider: string
+  description?: string
+  version?: string
+  revision?: string
+  /** Download / use count used by the popularity sort. */
+  popularity?: number
+  trending?: boolean
+  official?: boolean
+  verified?: boolean
+  /** Whether the provider already ran a security review on this result. */
+  securityReviewed?: boolean
+  securityRisk?: RegistryRisk
+  /** Best-effort findings advertised by the provider (server scans at install time). */
+  securityFindings?: RegistryFinding[]
+  /** True when the same source is already installed in this repository. */
+  installed?: boolean
+}
+
+/** Query parameters accepted by `GET /api/registry/search`. */
+export interface RegistrySearchParams {
+  q?: string
+  provider?: string
+  sort?: 'popularity' | 'recently-updated'
+  trending?: boolean
+  official?: boolean
+}
+
+/** One row of the Updates page (M16.3). */
+export interface OutdatedSkill {
+  name: string
+  /** Manifest source of the installed skill, reused when updating it. */
+  source: string
+  /** Installed version or revision as shown on the Updates page. */
+  installed: string
+  /** Latest available version or revision. */
+  latest: string
+  /** Human readable list of what changed between installed and latest. */
+  changes: string[]
+  /** Aggregated risk of the latest revision, when a security review exists. */
+  securityRisk?: RegistryRisk
+  /** Agents the skill is currently enabled for (used to re-run install). */
+  agents: string[]
+}
+
+/** Security portion of an install result. */
+export interface InstallSecurity {
+  risk: RegistryRisk
+  scannedAt?: string
+  findings: RegistryFinding[]
+}
+
+/** Input of `POST /api/registry/install` (M15 remote install). */
+export interface InstallInput {
+  source: string
+  targetAgents: string[]
+  /** `safe` refuses high-risk installations; `all` allows them after explicit confirmation. */
+  allowPolicy: 'safe' | 'all'
+}
+
+/** Outcome of a remote install transaction (agent 2). */
+export interface InstallResult {
+  /** Skill alias written to the manifest + lockfile. */
+  name: string
+  source: string
+  revision?: string
+  /** Absolute path of the materialized skill directory. */
+  path: string
+  security: InstallSecurity
+  agents: string[]
+  /** True when the manifest changed on this install. */
+  manifestChanged: boolean
+  /** True when the lockfile changed on this install. */
+  lockfileChanged: boolean
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -189,6 +285,10 @@ export interface ApiClient {
   enableSkill(name: string, agent: string): Promise<AgentAssignment>
   disableSkill(name: string, agent: string): Promise<AgentAssignment>
   reconcile(): Promise<ReconcileReport>
+  /* V0.3 registry API */
+  registrySearch(params?: RegistrySearchParams): Promise<RegistrySearchResult[]>
+  outdated(): Promise<OutdatedSkill[]>
+  installRegistrySkill(input: InstallInput): Promise<InstallResult>
 }
 
 function encodeName(name: string): string {
@@ -280,5 +380,42 @@ export const api: ApiClient = {
       method: 'POST',
     })
     return response.reconcile
+  },
+
+  async registrySearch(params) {
+    const query = new URLSearchParams()
+    if (params?.q !== undefined && params.q !== '') {
+      query.set('q', params.q)
+    }
+    if (params?.provider !== undefined && params.provider !== '') {
+      query.set('provider', params.provider)
+    }
+    if (params?.sort !== undefined) {
+      query.set('sort', params.sort)
+    }
+    if (params?.trending === true) {
+      query.set('trending', '1')
+    }
+    if (params?.official === true) {
+      query.set('official', '1')
+    }
+    const encoded = query.toString()
+    const response = await request<{ results: RegistrySearchResult[] }>(
+      `/api/registry/search${encoded === '' ? '' : `?${encoded}`}`,
+    )
+    return response.results
+  },
+
+  async outdated() {
+    const response = await request<{ outdated: OutdatedSkill[] }>('/api/registry/outdated')
+    return response.outdated
+  },
+
+  async installRegistrySkill(input) {
+    const response = await request<{ installed: InstallResult }>('/api/registry/install', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.installed
   },
 }
