@@ -25,6 +25,11 @@ const VALIDATION_CODES = new Set<string>([
   'INVALID_CONFIG',
   'INVALID_LINK_STATE',
   'LOCKFILE_OUTDATED',
+  // V0.3 marketplace: bad/unknown source expressions and registry lookups
+  // that come back empty are user-input problems, not infrastructure faults.
+  'SOURCE_INVALID',
+  'SOURCE_UNSUPPORTED',
+  'REGISTRY_NOT_FOUND',
 ])
 
 /** Two parties disagree over the same resource (duplicate, locked mismatch). */
@@ -35,10 +40,21 @@ const CONFLICT_CODES = new Set<string>([
   'GIT_CONFLICT',
   'GIT_DIRTY',
   'GIT_PUSH_REJECTED',
+  // V0.3 marketplace: install collides with an existing skill.
+  'INSTALL_CONFLICT',
+  // V0.4 lifecycle: a 3-way merge has unresolved conflicts (M20). CLI-level
+  // code until agent 2 lands `MERGE_CONFLICT` in core's ErrorCode.
+  'MERGE_CONFLICT',
 ])
 
 /** Path traversal / unsafe links / blocked secrets: refuse before anything else. */
-const SECURITY_CODES = new Set<string>(['UNSAFE_PATH', 'UNSAFE_SYMLINK', 'SECRET_FOUND'])
+const SECURITY_CODES = new Set<string>([
+  'UNSAFE_PATH',
+  'UNSAFE_SYMLINK',
+  'SECRET_FOUND',
+  // V0.3 marketplace: a HIGH-risk skill install refused without confirmation.
+  'INSTALL_SECURITY_BLOCKED',
+])
 
 /** Maps a Core error (or Commander/Zod error) to its stable exit code. */
 export function exitCodeForError(error: unknown): ExitCode {

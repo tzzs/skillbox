@@ -65,9 +65,17 @@ export interface InteractivePrompt {
   text(options: PromptTextOptions): Promise<string | symbol>
 }
 
+/**
+ * Cancel sentinel for prompt implementations and test fakes. Real clack
+ * prompts resolve with @clack/core's (unexported) cancel symbol on Ctrl-C,
+ * which `isCancel` recognizes; fakes and other implementations use this
+ * explicit sentinel instead.
+ */
+export const CANCEL_RESULT: symbol = Symbol('skillbox:cancel')
+
 /** True when a prompt was interrupted (cancel / Ctrl-C). */
 export function isCancelResult(value: unknown): value is symbol {
-  return isCancel(value)
+  return isCancel(value) || value === CANCEL_RESULT
 }
 
 function clackOptions(options: readonly PromptOption[]): PromptOption[] {

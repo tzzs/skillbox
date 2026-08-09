@@ -21,6 +21,7 @@ import {
 import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
 import { renderTable } from './table.js'
 import type { InteractivePrompt } from './interactive/prompts.js'
+import { createClackPrompts, isInteractiveTTY } from './interactive/prompts.js'
 import {
   registerWebCommand,
   startWebServer,
@@ -37,6 +38,56 @@ import {
   type GitStatusReport,
   type SecretScanner,
 } from './sync/index.js'
+import {
+  createDefaultInstallService,
+  createDefaultRegistryClient,
+  createDefaultSecurityScanner,
+  createDefaultSourceParser,
+  MarketplaceService,
+  renderAddSummary,
+  renderOutdatedTable,
+  renderSearchTable,
+  renderUpdateSummary,
+  type InstallService,
+  type RegistryClient,
+  type SecurityScanner,
+  type SourceParser,
+} from './marketplace/index.js'
+import {
+  createDefaultDiffProvider,
+  createDefaultLifecycleProvider,
+  createDefaultMergeProvider,
+  renderDiff,
+  renderEditSummary,
+  renderForkSummary,
+  renderMergeOutcome,
+  renderVendorSummary,
+  SkillLifecycleService,
+  type DiffProvider,
+  type EditorLauncher,
+  type LifecycleProvider,
+  type MergeProvider,
+} from './skill-lifecycle/index.js'
+
+/** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
+export interface MarketplaceDeps {
+  sourceParser?: SourceParser
+  registryClient?: RegistryClient
+  installer?: InstallService
+  scanner?: SecurityScanner
+}
+
+/** V0.4 skill-lifecycle provider overrides (fork/vendor/edit/diff/merge). */
+export interface LifecycleDeps {
+  /** Agent 1's fork/vendor/detect/restore provider. */
+  lifecycle?: LifecycleProvider
+  /** Agent 2's diff provider. */
+  diff?: DiffProvider
+  /** Agent 2's merge provider. */
+  merge?: MergeProvider
+  /** Editor launcher; defaults to $EDITOR/$VISUAL (tests inject a fake). */
+  openEditor?: EditorLauncher
+}
 
 export interface CliDeps {
   /** Repository root; defaults to the current working directory. */
@@ -57,6 +108,10 @@ export interface CliDeps {
   githubProvider?: GitHubProvider
   /** Secret scanner; defaults to the core secret-scan module (V0.2). */
   secretScanner?: SecretScanner
+  /** V0.3 marketplace providers; default-constructed from @skillbox/core. */
+  marketplace?: MarketplaceDeps
+  /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
+  lifecycle?: LifecycleDeps
 }
 
 export interface CliContext {
@@ -68,6 +123,14 @@ export interface CliContext {
   gitProvider: GitProvider
   githubProvider: GitHubProvider
   secretScanner: SecretScanner
+  /** V0.3 marketplace provider overrides; defaults applied in buildProgram. */
+  marketplace?: MarketplaceDeps
+  /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
+  lifecycle?: LifecycleDeps
+  /** Prompt implementation for the interactive `add` flow. */
+  prompts?: InteractivePrompt
+  /** Override the interactive-terminal check (used by tests). */
+  isInteractive?: boolean
 }
 
 export function buildContext(deps: CliDeps = {}): CliContext {
@@ -76,7 +139,7 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   const registry = deps.registry ?? createDefaultAgentRegistry()
   const out = deps.stdout ?? ((chunk) => process.stdout.write(chunk))
   const err = deps.stderr ?? ((chunk) => process.stderr.write(chunk))
-  return {
+  const context: CliContext = {
     repositoryRoot,
     homeRoot,
     registry,
@@ -86,6 +149,61 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
     secretScanner: deps.secretScanner ?? createDefaultSecretScanner(repositoryRoot),
   }
+  if (deps.marketplace !== undefined) {
+    context.marketplace = deps.marketplace
+  }
+  if (deps.lifecycle !== undefined) {
+    context.lifecycle = deps.lifecycle
+  }
+  if (deps.prompts !== undefined) {
+    context.prompts = deps.prompts
+  }
+  if (deps.isInteractive !== undefined) {
+    context.isInteractive = deps.isInteractive
+  }
+  return context
+}
+
+/** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
+function buildMarketplace(ctx: CliContext): MarketplaceService {
+  const overrides = ctx.marketplace ?? {}
+  return new MarketplaceService({
+    repositoryRoot: ctx.repositoryRoot,
+    homeRoot: ctx.homeRoot,
+    registry: ctx.registry,
+    sourceParser: overrides.sourceParser ?? createDefaultSourceParser(),
+    registryClient: overrides.registryClient ?? createDefaultRegistryClient(ctx.homeRoot),
+    installer:
+      overrides.installer ??
+      createDefaultInstallService({
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+      }),
+    scanner: overrides.scanner ?? createDefaultSecurityScanner(),
+    prompts: ctx.prompts ?? createClackPrompts(),
+    isInteractive: ctx.isInteractive ?? isInteractiveTTY(),
+    out: ctx.out,
+  })
+}
+
+/** Resolves the skill-lifecycle service, merging CLI overrides + defaults. */
+function buildLifecycleService(
+  ctx: CliContext,
+  statusService: StatusService,
+): SkillLifecycleService {
+  const overrides = ctx.lifecycle ?? {}
+  return new SkillLifecycleService({
+    repositoryRoot: ctx.repositoryRoot,
+    homeRoot: ctx.homeRoot,
+    status: statusService,
+    lifecycle: overrides.lifecycle ?? createDefaultLifecycleProvider(),
+    diff: overrides.diff ?? createDefaultDiffProvider(),
+    merge: overrides.merge ?? createDefaultMergeProvider(),
+    prompts: ctx.prompts ?? createClackPrompts(),
+    isInteractive: ctx.isInteractive ?? isInteractiveTTY(),
+    out: ctx.out,
+    ...(overrides.openEditor === undefined ? {} : { openEditor: overrides.openEditor }),
+  })
 }
 
 function printJson(out: (chunk: string) => void, value: unknown): void {
@@ -406,6 +524,13 @@ export function buildProgram(ctx: CliContext): Command {
       ctx.out(`\nAgents\n${agentTable(report.agents)}\n`)
       ctx.out(`\nGit\n${gitOverview(git)}\n`)
       ctx.out(`\nModified skills\n${bulletList(report.modified)}`)
+      // V0.4: a merge in conflict marks the skill `conflict` (agent 2's status
+      // computation). The Skills table above already renders MODE (incl.
+      // forked/vendored) and STATUS (incl. conflict) from the core report;
+      // this section lists the conflicting names for quick triage.
+      ctx.out(
+        `\nConflicting skills\n${bulletList(report.skills.filter((skill) => skill.status === 'conflict').map((skill) => skill.name))}`,
+      )
       ctx.out(`\nBroken skills\n${bulletList(report.broken)}\n`)
     })
 
@@ -464,6 +589,150 @@ export function buildProgram(ctx: CliContext): Command {
     .action(async () => {
       await sync.disconnect()
       ctx.out('Disconnected from GitHub. Local and remote repositories were preserved.\n')
+    })
+
+  // V0.3 — Marketplace (GAP_ANALYSIS §3): search / add / outdated / update /
+  // cache clean. The flows live in MarketplaceService; commands only render.
+  const marketplace = buildMarketplace(ctx)
+
+  program
+    .command('search [query]')
+    .description(
+      'Search the skill marketplace (skills.sh + GitHub); empty query shows popular skills',
+    )
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (query: string | undefined, options: { json?: boolean }) => {
+      const results = await marketplace.search(query ?? '')
+      if (options.json === true) {
+        printJson(ctx.out, { query: query ?? '', results })
+        return
+      }
+      if (results.length === 0) {
+        ctx.out('(no skills found)\n')
+        ctx.out('Usage: skillbox search <query> — e.g. `skillbox search react`\n')
+        return
+      }
+      ctx.out(`${renderSearchTable(results)}\n`)
+    })
+
+  program
+    .command('add <source>')
+    .description(
+      'Add a skill from the marketplace: resolve → security review → pick agent → install',
+    )
+    .option('--agent <agent>', 'agent to install for (skips the interactive picker)')
+    .option('--name <alias>', 'alias to install under (defaults to the source name)')
+    .option('--yes', 'confirm HIGH-risk installs without prompting (CI)')
+    .action(async (source: string, options: { agent?: string; name?: string; yes?: boolean }) => {
+      const input: { source: string; agent?: string; alias?: string; yes?: boolean } = {
+        source,
+        yes: options.yes === true,
+      }
+      if (options.agent !== undefined) {
+        input.agent = options.agent
+      }
+      if (options.name !== undefined) {
+        input.alias = options.name
+      }
+      const outcome = await marketplace.add(input)
+      ctx.out(`${renderAddSummary(outcome)}\n`)
+    })
+
+  program
+    .command('outdated')
+    .description('Compare installed revisions against the latest upstream (M16.1)')
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (options: { json?: boolean }) => {
+      const entries = await marketplace.outdated()
+      if (options.json === true) {
+        printJson(ctx.out, { entries })
+        return
+      }
+      ctx.out(`${renderOutdatedTable(entries)}\n`)
+    })
+
+  program
+    .command('update <name>')
+    .description(
+      'Update a managed skill to the latest upstream revision; agent links are preserved (M16.2)',
+    )
+    .option('--yes', 'confirm HIGH-risk updates without prompting (CI)')
+    .action(async (name: string, options: { yes?: boolean }) => {
+      const outcome = await marketplace.update({ name, yes: options.yes === true })
+      ctx.out(`${renderUpdateSummary(outcome)}\n`)
+    })
+
+  const cacheCommand = program.command('cache').description('Manage the skillbox download cache')
+  cacheCommand
+    .command('clean')
+    .description('Remove all cached skill downloads')
+    .action(async () => {
+      const outcome = await marketplace.cacheClean()
+      ctx.out(`Cleared ${outcome.cleared} cache entr${outcome.cleared === 1 ? 'y' : 'ies'}.\n`)
+    })
+
+  // V0.4 — Skill Lifecycle (GAP_ANALYSIS §4): fork / vendor / edit / diff /
+  // merge. The flows live in SkillLifecycleService; commands only render.
+  const lifecycle = buildLifecycleService(ctx, statusService)
+
+  program
+    .command('fork <name>')
+    .description(
+      'Fork a managed skill into the repository (M17.1): copy the runtime, snapshot the base revision, keep upstream tracking',
+    )
+    .action(async (name: string) => {
+      const outcome = await lifecycle.fork({ name })
+      ctx.out(`${renderForkSummary(outcome)}\n`)
+    })
+
+  program
+    .command('vendor <name>')
+    .description(
+      'Vendor a managed or forked skill (M18): localize the runtime and clear upstream tracking',
+    )
+    .action(async (name: string) => {
+      const outcome = await lifecycle.vendor({ name })
+      ctx.out(`${renderVendorSummary(outcome)}\n`)
+    })
+
+  program
+    .command('edit <name>')
+    .description(
+      'Open a skill in your editor (M17.2); editing a managed skill converts it to a fork',
+    )
+    .option('--yes', 'confirm the fork conversion without prompting (CI)')
+    .action(async (name: string, options: { yes?: boolean }) => {
+      const outcome = await lifecycle.edit({ name, yes: options.yes === true })
+      ctx.out(`${renderEditSummary(outcome)}\n`)
+    })
+
+  program
+    .command('diff <name>')
+    .description(
+      'Show local changes (M19.4): managed → current vs latest; forked → base/local/upstream',
+    )
+    .option('--json', 'emit JSON instead of text')
+    .action(async (name: string, options: { json?: boolean }) => {
+      const diff = await lifecycle.diff({ name })
+      if (options.json === true) {
+        printJson(ctx.out, diff)
+        return
+      }
+      ctx.out(`${renderDiff(diff)}\n`)
+    })
+
+  program
+    .command('merge <name>')
+    .description(
+      'Merge upstream changes into a fork (M20, 3-way); --continue finishes a resolved merge, --abort restores the pre-merge state',
+    )
+    .option('--continue', 'finish the merge after resolving conflicts')
+    .option('--abort', 'cancel the merge and restore the pre-merge state')
+    .action(async (name: string, options: { continue?: boolean; abort?: boolean }) => {
+      const action =
+        options.continue === true ? 'continue' : options.abort === true ? 'abort' : 'merge'
+      const outcome = await lifecycle.merge({ name, action })
+      ctx.out(`${renderMergeOutcome(outcome)}\n`)
     })
 
   // M10/M11 — the `web` subcommand is registered by the web module; the
