@@ -149,6 +149,10 @@ describe('GitClient', () => {
 
       const cloneDir = path.join(dir, 'clone')
       await client.clone(bare, cloneDir, { ref: 'main' })
+      // clones carry no local identity; configure one so the second-device
+      // commit works without a global gitconfig (CI/headless safe)
+      await rawGit(cloneDir, ['config', 'user.email', 'skillbox-test@example.com'])
+      await rawGit(cloneDir, ['config', 'user.name', 'Skillbox Test'])
       const cloned = await rawGit(cloneDir, ['ls-tree', '--name-only', 'HEAD'])
       expect(cloned.stdout).toContain('skill.md')
 
@@ -211,6 +215,9 @@ describe('GitClient', () => {
       const b = await seedRepo(path.join(dir, 'b'))
       for (const repo of [a, b]) {
         await rawGit(repo.root, ['remote', 'add', 'origin', bare])
+        // modern git refuses divergent pulls unless told to merge; the test
+        // asserts the merge-conflict path, so pin the merge semantics
+        await rawGit(repo.root, ['config', 'pull.rebase', 'false'])
         await repo.client.pull(repo.root, { remote: 'origin', branch: 'main' })
       }
 
