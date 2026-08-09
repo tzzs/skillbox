@@ -12,6 +12,8 @@ import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { resolveInsideRoot } from '../fs/paths.js'
 import { ErrorCode, isSkillboxError } from '../errors.js'
+import { planRemoteSource, remoteMaterializeRoot } from '../git/index.js'
+import { resolveSkillboxHome } from '../runtime/paths.js'
 
 /** A skill in the read-only status output, with its computed current status. */
 export interface SkillStatusEntry {
@@ -47,6 +49,8 @@ export interface StatusServiceOptions {
   /** Registry for agent detection; `status()` reports agents from it. */
   registry?: AgentRegistry
   filesystem?: FilesystemService
+  /** Local root where remote git clones are cached (defaults to the home cache). */
+  remoteRoot?: string
 }
 
 /**
@@ -58,11 +62,14 @@ export class StatusService {
   private readonly filesystem: FilesystemService
   private readonly repositoryRoot: string
   private readonly registry: AgentRegistry | undefined
+  private readonly remoteRoot: string
 
   constructor(options: StatusServiceOptions) {
     this.filesystem = options.filesystem ?? new FilesystemService()
     this.repositoryRoot = options.repositoryRoot
     this.registry = options.registry
+    this.remoteRoot =
+      options.remoteRoot ?? remoteMaterializeRoot(path.join(resolveSkillboxHome(), 'library'))
   }
 
   private async readManifestOrEmpty(): Promise<{
@@ -108,9 +115,7 @@ export class StatusService {
     }
 
     if (skill.source.type !== 'local') {
-      entry.status = 'missing'
-      entry.message = 'remote sources cannot be materialized in wave 1'
-      return entry
+      return this.describeRemoteSkill(alias, skill, lock)
     }
 
     let sourcePath: string
@@ -134,6 +139,67 @@ export class StatusService {
       return entry
     }
 
+    const integrity = await computeSkillIntegrity(sourcePath)
+    const lockedIntegrity = lock.skills[alias]?.integrity
+    entry.integrity = integrity
+    if (lockedIntegrity !== undefined) {
+      entry.lockIntegrity = lockedIntegrity
+    }
+    entry.status =
+      lockedIntegrity === undefined || lockedIntegrity === integrity ? 'ready' : 'modified'
+    return entry
+  }
+
+  /**
+   * Read-only status of a remote (git/github) source. Never runs git here —
+   * the expected local mirror is located deterministically and its current
+   * state is compared against the lockfile, mirroring the local-skill logic.
+   */
+  private async describeRemoteSkill(
+    alias: string,
+    skill: SkillboxManifest['skills'][string],
+    lock: SkillboxLockfile,
+  ): Promise<SkillStatusEntry> {
+    const mode = deriveMode(skill)
+    const entry: SkillStatusEntry = {
+      name: alias,
+      mode,
+      status: 'missing',
+      agents: skill.agents ?? [],
+    }
+
+    const plan = planRemoteSource(skill.source)
+    if (plan === undefined) {
+      entry.message = `${skill.source.type} sources require a registry provider (V0.3)`
+      return entry
+    }
+
+    const targetDir = path.join(this.remoteRoot, plan.key)
+    let sourcePath = targetDir
+    const subPath =
+      skill.source.type === 'git' || skill.source.type === 'github' ? skill.source.path : undefined
+    if (subPath !== undefined) {
+      try {
+        sourcePath = resolveInsideRoot(targetDir, subPath)
+      } catch {
+        entry.status = 'broken'
+        entry.message = `unresolvable source path "${subPath}"`
+        return entry
+      }
+    }
+
+    if (!(await this.isDirectory(sourcePath))) {
+      entry.status = 'missing'
+      entry.message = 'remote skill not materialized (run "skillbox install")'
+      return entry
+    }
+    if (!(await this.filesystem.exists(path.join(sourcePath, 'SKILL.md')))) {
+      entry.status = 'broken'
+      entry.message = 'missing SKILL.md'
+      return entry
+    }
+
+    entry.path = sourcePath
     const integrity = await computeSkillIntegrity(sourcePath)
     const lockedIntegrity = lock.skills[alias]?.integrity
     entry.integrity = integrity

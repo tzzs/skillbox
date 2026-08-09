@@ -23,6 +23,13 @@ import { RuntimeLibraryService, type MaterializeSkillStatus } from '../runtime/l
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent, removeStaleSkillLink, type LinkAction } from '../runtime/linker.js'
+import {
+  GitClient,
+  planRemoteSource,
+  remoteMaterializeRoot,
+  type GitMaterializeOptions,
+  type GitMaterializeResult,
+} from '../git/index.js'
 
 export type ReconcileSkillStatus = 'ok' | 'missing' | 'broken' | 'skipped'
 
@@ -40,6 +47,8 @@ export interface ReconcileSkillReport {
   status: ReconcileSkillStatus
   /** Absolute repository path of the local skill source (when resolved). */
   sourcePath?: string
+  /** Resolved immutable revision for remote (managed) skills. */
+  revision?: string
   integrity?: string
   lockIntegrity?: string
   /** True when the on-disk repository content matches the locked integrity. */
@@ -93,6 +102,10 @@ export interface ReconcileOptions {
   adapters?: ReadonlyMap<string, AgentAdapter>
   linkStrategy?: LinkStrategy
   filesystem?: FilesystemService
+  /** Git wrapper used to materialize remote sources (defaults to system git). */
+  git?: GitClient
+  /** Local root where remote clones are cached (defaults to the home cache). */
+  remoteRoot?: string
 }
 
 export async function reconcile(options: ReconcileOptions): Promise<ReconcileResult> {
@@ -114,47 +127,62 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
   const nextLockedSkills: SkillboxLockfile['skills'] = { ...lockfile.skills }
   const assignedByAlias = new Map<string, string[]>()
 
+  const git = options.git ?? new GitClient()
+  const remoteRoot = options.remoteRoot ?? remoteMaterializeRoot(options.library.libraryRoot)
+
   for (const [alias, skill] of Object.entries(manifest.skills)) {
     const mode = deriveMode(skill)
     const desiredAgents = desiredAgentsFor(skill, manifest)
     assignedByAlias.set(alias, desiredAgents)
 
-    if (skill.source.type !== 'local') {
-      skills.push({
-        alias,
-        mode,
-        status: 'skipped',
-        message: 'remote sources are not reconciled in wave 1',
-      })
-      continue
-    }
-
     let sourcePath: string
-    try {
-      sourcePath = resolveInsideRoot(options.repositoryRoot, skill.source.path)
-    } catch (error) {
-      problems.push({
-        code: ErrorCode.INVALID_MANIFEST,
-        alias,
-        message: `Unresolvable local path "${skill.source.path}": ${String(error)}`,
-      })
-      skills.push({
-        alias,
-        mode,
-        status: 'broken',
-        message: `path "${skill.source.path}" is not a valid local path`,
-      })
-      continue
-    }
+    let revision: string | undefined
 
-    if (!(await isDirectory(sourcePath, fs))) {
-      problems.push({
-        code: ErrorCode.SKILL_MISSING,
+    if (skill.source.type === 'local') {
+      try {
+        sourcePath = resolveInsideRoot(options.repositoryRoot, skill.source.path)
+      } catch (error) {
+        problems.push({
+          code: ErrorCode.INVALID_MANIFEST,
+          alias,
+          message: `Unresolvable local path "${skill.source.path}": ${String(error)}`,
+        })
+        skills.push({
+          alias,
+          mode,
+          status: 'broken',
+          message: `path "${skill.source.path}" is not a valid local path`,
+        })
+        continue
+      }
+
+      if (!(await isDirectory(sourcePath, fs))) {
+        problems.push({
+          code: ErrorCode.SKILL_MISSING,
+          alias,
+          message: `Local skill directory missing: ${sourcePath}`,
+        })
+        skills.push({ alias, mode, status: 'missing', sourcePath, message: 'directory missing' })
+        continue
+      }
+    } else {
+      const outcome = await resolveRemoteSource({
         alias,
-        message: `Local skill directory missing: ${sourcePath}`,
+        skill,
+        mode,
+        filesystem: fs,
+        git,
+        remoteRoot,
       })
-      skills.push({ alias, mode, status: 'missing', sourcePath, message: 'directory missing' })
-      continue
+      if (!outcome.ok) {
+        if (outcome.problem !== undefined) {
+          problems.push(outcome.problem)
+        }
+        skills.push(outcome.report)
+        continue
+      }
+      sourcePath = outcome.sourcePath
+      revision = outcome.revision
     }
 
     const skillMarkdown = path.join(sourcePath, 'SKILL.md')
@@ -162,7 +190,7 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
       problems.push({
         code: ErrorCode.SKILL_BROKEN,
         alias,
-        message: `Local skill directory has no SKILL.md: ${sourcePath}`,
+        message: `Skill directory has no SKILL.md: ${sourcePath}`,
       })
       skills.push({ alias, mode, status: 'broken', sourcePath, message: 'missing SKILL.md' })
       continue
@@ -178,7 +206,12 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
       source: sourcePath,
     })
     changed = changed || materialized.status !== 'unchanged'
-    nextLockedSkills[alias] = createLockedSkill({ mode, source: skill.source, integrity })
+    nextLockedSkills[alias] = createLockedSkill({
+      mode,
+      source: skill.source,
+      integrity,
+      ...(revision !== undefined ? { revision } : {}),
+    })
 
     const linkReports: ReconcileSkillLinkReport[] = []
     for (const agentId of desiredAgents) {
@@ -216,6 +249,9 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
       materializeStatus: materialized.status,
       materializedPath: materialized.path,
       links: linkReports,
+    }
+    if (revision !== undefined) {
+      report.revision = revision
     }
     if (lockedIntegrity !== undefined) {
       report.lockIntegrity = lockedIntegrity
@@ -259,6 +295,108 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
     agents,
     problems,
   }
+}
+
+/** Outcome of resolving a remote skill's local source directory. */
+type RemoteResolveOutcome =
+  | { ok: true; sourcePath: string; revision: string }
+  | { ok: false; report: ReconcileSkillReport; problem?: ReconcileProblem }
+
+/**
+ * Materializes the local git mirror of a remote source (clone-or-pull) and
+ * resolves the skill directory inside it. GitHub private repositories rely on
+ * the GitHub app credential bridge; the public HTTPS URL works with the
+ * system git binary and any credential helper the machine has configured.
+ */
+async function resolveRemoteSource(input: {
+  alias: string
+  skill: ManifestSkill
+  mode: SkillMode
+  filesystem: FilesystemService
+  git: GitClient
+  remoteRoot: string
+}): Promise<RemoteResolveOutcome> {
+  const source = input.skill.source
+  const plan = planRemoteSource(source)
+  if (plan === undefined) {
+    const message = `${source.type} source "${input.alias}" is not clone-able by the git engine yet (registry provider lands in V0.3)`
+    return {
+      ok: false,
+      report: { alias: input.alias, mode: input.mode, status: 'skipped', message },
+    }
+  }
+
+  const targetDir = path.join(input.remoteRoot, plan.key)
+  let materialized: GitMaterializeResult
+  try {
+    const materializeOptions: GitMaterializeOptions = { url: plan.url, targetDir }
+    if (plan.ref !== undefined) {
+      materializeOptions.ref = plan.ref
+    }
+    materialized = await input.git.materialize(materializeOptions)
+  } catch (error) {
+    if (error instanceof SkillboxError && error.code === ErrorCode.GIT_NOT_FOUND) {
+      const message = 'git is not installed; remote sources cannot be materialized'
+      return {
+        ok: false,
+        report: { alias: input.alias, mode: input.mode, status: 'broken', message },
+        problem: {
+          code: ErrorCode.GIT_NOT_FOUND,
+          alias: input.alias,
+          message: `${message} (needed for ${plan.url})`,
+        },
+      }
+    }
+    if (error instanceof SkillboxError && error.code === ErrorCode.GIT_COMMAND_FAILED) {
+      const message = `remote materialize failed: ${error.message}`
+      return {
+        ok: false,
+        report: { alias: input.alias, mode: input.mode, status: 'broken', message },
+        problem: {
+          code: ErrorCode.GIT_COMMAND_FAILED,
+          alias: input.alias,
+          message: `Failed to materialize ${plan.url} (${error.message})`,
+        },
+      }
+    }
+    throw error
+  }
+
+  let sourcePath = targetDir
+  const subPath = source.type === 'git' || source.type === 'github' ? source.path : undefined
+  if (subPath !== undefined) {
+    try {
+      sourcePath = resolveInsideRoot(targetDir, subPath)
+    } catch {
+      const message = `unresolvable source path "${subPath}" in ${plan.url}`
+      return {
+        ok: false,
+        report: {
+          alias: input.alias,
+          mode: input.mode,
+          status: 'broken',
+          sourcePath: targetDir,
+          message,
+        },
+        problem: { code: ErrorCode.INVALID_MANIFEST, alias: input.alias, message },
+      }
+    }
+  }
+
+  if (!(await isDirectory(sourcePath, input.filesystem))) {
+    const message = 'remote skill directory missing after materialize'
+    return {
+      ok: false,
+      report: { alias: input.alias, mode: input.mode, status: 'missing', sourcePath, message },
+      problem: {
+        code: ErrorCode.SKILL_MISSING,
+        alias: input.alias,
+        message: `${message}: ${sourcePath}`,
+      },
+    }
+  }
+
+  return { ok: true, sourcePath, revision: materialized.headRev }
 }
 
 async function isDirectory(target: string, fs: FilesystemService): Promise<boolean> {
