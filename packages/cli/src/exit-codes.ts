@@ -24,6 +24,7 @@ const VALIDATION_CODES = new Set<string>([
   'UNSUPPORTED_LOCKFILE_VERSION',
   'INVALID_CONFIG',
   'INVALID_LINK_STATE',
+  'LOCKFILE_OUTDATED',
 ])
 
 /** Two parties disagree over the same resource (duplicate, locked mismatch). */
@@ -31,10 +32,13 @@ const CONFLICT_CODES = new Set<string>([
   'IMPORT_CONFLICT',
   'AGENT_LINK_CONFLICT',
   'INTEGRITY_MISMATCH',
+  'GIT_CONFLICT',
+  'GIT_DIRTY',
+  'GIT_PUSH_REJECTED',
 ])
 
-/** Path traversal / unsafe links: refuse before doing anything else. */
-const SECURITY_CODES = new Set<string>(['UNSAFE_PATH', 'UNSAFE_SYMLINK'])
+/** Path traversal / unsafe links / blocked secrets: refuse before anything else. */
+const SECURITY_CODES = new Set<string>(['UNSAFE_PATH', 'UNSAFE_SYMLINK', 'SECRET_FOUND'])
 
 /** Maps a Core error (or Commander/Zod error) to its stable exit code. */
 export function exitCodeForError(error: unknown): ExitCode {

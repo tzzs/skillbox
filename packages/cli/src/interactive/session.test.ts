@@ -75,6 +75,34 @@ function createHarness(answers: string[]): SessionHarness {
     registry: new AgentRegistry(),
     out: (): void => undefined,
     err: (): void => undefined,
+    gitProvider: {
+      status: async () => ({
+        isRepository: false,
+        ahead: 0,
+        behind: 0,
+        changedFiles: [],
+        stagedFiles: [],
+        conflicts: [],
+      }),
+      pull: async () => ({ conflicts: [], changedFiles: [] }),
+      commit: async (message) => ({ committed: true, message }),
+      push: async () => undefined,
+    },
+    githubProvider: {
+      connectionState: async () => 'not-connected',
+      startDeviceFlow: async () => ({
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://example.com/device',
+        intervalMs: 100,
+        expiresInMs: 600000,
+      }),
+      pollDeviceFlow: async () => 'not-connected',
+      disconnect: async () => undefined,
+    },
+    secretScanner: {
+      isReady: async () => false,
+      scanChangedFiles: async () => ({ findings: [], blocked: false }),
+    },
   }
   const prompts = new FakePrompts(answers)
   return { ctx, prompts }

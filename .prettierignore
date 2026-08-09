@@ -9,3 +9,6 @@ ARCHITECTURE.md
 SKILLBOX_SPEC.md
 MVP_TASKS.md
 idea.md
+*.py
+gap2-*.json
+gap2-*.txt
