@@ -5,6 +5,7 @@ import {
   deriveMode,
   emptyManifest,
   readManifest,
+  type ManifestSkillSource,
   type SkillboxManifest,
 } from '../manifest/index.js'
 import { emptyLockfile, readLockfile, type SkillboxLockfile } from '../lockfile/index.js'
@@ -12,8 +13,21 @@ import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { resolveInsideRoot } from '../fs/paths.js'
 import { ErrorCode, isSkillboxError } from '../errors.js'
+import type { NormalizedSource } from '../registry/types.js'
 import { planRemoteSource, remoteMaterializeRoot } from '../git/index.js'
 import { resolveSkillboxHome } from '../runtime/paths.js'
+import { hasPendingMerge } from '../merge/state.js'
+
+/**
+ * Minimal upstream lookup used for outdated detection (M16.1). The registry
+ * framework's `RegistryProvider` is structurally compatible with this
+ * interface, so a full provider can be passed in once agent 1's framework
+ * lands.
+ */
+export interface UpstreamRevisionProvider {
+  /** Latest upstream revision for a source (e.g. default-branch commit SHA). */
+  getLatestRevision(source: NormalizedSource): Promise<string>
+}
 
 /** A skill in the read-only status output, with its computed current status. */
 export interface SkillStatusEntry {
@@ -51,6 +65,13 @@ export interface StatusServiceOptions {
   filesystem?: FilesystemService
   /** Local root where remote git clones are cached (defaults to the home cache). */
   remoteRoot?: string
+  /**
+   * Upstream lookup for outdated detection (M16.1). When omitted (or when
+   * the lookup fails), the lockfile's recorded `upstream.latestRevision` is
+   * used as a fallback; without either, managed skills never report
+   * `outdated`.
+   */
+  provider?: UpstreamRevisionProvider
 }
 
 /**
@@ -62,12 +83,14 @@ export class StatusService {
   private readonly filesystem: FilesystemService
   private readonly repositoryRoot: string
   private readonly registry: AgentRegistry | undefined
+  private readonly provider: UpstreamRevisionProvider | undefined
   private readonly remoteRoot: string
 
   constructor(options: StatusServiceOptions) {
     this.filesystem = options.filesystem ?? new FilesystemService()
     this.repositoryRoot = options.repositoryRoot
     this.registry = options.registry
+    this.provider = options.provider
     this.remoteRoot =
       options.remoteRoot ?? remoteMaterializeRoot(path.join(resolveSkillboxHome(), 'library'))
   }
@@ -112,6 +135,16 @@ export class StatusService {
       mode,
       status: 'ready',
       agents: skill.agents ?? [],
+    }
+
+    // M20.5 — a pending merge takes precedence over every other state: the
+    // skill's content holds unresolved conflict markers and the merge command
+    // must be continued or aborted before anything else.
+    if (await hasPendingMerge(resolveSkillboxHome(), alias, this.filesystem)) {
+      entry.status = 'conflict'
+      entry.message =
+        'merge in progress — resolve conflicts and run "skillbox merge --continue" or "skillbox merge --abort"'
+      return entry
     }
 
     if (skill.source.type !== 'local') {
@@ -208,7 +241,62 @@ export class StatusService {
     }
     entry.status =
       lockedIntegrity === undefined || lockedIntegrity === integrity ? 'ready' : 'modified'
+    if (entry.status === 'ready') {
+      entry.status = await this.outdatedStatus(alias, skill, lock, entry)
+    }
     return entry
+  }
+
+  /**
+   * M16.1 outdated detection for managed skills: compares the locked revision
+   * against the latest upstream revision. A `modified` (integrity mismatch)
+   * state takes precedence — an outdated check is only reached on `ready`.
+   *
+   * TODO(agent-1): wiring point — this calls the registry framework's
+   * `getLatestRevision` through the injected `UpstreamRevisionProvider`
+   * (structurally compatible with `RegistryProvider`). The framework is
+   * being built in parallel (`packages/core/src/registry/`); tests inject a
+   * mock provider, and without one the lockfile's recorded
+   * `upstream.latestRevision` is used as a fallback.
+   */
+  private async outdatedStatus(
+    alias: string,
+    _skill: SkillboxManifest['skills'][string],
+    lock: SkillboxLockfile,
+    entry: SkillStatusEntry,
+  ): Promise<SkillStatus> {
+    const locked = lock.skills[alias]
+    if (locked?.revision === undefined) {
+      return 'ready'
+    }
+    const latest = await this.latestUpstreamRevision(locked)
+    if (latest === undefined || latest === locked.revision) {
+      return 'ready'
+    }
+    entry.message = `newer upstream revision ${latest} available (installed ${locked.revision})`
+    return 'outdated'
+  }
+
+  /**
+   * Latest upstream revision for a locked skill, preferring the live provider
+   * and falling back to the lockfile's recorded `upstream.latestRevision`.
+   * Returns `undefined` when neither is available or the lookup fails
+   * (a registry outage must not fail the whole status report).
+   */
+  private async latestUpstreamRevision(
+    locked: SkillboxLockfile['skills'][string],
+  ): Promise<string | undefined> {
+    if (this.provider !== undefined) {
+      const normalized = manifestSourceToNormalized(locked.source)
+      if (normalized !== undefined) {
+        try {
+          return await this.provider.getLatestRevision(normalized)
+        } catch {
+          // registry unavailable — fall through to the recorded value
+        }
+      }
+    }
+    return locked.upstream?.latestRevision
   }
 
   private async isDirectory(target: string): Promise<boolean> {
@@ -260,5 +348,32 @@ export class StatusService {
       return []
     }
     return this.registry.detectAll()
+  }
+}
+
+/**
+ * Maps a locked (manifest-shaped) source onto the registry framework's
+ * `NormalizedSource` for upstream lookups. Git sources have no normalized
+ * form yet — they return `undefined`, so outdated detection is skipped for
+ * them (the lockfile fallback still applies).
+ */
+function manifestSourceToNormalized(source: ManifestSkillSource): NormalizedSource | undefined {
+  switch (source.type) {
+    case 'github': {
+      const normalized: NormalizedSource = { type: 'github', repo: source.repo }
+      if (source.path !== undefined) normalized.path = source.path
+      if (source.ref !== undefined) normalized.ref = source.ref
+      return normalized
+    }
+    case 'registry': {
+      if (source.registry !== 'skills.sh') {
+        return undefined
+      }
+      const normalized: NormalizedSource = { type: 'skills-sh', package: source.package }
+      if (source.version !== undefined) normalized.version = source.version
+      return normalized
+    }
+    default:
+      return undefined
   }
 }
