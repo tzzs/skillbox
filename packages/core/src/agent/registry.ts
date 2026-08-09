@@ -7,6 +7,7 @@ import type {
 import type { AgentAdapter } from './adapter.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { CodexAdapter } from './adapters/codex.js'
+import { CursorAdapter } from './adapters/cursor.js'
 
 /** Detection status of one agent, enriched with its installed skills. */
 export interface AgentDetectionSummary {
@@ -110,5 +111,8 @@ export class AgentRegistry {
 
 /** Registry with the first-party adapters pre-registered. */
 export function createDefaultAgentRegistry(): AgentRegistry {
-  return new AgentRegistry().register(new ClaudeAdapter()).register(new CodexAdapter())
+  return new AgentRegistry()
+    .register(new ClaudeAdapter())
+    .register(new CodexAdapter())
+    .register(new CursorAdapter())
 }
