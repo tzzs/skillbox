@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Dirent, Stats } from 'node:fs'
+import type { IgnoreMatcher } from '../ignore/skillbox-ignore.js'
 import { FsIoErrorCode, toFsError, SkillboxFsError } from './errors.js'
 
 export type ScanNodeKind = 'file' | 'directory' | 'symlink' | 'special'
@@ -22,6 +23,18 @@ export interface SkillDirectoryScan {
   directories: string[]
   symlinks: ScanNode[]
   totalSize: number
+}
+
+export interface ScanDirectoryOptions {
+  /**
+   * Optional `.skillboxignore` matcher. Matching files/directories/symlinks
+   * are excluded from the derived `files` / `directories` / `symlinks` lists
+   * (so `.skillboxignore`-matched files stay out of Integrity and sync).
+   * `nodes` always reflect the full physical tree and `totalSize` is the
+   * physical byte total, matching the default behavior when no matcher is
+   * provided.
+   */
+  ignore?: IgnoreMatcher | null
 }
 
 function describeEntryKind(entry: Dirent): ScanNodeKind {
@@ -86,11 +99,17 @@ async function collect(root: string, currentDir: string, nodes: ScanNode[]): Pro
 }
 
 /** Recursive scan of a skill directory, never following symlinks. */
-export function scanSkillDirectory(root: string): Promise<SkillDirectoryScan> {
-  return scanDirectory(root)
+export function scanSkillDirectory(
+  root: string,
+  options: ScanDirectoryOptions = {},
+): Promise<SkillDirectoryScan> {
+  return scanDirectory(root, options)
 }
 
-export async function scanDirectory(root: string): Promise<SkillDirectoryScan> {
+export async function scanDirectory(
+  root: string,
+  options: ScanDirectoryOptions = {},
+): Promise<SkillDirectoryScan> {
   const absolute = path.resolve(root)
   let rootStats: Stats
   try {
@@ -113,11 +132,32 @@ export async function scanDirectory(root: string): Promise<SkillDirectoryScan> {
   let totalSize = 0
   for (const node of nodes) {
     if (node.kind === 'file') {
-      files.push(node.relativePath)
       totalSize += node.size
+      if (
+        options.ignore !== null &&
+        options.ignore !== undefined &&
+        options.ignore.matches(node.relativePath)
+      ) {
+        continue
+      }
+      files.push(node.relativePath)
     } else if (node.kind === 'directory') {
+      if (
+        options.ignore !== null &&
+        options.ignore !== undefined &&
+        options.ignore.matches(node.relativePath)
+      ) {
+        continue
+      }
       directories.push(node.relativePath)
     } else if (node.kind === 'symlink') {
+      if (
+        options.ignore !== null &&
+        options.ignore !== undefined &&
+        options.ignore.matches(node.relativePath)
+      ) {
+        continue
+      }
       symlinks.push(node)
     }
   }

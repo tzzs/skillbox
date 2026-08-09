@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { toFsError } from '../fs/errors.js'
 import { scanDirectory } from '../fs/scanner.js'
+import { loadSkillboxIgnore, type IgnoreMatcher } from '../ignore/skillbox-ignore.js'
 
 /** Standard Integrity format prefix: `sha256:<64 hex chars>`. */
 export const INTEGRITY_PREFIX = 'sha256:'
@@ -140,8 +141,11 @@ async function readFileBytes(target: string): Promise<Buffer> {
   }
 }
 
-async function collectFileEntries(skillRoot: string): Promise<FileIntegrityEntry[]> {
-  const scan = await scanDirectory(skillRoot)
+async function collectFileEntries(
+  skillRoot: string,
+  ignore: IgnoreMatcher | null,
+): Promise<FileIntegrityEntry[]> {
+  const scan = await scanDirectory(skillRoot, ignore === null ? {} : { ignore })
   const entries: FileIntegrityEntry[] = []
   for (const filePath of scan.files) {
     const relativePath = normalizeRelativePath(filePath)
@@ -155,12 +159,27 @@ async function collectFileEntries(skillRoot: string): Promise<FileIntegrityEntry
   return entries
 }
 
+export interface ComputeSkillIntegrityOptions {
+  /**
+   * Overrides the `.skillboxignore` matcher. When omitted, a matcher is
+   * auto-loaded from `<skillRoot>/.skillboxignore`; files it matches do not
+   * participate in the Integrity hash (SPEC §109). Missing or empty ignore
+   * files keep the previous behavior unchanged.
+   */
+  ignore?: IgnoreMatcher | null
+}
+
 /**
  * Computes the Canonical Skill Hash for a skill directory: scan files, sort
  * by normalized `/` relative path, hash each file (LF-normalized for text),
- * then SHA-256 the canonical manifest. Returns `sha256:<hex>`.
+ * then SHA-256 the canonical manifest. Returns `sha256:<hex>`. Files matched
+ * by `<skillRoot>/.skillboxignore` do not participate.
  */
-export async function computeSkillIntegrity(skillRoot: string): Promise<string> {
-  const entries = await collectFileEntries(skillRoot)
+export async function computeSkillIntegrity(
+  skillRoot: string,
+  options: ComputeSkillIntegrityOptions = {},
+): Promise<string> {
+  const ignore = options.ignore ?? (await loadSkillboxIgnore(skillRoot))
+  const entries = await collectFileEntries(skillRoot, ignore)
   return computeIntegrityFromEntries(entries)
 }

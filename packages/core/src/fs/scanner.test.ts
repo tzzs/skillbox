@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
-import { scanSkillDirectory } from './scanner.js'
+import { scanSkillDirectory, scanDirectory } from './scanner.js'
+import { SkillboxIgnore } from '../ignore/skillbox-ignore.js'
 import { withTempDir } from './test-utils.js'
 
 async function createSkillTree(root: string): Promise<void> {
@@ -63,6 +64,39 @@ describe('scanSkillDirectory', () => {
       const file = path.join(root, 'x.txt')
       await fs.writeFile(file, 'x')
       await expect(scanSkillDirectory(file)).rejects.toMatchObject({ code: 'IO_ERROR' })
+    })
+  })
+})
+
+describe('scanSkillDirectory with an ignore matcher', () => {
+  it('excludes ignored files and directories from the derived lists', async () => {
+    await withTempDir(async (root) => {
+      await createSkillTree(root)
+      await fs.mkdir(path.join(root, 'secrets'), { recursive: true })
+      await fs.writeFile(path.join(root, 'secrets', '.env'), 'TOKEN=x')
+      await fs.writeFile(path.join(root, 'prod.key'), 'key material')
+
+      const ignore = SkillboxIgnore.fromText(['secrets/', '*.key'].join('\n'))
+      const scan = await scanDirectory(root, { ignore })
+
+      expect(scan.files).not.toContain('secrets/.env')
+      expect(scan.files).not.toContain('prod.key')
+      expect(scan.files).toContain('SKILL.md')
+      expect(scan.directories).not.toContain('secrets')
+
+      // Physical nodes and total size remain untouched (default behavior).
+      expect(scan.nodes.some((node) => node.relativePath === 'secrets/.env')).toBe(true)
+    })
+  })
+
+  it('returns the full tree when no matcher is given (unchanged)', async () => {
+    await withTempDir(async (root) => {
+      await createSkillTree(root)
+      await fs.writeFile(path.join(root, 'skip.key'), 'k')
+      const plain = await scanSkillDirectory(root)
+      const withEmpty = await scanSkillDirectory(root, { ignore: SkillboxIgnore.empty() })
+      expect(withEmpty.files).toEqual(plain.files)
+      expect(withEmpty.files).toContain('skip.key')
     })
   })
 })
