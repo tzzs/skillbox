@@ -60,6 +60,7 @@ function lockedSkillToNode(skill: LockedSkill): Record<string, unknown> {
   }
   if (skill.revision !== undefined) node.revision = skill.revision
   if (skill.upstream !== undefined) node.upstream = lockedUpstreamToNode(skill.upstream)
+  if (skill.security !== undefined) node.security = { ...skill.security }
   if (skill.metadata !== undefined) node.metadata = skill.metadata
   return node
 }

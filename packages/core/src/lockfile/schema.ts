@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { manifestSourceSchema } from '../manifest/schema.js'
+import type { SecurityMetadata } from '../security/types.js'
 
 /** Lockfile schema version (`lockfileVersion:` in skillbox.lock). */
 export const LOCKFILE_VERSION = 1 as const
@@ -26,12 +27,25 @@ export const lockedUpstreamSchema = z.object({
 
 export type LockedUpstream = z.infer<typeof lockedUpstreamSchema>
 
+/**
+ * Security metadata recorded for a locked skill (SPEC §117 / GAP_ANALYSIS §5):
+ * the static-scan risk rating and when it was taken. Reserved field of the
+ * Lockfile contract — optional so lockfiles written before V0.3 stay valid.
+ * The type is the security module's `SecurityMetadata` (kept as a type-only
+ * import so both modules share one source of truth).
+ */
+export const securityMetadataSchema: z.ZodType<SecurityMetadata> = z.object({
+  risk: z.enum(['low', 'medium', 'high']),
+  scannedAt: z.string(),
+})
+
 export const lockedSkillSchema = z.object({
   mode: lockedModeSchema,
   source: manifestSourceSchema,
   revision: nonEmptyString().optional(),
   integrity: nonEmptyString(),
   upstream: lockedUpstreamSchema.optional(),
+  security: securityMetadataSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
