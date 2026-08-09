@@ -40,12 +40,30 @@ import {
   type ImportPlanItem,
 } from './import-plan.js'
 import { resolveEditorCommand } from './editor.js'
+import { startWebServer } from '../web/main.js'
+import type { StartedWebServer, WebServerOptions } from '../web/types.js'
 
 export const FIRST_RUN_FILE_NAME = 'first-run.json'
 
 export interface InteractiveSessionOptions {
   ctx: CliContext
   prompts: InteractivePrompt
+  /**
+   * Starter used by the "Open Web UI" menu action; defaults to the real
+   * `startWebServer` (with its EADDRINUSE fallback) from the web module.
+   */
+  startWebServer?: (options: WebServerOptions) => Promise<StartedWebServer>
+  /** Resolves when a running Web UI server should stop; defaults to Ctrl+C/SIGTERM. */
+  waitForStop?: () => Promise<void>
+}
+
+/** Resolves the first time the process receives SIGINT (Ctrl+C) or SIGTERM. */
+function waitForStopOnSignal(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const stop = (): void => resolve()
+    process.once('SIGINT', stop)
+    process.once('SIGTERM', stop)
+  })
 }
 
 /**
@@ -61,6 +79,8 @@ export class InteractiveSession {
   private readonly statusService: StatusService
   private readonly home: SkillboxHome
   private readonly config: RuntimeConfigService
+  private readonly startWebServerFn: (options: WebServerOptions) => Promise<StartedWebServer>
+  private readonly waitForStopFn: () => Promise<void>
   private readonly agentDisplayNames = new Map<string, string>()
 
   constructor(options: InteractiveSessionOptions) {
@@ -78,6 +98,8 @@ export class InteractiveSession {
     })
     this.home = new SkillboxHome({ root: options.ctx.homeRoot })
     this.config = new RuntimeConfigService({ configFilePath: this.home.configFilePath() })
+    this.startWebServerFn = options.startWebServer ?? startWebServer
+    this.waitForStopFn = options.waitForStop ?? waitForStopOnSignal
     for (const adapter of options.ctx.registry.list()) {
       this.agentDisplayNames.set(adapter.id, adapter.name)
     }
@@ -198,7 +220,7 @@ export class InteractiveSession {
           await this.createSkillFlow()
           break
         case 'web':
-          await this.webPlaceholder()
+          await this.openWebUi()
           break
         case 'settings':
           await this.settingsFlow()
@@ -587,17 +609,34 @@ export class InteractiveSession {
   }
 
   /* ------------------------------------------------------------------ */
-  /* Web UI placeholder + Settings (basic)                               */
+  /* Web UI (M10/M11) + Settings (basic)                                */
   /* ------------------------------------------------------------------ */
 
-  private async webPlaceholder(): Promise<void> {
-    this.prompts.note(
-      [
-        'The Web UI is under construction and will arrive in a later release.',
-        'Run "skillbox web" once it ships, or continue managing skills from here.',
-      ].join('\n'),
-      'Open Web UI - coming soon',
-    )
+  /**
+   * M10/M11 — starts the local Web UI with the shared `startWebServer`
+   * (EADDRINUSE fallback and URL printing included). The server keeps
+   * running until the user presses Ctrl+C (or SIGTERM), then closes and
+   * control returns to the main menu loop.
+   */
+  private async openWebUi(): Promise<void> {
+    try {
+      const started = await this.startWebServerFn({
+        repositoryRoot: this.ctx.repositoryRoot,
+        homeRoot: this.ctx.homeRoot,
+        registry: this.ctx.registry,
+        out: (chunk) => this.ctx.out(chunk),
+        err: (chunk) => this.ctx.err(chunk),
+      })
+      this.prompts.note(
+        `The web UI is running at ${started.url}.\nPress Ctrl+C to stop the server and return to the menu.`,
+        'Web UI',
+      )
+      await this.waitForStopFn()
+      await started.close()
+      this.prompts.info('Web UI stopped.')
+    } catch (error) {
+      this.handleError(error)
+    }
   }
 
   private async settingsFlow(): Promise<void> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { main, type CliDeps, ExitCode } from './index.js'
+import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
 /**
  * Captures the CLI's stdout/stderr streams instead of the real process
@@ -58,5 +58,46 @@ describe('cli', () => {
     expect(exit).toBe(ExitCode.GENERIC)
     expect(io.err()).toContain('interactive mode')
     expect(io.out()).toBe('')
+  })
+})
+
+describe('splitVerbosityFlags', () => {
+  it('returns the input arguments unchanged without verbosity flags', () => {
+    expect(splitVerbosityFlags(['list', '--json'])).toEqual({
+      args: ['list', '--json'],
+      verbosity: 'normal',
+    })
+  })
+
+  it('recognises --debug as the highest verbosity', () => {
+    expect(splitVerbosityFlags(['--debug', 'status'])).toEqual({
+      args: ['status'],
+      verbosity: 'debug',
+    })
+  })
+
+  it('recognises --verbose and accepts the =true spelling', () => {
+    expect(splitVerbosityFlags(['--verbose=true', 'list'])).toEqual({
+      args: ['list'],
+      verbosity: 'verbose',
+    })
+  })
+
+  it('lets --debug win over --verbose regardless of ordering', () => {
+    expect(splitVerbosityFlags(['--debug', '--verbose', 'status'])).toEqual({
+      args: ['status'],
+      verbosity: 'debug',
+    })
+    expect(splitVerbosityFlags(['--verbose', '--debug', 'status'])).toEqual({
+      args: ['status'],
+      verbosity: 'debug',
+    })
+  })
+
+  it('keeps tokens after a literal -- verbatim', () => {
+    expect(splitVerbosityFlags(['--debug', '--', '--verbose'])).toEqual({
+      args: ['--', '--verbose'],
+      verbosity: 'debug',
+    })
   })
 })

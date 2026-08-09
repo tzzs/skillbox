@@ -35,7 +35,7 @@ export function buildMainMenuItems(
       case 'create':
         return { ...item, hint: 'scaffold a new skill from a template' }
       case 'web':
-        return { ...item, hint: 'placeholder - coming soon' }
+        return { ...item, hint: 'start the local web UI' }
       case 'settings':
         return { ...item, hint: '' }
       default:
