@@ -11,6 +11,13 @@ import {
 } from '@skillbox/core'
 import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
 import { renderTable } from './table.js'
+import type { InteractivePrompt } from './interactive/prompts.js'
+import {
+  registerWebCommand,
+  startWebServer,
+  webOptionsFromFlags,
+  type WebCommandFlags,
+} from './web/main.js'
 
 export interface CliDeps {
   /** Repository root; defaults to the current working directory. */
@@ -21,6 +28,10 @@ export interface CliDeps {
   registry?: AgentRegistry
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
+  /** Prompt implementation used by the interactive mode (defaults to @clack/prompts). */
+  prompts?: InteractivePrompt
+  /** Override the interactive-terminal check (used by tests). */
+  isInteractive?: boolean
 }
 
 export interface CliContext {
@@ -108,7 +119,9 @@ export function buildProgram(ctx: CliContext): Command {
   const program = new Command()
   program
     .name('skillbox')
-    .description('Manage the skills your AI agents use.')
+    .description(
+      'Manage the skills your AI agents use.\n  Run without arguments to open the interactive menu.',
+    )
     .version(version, '-v, --version')
     .exitOverride()
     .configureOutput({
@@ -232,6 +245,31 @@ export function buildProgram(ctx: CliContext): Command {
       ctx.out(`\nModified skills\n${bulletList(report.modified)}`)
       ctx.out(`\nBroken skills\n${bulletList(report.broken)}\n`)
     })
+
+  // M10/M11 — the `web` subcommand is registered by the web module; the
+  // handler is wired here so the interactive/CLI entry point stays in one
+  // place. The server keeps the event loop alive until Ctrl+C.
+  const webCommand = registerWebCommand(program)
+  webCommand.action(async (flags: WebCommandFlags) => {
+    const options = webOptionsFromFlags(flags)
+    const started = await startWebServer({
+      repositoryRoot: options.repositoryRoot ?? ctx.repositoryRoot,
+      homeRoot: ctx.homeRoot,
+      registry: ctx.registry,
+      ...(options.port === undefined ? {} : { port: options.port }),
+      ...(options.host === undefined ? {} : { host: options.host }),
+      ...(options.open === undefined ? {} : { open: options.open }),
+      out: ctx.out,
+      err: ctx.err,
+    })
+    await new Promise<void>((resolve) => {
+      const shutdown = (): void => {
+        void started.close().then(() => resolve())
+      }
+      process.once('SIGINT', shutdown)
+      process.once('SIGTERM', shutdown)
+    })
+  })
 
   return program
 }

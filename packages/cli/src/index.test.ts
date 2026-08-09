@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { main, type CliDeps } from './index.js'
+import { main, type CliDeps, ExitCode } from './index.js'
 
 /**
  * Captures the CLI's stdout/stderr streams instead of the real process
@@ -50,5 +50,13 @@ describe('cli', () => {
     const exit = await main(['list', '--json'], io)
     expect(exit).toBe(0)
     expect(io.out()).toContain('"skills"')
+  })
+
+  it('refuses the interactive mode without a TTY instead of crashing', async () => {
+    const io = capture()
+    const exit = await main([], { ...io, isInteractive: false })
+    expect(exit).toBe(ExitCode.GENERIC)
+    expect(io.err()).toContain('interactive mode')
+    expect(io.out()).toBe('')
   })
 })

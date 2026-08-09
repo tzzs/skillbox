@@ -6,7 +6,6 @@
     { "path": "./packages/core" },
     { "path": "./packages/shared" },
     { "path": "./packages/testing" },
-    { "path": "./packages/cli" },
-    { "path": "./apps/web" }
+    { "path": "./packages/cli" }
   ]
 }

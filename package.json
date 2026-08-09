@@ -8,8 +8,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "build": "tsc -b && pnpm --filter @skillbox/web build && node scripts/package-web.mjs",
+    "typecheck": "tsc -b && pnpm --filter @skillbox/web typecheck",
     "test": "pnpm -r test",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

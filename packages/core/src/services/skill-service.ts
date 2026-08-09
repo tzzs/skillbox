@@ -27,6 +27,11 @@ import { reconcile, type ReconcileOptions, type ReconcileResult } from '../recon
 import { RuntimeLibraryService, type MaterializeSkillResult } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
+import {
+  importSkill as importSkillIntoRepository,
+  type ImportDecision,
+  type ImportResult,
+} from '../runtime/import.js'
 
 export const DEFAULT_SKILL_MARKDOWN = (alias: string, description?: string): string => `# ${alias}
 
@@ -367,5 +372,147 @@ export class SkillService {
   async install(): Promise<ReconcileResult> {
     await this.ensureHome()
     return this.runReconcile()
+  }
+
+  /**
+   * Resolves the on-disk directory of a local skill. Local skills map to a
+   * path under the repository; missing directories and broken skills throw a
+   * typed error so callers can render a precise message.
+   */
+  private async resolveLocalSkillDirectory(alias: string): Promise<string> {
+    const manifest = await this.readManifestRequired()
+    const entry = manifest.skills[alias]
+    if (entry === undefined) {
+      throw new SkillboxError(
+        ErrorCode.SKILL_NOT_FOUND,
+        `Skill "${alias}" is not in the manifest`,
+        { context: { alias } },
+      )
+    }
+    if (entry.source.type !== 'local') {
+      throw new SkillboxError(
+        ErrorCode.SKILL_MISSING,
+        `Skill "${alias}" has no local directory to edit`,
+        { context: { alias } },
+      )
+    }
+    let sourcePath: string
+    try {
+      sourcePath = resolveInsideRoot(this.repositoryRoot, entry.source.path)
+    } catch (error) {
+      throw new SkillboxError(
+        ErrorCode.INVALID_MANIFEST,
+        `Skill "${alias}" has an unresolvable local path`,
+        { cause: error, context: { alias, path: entry.source.path } },
+      )
+    }
+    if (!(await this.filesystem.exists(sourcePath))) {
+      throw new SkillboxError(
+        ErrorCode.SKILL_MISSING,
+        `Skill directory not found at "${sourcePath}"`,
+        { context: { alias, path: sourcePath } },
+      )
+    }
+    if (!(await this.filesystem.exists(path.join(sourcePath, 'SKILL.md')))) {
+      throw new SkillboxError(
+        ErrorCode.SKILL_BROKEN,
+        `Skill directory has no SKILL.md at "${sourcePath}"`,
+        { context: { alias, path: sourcePath } },
+      )
+    }
+    return sourcePath
+  }
+
+  /** M11.5 — reads the current `SKILL.md` of a local skill for the editor. */
+  async readSkillMarkdown(input: { name: string }): Promise<{
+    name: string
+    /** Absolute path of the skill directory. */
+    path: string
+    /** Full content of `SKILL.md`. */
+    markdown: string
+  }> {
+    const alias = validateSkillAlias(input.name)
+    const sourcePath = await this.resolveLocalSkillDirectory(alias)
+    const markdown = await this.filesystem.readFile(path.join(sourcePath, 'SKILL.md'))
+    return { name: alias, path: sourcePath, markdown }
+  }
+
+  /**
+   * Writes `SKILL.md` of a local skill and recomputes its integrity so the
+   * Library/Detail views immediately reflect the `modified` state (M11.5).
+   */
+  async writeSkillMarkdown(input: { name: string; content: string }): Promise<{
+    name: string
+    /** Absolute path of the skill directory. */
+    path: string
+    /** Fresh integrity after the write. */
+    integrity: string
+    lockIntegrity?: string
+    /** Status after the write: `ready` or `modified` (vs. the lockfile). */
+    status: 'ready' | 'modified'
+  }> {
+    const alias = validateSkillAlias(input.name)
+    const sourcePath = await this.resolveLocalSkillDirectory(alias)
+    await this.filesystem.writeFile(path.join(sourcePath, 'SKILL.md'), input.content)
+
+    const integrity = await computeSkillIntegrity(sourcePath)
+    const lockfile = await this.readLockfileOrEmpty()
+    const lockedIntegrity = lockfile.skills[alias]?.integrity
+
+    const result: {
+      name: string
+      path: string
+      integrity: string
+      lockIntegrity?: string
+      status: 'ready' | 'modified'
+    } = {
+      name: alias,
+      path: sourcePath,
+      integrity,
+      status: lockedIntegrity === undefined || lockedIntegrity === integrity ? 'ready' : 'modified',
+    }
+    if (lockedIntegrity !== undefined) {
+      result.lockIntegrity = lockedIntegrity
+    }
+    return result
+  }
+
+  /** M6.5/M6.6 Import an existing external skill into the repository. */
+  async importExistingSkill(input: {
+    name: string
+    sourceDir: string
+    migrateAgents?: string[]
+    decision?: ImportDecision
+  }): Promise<ImportResult> {
+    const alias = validateSkillAlias(input.name)
+    await this.ensureHome()
+
+    const request: {
+      sourceDir: string
+      alias: string
+      repositoryRoot: string
+      library: RuntimeLibraryService
+      linkState: RuntimeLinkState
+      adapters: Map<string, AgentAdapter>
+      linkStrategy: LinkStrategy
+      filesystem: FilesystemService
+      migrateAgents?: string[]
+    } = {
+      sourceDir: input.sourceDir,
+      alias,
+      repositoryRoot: this.repositoryRoot,
+      library: this.library(),
+      linkState: this.linkState(),
+      adapters: this.adapters(),
+      linkStrategy: this.linkStrategy ?? 'auto',
+      filesystem: this.filesystem,
+    }
+    if (input.migrateAgents !== undefined) {
+      request.migrateAgents = input.migrateAgents
+    }
+
+    return input.decision === undefined
+      ? importSkillIntoRepository(request)
+      : importSkillIntoRepository(request, input.decision)
   }
 }
