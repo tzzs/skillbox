@@ -23,27 +23,29 @@
 
 ## 1. V0.1 收尾缺口（当前版本范围，未完成）
 
-| # | 缺口 | 证据/位置 | 来源 |
-|---|------|----------|------|
-| 1.1 | 交互菜单 "Open Web UI" 是死占位，未启动已实现的 `skillbox web` | `packages/cli/src/interactive/session.ts`（webPlaceholder）、`menu.ts:38`（"placeholder - coming soon"） | MVP_TASKS §74/§72 |
-| 1.2 | Settings 页只读，缺 Link Strategy / Web Port / Auto Open Browser / Agent Overrides 设置 | `apps/web/src/pages/SettingsPage.tsx` | MVP_TASKS §94、PRD §38 |
-| 1.3 | Agents 页卡片不可点击，无 Skill assignment 跳转 | `apps/web/src/pages/AgentsPage.tsx` | MVP_TASKS §93 |
-| 1.4 | Create Skill 表单缺 Agent Assignment 字段 | `apps/web/src/pages/CreateSkillPage.tsx` | MVP_TASKS §92 |
-| 1.5 | Logging（`--verbose`/`--debug` 三级日志）未实现 | 全仓 grep `verbose\|debug\|logger` 零命中 | MVP_TASKS §184 |
-| 1.6 | 发布资产缺失：README / INSTALLATION / CONTRIBUTING / LICENSE；各包 `"private": true` 未配置发布 | 仓库根 package.json | MVP_TASKS §187/§223 |
-| 1.7 | 0.1.0 E2E 验收（10 步流程）无自动化 | 无 e2e 目录 | MVP_TASKS §98 |
-| 1.8 | Cursor Adapter（P1，文档允许延后 0.1.1） | `packages/core/src/agent/registry.ts` 仅 claude/codex | MVP_TASKS §41 |
-| 1.9 | Agent Path Overrides 形状：SPEC 要求 `agents.<id>.skillDirectories: [数组]`，实现为单字符串 path | `packages/core/src/runtime/config.ts` | SPEC §128 |
-| 1.10 | Machine Config 缺 `web.host`（SPEC config.json 示例含 web.host/web.openBrowser） | config schema | SPEC §158 |
+| #    | 缺口                                                                                             | 证据/位置                                                                                                | 来源                   |
+| ---- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1.1  | 交互菜单 "Open Web UI" 是死占位，未启动已实现的 `skillbox web`                                   | `packages/cli/src/interactive/session.ts`（webPlaceholder）、`menu.ts:38`（"placeholder - coming soon"） | MVP_TASKS §74/§72      |
+| 1.2  | Settings 页只读，缺 Link Strategy / Web Port / Auto Open Browser / Agent Overrides 设置          | `apps/web/src/pages/SettingsPage.tsx`                                                                    | MVP_TASKS §94、PRD §38 |
+| 1.3  | Agents 页卡片不可点击，无 Skill assignment 跳转                                                  | `apps/web/src/pages/AgentsPage.tsx`                                                                      | MVP_TASKS §93          |
+| 1.4  | Create Skill 表单缺 Agent Assignment 字段                                                        | `apps/web/src/pages/CreateSkillPage.tsx`                                                                 | MVP_TASKS §92          |
+| 1.5  | Logging（`--verbose`/`--debug` 三级日志）未实现                                                  | 全仓 grep `verbose\|debug\|logger` 零命中                                                                | MVP_TASKS §184         |
+| 1.6  | 发布资产缺失：README / INSTALLATION / CONTRIBUTING / LICENSE；各包 `"private": true` 未配置发布  | 仓库根 package.json                                                                                      | MVP_TASKS §187/§223    |
+| 1.7  | 0.1.0 E2E 验收（10 步流程）无自动化                                                              | 无 e2e 目录                                                                                              | MVP_TASKS §98          |
+| 1.8  | Cursor Adapter（P1，文档允许延后 0.1.1）                                                         | `packages/core/src/agent/registry.ts` 仅 claude/codex                                                    | MVP_TASKS §41          |
+| 1.9  | Agent Path Overrides 形状：SPEC 要求 `agents.<id>.skillDirectories: [数组]`，实现为单字符串 path | `packages/core/src/runtime/config.ts`                                                                    | SPEC §128              |
+| 1.10 | Machine Config 缺 `web.host`（SPEC config.json 示例含 web.host/web.openBrowser）                 | config schema                                                                                            | SPEC §158              |
 
 ## 2. V0.2 — Git Sync（PRD 核心功能，GitHub 集成 spec 已 Approve，完全未动工）
 
 ### 2.1 Git Engine（core 无 git 模块）
+
 - GitClient：init/status/pull/commit/push/diff/冲突检测（系统 Git 子进程封装）
 - `reconcile/engine.ts:122-129` 硬编码跳过远程 source；`status-service.ts:110-114` "cannot be materialized in wave 1" —— 需移除
 - 错误码 `GIT_NOT_FOUND` 已预留，无调用处
 
 ### 2.2 GitHub 集成（ARCHITECTURE §15.2/ADR-016~019、SPEC §123-125、specs/2026-08-09-github-integration-design.md）
+
 - GitHub App Device Flow 授权轮询（5 种授权状态：not-connected/authorizing/connected/refresh-required/reauthorization-required）
 - OS Credential Store 抽象：macOS Keychain / Windows Credential Manager / Linux Secret Service
 - Token 生命周期：get/set/delete/refresh；token 禁止进 remote URL/.git/config/manifest/lockfile/日志/debug bundle
@@ -53,17 +55,20 @@
 - 配置：config.json 存 github.connected/login/provider/repository（token 禁止）
 
 ### 2.3 Sync 流水线与 Multi-device
+
 - `skillbox sync`：Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push
 - `skillbox status/pull/push` 高级命令
 - Multi-device Restore：git clone → `npx skillbox install` 恢复 Local/Forked/Vendored + 重下 Managed + Agent Assignment
 - `install --frozen-lockfile / --ci` + `LOCKFILE_OUTDATED` 错误；lockfile missing 提示
 
 ### 2.4 Secret Scan（SPEC §160、MVP_TASKS §112-117）
-- Pattern scanner（.env/*.pem/*.key/API keys/Bearer/Private Key），只扫 changed files
+
+- Pattern scanner（.env/_.pem/_.key/API keys/Bearer/Private Key），只扫 changed files
 - Severity 分级：Critical/High→Block、Medium→Warning、Low→Info
 - Ignore once / Add to Ignore（secret policy）
 
 ### 2.5 `.skillboxignore`（SPEC §106-109、§154、§156）
+
 - 控制导入/同步/扫描/备份忽略；语法兼容 .gitignore；匹配文件不参与 Integrity
 
 ## 3. V0.3 — Marketplace / Registry / Updates
