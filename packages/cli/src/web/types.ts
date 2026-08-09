@@ -9,6 +9,122 @@ import type {
 } from '@skillbox/core'
 
 /**
+ * V0.3 registry contract (M14.7). These shapes are the *web* front of the
+ * Registry provider framework (agent 1: `packages/core/src/registry`) and the
+ * Install/Updates layer (agent 2: `packages/core/src/install`). Until those
+ * land the Web layer answers `REGISTRY_UNAVAILABLE`; the TODO wiring points
+ * live in `services.ts`.
+ */
+
+/** Aggregated risk level of a remote skill per the Security Scanner. */
+export type RegistryRisk = 'low' | 'medium' | 'high'
+
+/** A single Security Scanner finding attached to a registry result. */
+export interface RegistryFinding {
+  severity: 'info' | 'warning' | 'high'
+  /** Rule id that produced the finding, e.g. `network-access`. */
+  rule: string
+  /** Human readable explanation of the finding. */
+  message: string
+}
+
+/** One result of the aggregated registry search (GAP §3 Explore). */
+export interface RegistrySearchResult {
+  /** Skill name as shown to the user. */
+  name: string
+  /** Normalized source that can be passed back to install, e.g. `github:acme/react-skill`. */
+  source: string
+  /** Registry provider this result came from, e.g. `github` | `skills-sh` | `local`. */
+  provider: string
+  description?: string
+  version?: string
+  revision?: string
+  /** Download / use count used by the popularity sort. */
+  popularity?: number
+  trending?: boolean
+  official?: boolean
+  verified?: boolean
+  /** Whether the provider already ran a security review on this result. */
+  securityReviewed?: boolean
+  securityRisk?: RegistryRisk
+  /** Best-effort findings advertised by the provider (server scans at install time). */
+  securityFindings?: RegistryFinding[]
+  /** True when the same source is already installed in this repository. */
+  installed?: boolean
+}
+
+/** Options accepted by the registry search service. */
+export interface RegistrySearchOptions {
+  provider?: string
+  sort?: 'popularity' | 'recently-updated'
+  trending?: boolean
+  official?: boolean
+}
+
+/** Core search service contract (agent 1). */
+export interface RegistrySearchService {
+  search(query: string, options?: RegistrySearchOptions): Promise<RegistrySearchResult[]>
+}
+
+/** One row of the Updates page (M16.3). */
+export interface OutdatedSkill {
+  name: string
+  /** Manifest source of the installed skill, reused when updating it. */
+  source: string
+  /** Installed version or revision as shown on the Updates page. */
+  installed: string
+  /** Latest available version or revision. */
+  latest: string
+  /** Human readable list of what changed between installed and latest. */
+  changes: string[]
+  /** Aggregated risk of the latest revision, when a security review exists. */
+  securityRisk?: RegistryRisk
+  /** Agents the skill is currently enabled for (used to re-run install). */
+  agents: string[]
+}
+
+/** Outdated/updates computation service contract (agent 2). */
+export interface UpdatesService {
+  outdated(): Promise<OutdatedSkill[]>
+}
+
+/** Security portion of an install result. */
+export interface InstallSecurity {
+  risk: RegistryRisk
+  scannedAt?: string
+  findings: RegistryFinding[]
+}
+
+/** Input of `POST /api/registry/install` (M15 remote install). */
+export interface InstallInput {
+  source: string
+  targetAgents: string[]
+  /** `safe` refuses high-risk installations; `all` allows them after explicit confirmation. */
+  allowPolicy: 'safe' | 'all'
+}
+
+/** Outcome of a remote install transaction (agent 2). */
+export interface InstallResult {
+  /** Skill alias written to the manifest + lockfile. */
+  name: string
+  source: string
+  revision?: string
+  /** Absolute path of the materialized skill directory. */
+  path: string
+  security: InstallSecurity
+  agents: string[]
+  /** True when the manifest changed on this install. */
+  manifestChanged: boolean
+  /** True when the lockfile changed on this install. */
+  lockfileChanged: boolean
+}
+
+/** Remote install transaction service contract (agent 2, M15.1). */
+export interface InstallService {
+  install(input: InstallInput): Promise<InstallResult>
+}
+
+/**
  * The Core services the Web layer is allowed to talk to. Every API route goes
  * through one of these services; the web layer never touches skill files or
  * manifests directly (M10.6).
@@ -19,6 +135,12 @@ export interface WebServices {
   status: StatusService
   /** Machine config ("~/.skillbox/config.json") read/write (GAP 1.2). */
   config: RuntimeConfigService
+  /** V0.3 aggregated registry search (agent 1 contract). */
+  search: RegistrySearchService
+  /** V0.3 outdated / updates computation (agent 2 contract). */
+  updates: UpdatesService
+  /** V0.3 remote install transaction (agent 2 contract). */
+  install: InstallService
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
@@ -66,6 +188,21 @@ export interface ReconcileResponse {
 /** Success shape of `GET /api/settings` / `PUT /api/settings`. */
 export interface SettingsResponse {
   settings: RuntimeConfig
+}
+
+/** Success shape of `GET /api/registry/search`. */
+export interface RegistrySearchResponse {
+  results: RegistrySearchResult[]
+}
+
+/** Success shape of `GET /api/registry/outdated`. */
+export interface OutdatedResponse {
+  outdated: OutdatedSkill[]
+}
+
+/** Success shape of `POST /api/registry/install`. */
+export interface InstallResponse {
+  installed: InstallResult
 }
 
 /** Options accepted by {@link createWebApp}. */

@@ -4,7 +4,11 @@ import type { RuntimeConfig } from '@skillbox/core'
 import type {
   AgentsResponse,
   HealthResponse,
+  InstallResponse,
+  OutdatedResponse,
   ReconcileResponse,
+  RegistrySearchOptions,
+  RegistrySearchResponse,
   SettingsResponse,
   SkillResponse,
   SkillsResponse,
@@ -139,6 +143,56 @@ export function createWebApp(options: WebAppOptions): Hono {
     return c.json<ReconcileResponse>({ reconcile })
   })
 
+  /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
+
+  /**
+   * M14.7 — aggregated registry search. `q` is optional so a bare browse
+   * (Trending / Official / sort-only) works too; results flow through the
+   * RegistrySearchService (agent 1 contract), decorated with provider,
+   * security and install-state markers for the Explore UI.
+   */
+  app.get('/api/registry/search', async (c) => {
+    const options: RegistrySearchOptions = {}
+    const provider = c.req.query('provider')
+    if (provider !== undefined && provider !== '') {
+      options.provider = provider
+    }
+    const sort = c.req.query('sort')
+    if (sort === 'popularity' || sort === 'recently-updated') {
+      options.sort = sort
+    }
+    const trending = c.req.query('trending')
+    if (trending === '1' || trending === 'true') {
+      options.trending = true
+    }
+    const official = c.req.query('official')
+    if (official === '1' || official === 'true') {
+      options.official = true
+    }
+    const results = await services.search.search(c.req.query('q') ?? '', options)
+    return c.json<RegistrySearchResponse>({ results })
+  })
+
+  /** M16.3 — installed-but-outdated skills with what changed since lock. */
+  app.get('/api/registry/outdated', async (c) => {
+    const outdated = await services.updates.outdated()
+    return c.json<OutdatedResponse>({ outdated })
+  })
+
+  /**
+   * M15 — remote install transaction. The body carries the source, the
+   * target agents and the security policy (`safe` refuses high-risk skills,
+   * `all` allows them after explicit user confirmation).
+   */
+  app.post('/api/registry/install', async (c) => {
+    const body = await requireJsonBody(c)
+    const source = stringField(body, 'source')
+    const targetAgents = stringArrayField(body, 'targetAgents')
+    const allowPolicy = allowPolicyField(body)
+    const installed = await services.install.install({ source, targetAgents, allowPolicy })
+    return c.json<InstallResponse>({ installed }, 201)
+  })
+
   app.all('/api/*', (c) => c.json(unknownRouteEnvelope(), 404))
 
   /* ---- frontend static / SPA (M11.10) ---- */
@@ -200,6 +254,29 @@ function stringField(body: Record<string, unknown>, field: string): string {
     )
   }
   return value
+}
+
+function stringArrayField(body: Record<string, unknown>, field: string): string[] {
+  const value = body[field]
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  ) {
+    throw new WebApiError(
+      'INVALID_REQUEST',
+      `Field "${field}" is required and must be a non-empty array of agent ids`,
+    )
+  }
+  return value
+}
+
+function allowPolicyField(body: Record<string, unknown>): 'safe' | 'all' {
+  const value = body['allowPolicy']
+  if (value === 'safe' || value === 'all') {
+    return value
+  }
+  throw new WebApiError('INVALID_REQUEST', 'Field "allowPolicy" must be either "safe" or "all"')
 }
 
 function toStatusCode(status: number): ContentfulStatusCode {

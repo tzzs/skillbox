@@ -27,6 +27,25 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
   [ErrorCode.INVALID_LINK_STATE]: 400,
   [ErrorCode.UNSAFE_PATH]: 400,
   [ErrorCode.UNSAFE_SYMLINK]: 400,
+  /* V0.3 registry layer (agent 1 contract) */
+  [ErrorCode.REGISTRY_NOT_FOUND]: 404,
+  [ErrorCode.REGISTRY_UNAVAILABLE]: 503,
+  [ErrorCode.REGISTRY_SEARCH_FAILED]: 502,
+  [ErrorCode.REGISTRY_DOWNLOAD_FAILED]: 502,
+  [ErrorCode.SOURCE_UNSUPPORTED]: 400,
+  [ErrorCode.SOURCE_INVALID]: 400,
+  /* V0.3 install / updates layer (agent 2 contract) */
+  [ErrorCode.CACHE_MISS]: 404,
+  [ErrorCode.CACHE_INVALID]: 409,
+  [ErrorCode.INSTALL_SOURCE_UNRESOLVED]: 502,
+  [ErrorCode.INSTALL_DOWNLOAD_FAILED]: 502,
+  [ErrorCode.INSTALL_INVALID_PATH]: 400,
+  [ErrorCode.INSTALL_INVALID_STRUCTURE]: 400,
+  [ErrorCode.INSTALL_SECURITY_BLOCKED]: 403,
+  [ErrorCode.INSTALL_MATERIALIZE_FAILED]: 500,
+  [ErrorCode.INSTALL_CONFLICT]: 409,
+  [ErrorCode.INSTALL_AGENT_LINK_FAILED]: 409,
+  [ErrorCode.INSTALL_ROLLBACK_FAILED]: 500,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */
@@ -38,6 +57,17 @@ const RECOVERABLE: ReadonlySet<string> = new Set<string>([
   ErrorCode.AGENT_LINK_CONFLICT,
   ErrorCode.IMPORT_CONFLICT,
   ErrorCode.GIT_NOT_FOUND,
+  /* V0.3 registry + install: transient upstream failures are retryable */
+  ErrorCode.REGISTRY_UNAVAILABLE,
+  ErrorCode.REGISTRY_SEARCH_FAILED,
+  ErrorCode.REGISTRY_DOWNLOAD_FAILED,
+  ErrorCode.INSTALL_SOURCE_UNRESOLVED,
+  ErrorCode.INSTALL_DOWNLOAD_FAILED,
+  /* Retrying with `allowPolicy: 'all'` after reviewing the findings is the
+     documented recovery path for a security-blocked install. */
+  ErrorCode.INSTALL_SECURITY_BLOCKED,
+  /* Agent link failures are resolved by Reconcile (retryable). */
+  ErrorCode.INSTALL_AGENT_LINK_FAILED,
 ])
 
 export interface ApiErrorResult {
