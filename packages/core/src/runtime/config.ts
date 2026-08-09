@@ -26,6 +26,19 @@ export const runtimeConfigSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * GitHub connection metadata (SPEC §125.1). Machine-local connection state;
+   * only non-sensitive fields live here. Tokens and expiry stay in the OS
+   * Credential Store and are forbidden in this block.
+   */
+  github: z
+    .object({
+      connected: z.boolean().optional(),
+      login: z.string().min(1).optional(),
+      provider: z.string().min(1).optional(),
+      repository: z.string().min(1).optional(),
+    })
+    .optional(),
 })
 
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>
@@ -54,6 +67,7 @@ function sortConfig(config: RuntimeConfig): RuntimeConfig {
   if (config.linkStrategy !== undefined) out.linkStrategy = config.linkStrategy
   if (config.web !== undefined) out.web = { ...config.web }
   if (config.agents !== undefined) out.agents = sortObjectRecord(config.agents)
+  if (config.github !== undefined) out.github = { ...config.github }
   return out
 }
 
