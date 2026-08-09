@@ -116,6 +116,7 @@ export function SettingsPage() {
     <section className="page">
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Settings</span>
           <h1 className="page-title">Settings</h1>
           <p className="page-description">
             Repository identity, manifest state, Machine configuration and maintenance actions.

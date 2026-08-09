@@ -42,9 +42,18 @@ export function DiffPage() {
   if (diffQuery.isError) {
     return (
       <section className="page">
+        <header className="page-header">
+          <div>
+            <span className="page-eyebrow">Diff</span>
+            <h1 className="page-title">{name}</h1>
+          </div>
+        </header>
         <ErrorState message={errorMessage(diffQuery.error)} />
         <p>
-          <Link to={`/skills/${encodeURIComponent(name)}`}>Back to {name}</Link>
+          <Link to={`/skills/${encodeURIComponent(name)}`} className="detail-anchor">
+            <ArrowLeft aria-hidden="true" />
+            Back to {name}
+          </Link>
         </p>
       </section>
     )
@@ -66,6 +75,7 @@ export function DiffPage() {
 
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Diff</span>
           <div className="page-title-row">
             <h1 className="page-title">Diff</h1>
             <ModePill mode={diff.mode} />
@@ -123,7 +133,7 @@ function DiffFileItem({ file }: { file: SkillFileDiff }) {
       {file.binary === true ? (
         <p className="diff-binary-note">Binary file — content is not shown.</p>
       ) : file.patch.length > 0 ? (
-        <pre className="diff-patch">{file.patch}</pre>
+        <DiffPatch patch={file.patch} />
       ) : null}
     </li>
   )
@@ -131,4 +141,34 @@ function DiffFileItem({ file }: { file: SkillFileDiff }) {
 
 function DiffStatusBadge({ status }: { status: SkillFileDiff['status'] }) {
   return <span className={`pill pill--diff pill--diff-${status}`}>{status}</span>
+}
+
+/**
+ * Renders a unified-diff patch with per-line tinting: `@@` hunks in amber,
+ * `+` additions in green, `-` deletions in red, context lines plain.
+ */
+function DiffPatch({ patch }: { patch: string }) {
+  const lines = patch.split('\n')
+  if (lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  return (
+    <pre className="diff-patch">
+      {lines.map((line, index) => {
+        let className = 'diff-patch-line'
+        if (line.startsWith('@@')) {
+          className += ' diff-patch-line--hunk'
+        } else if (line.startsWith('+')) {
+          className += ' diff-patch-line--add'
+        } else if (line.startsWith('-')) {
+          className += ' diff-patch-line--del'
+        }
+        return (
+          <span key={index} className={className}>
+            {line}
+          </span>
+        )
+      })}
+    </pre>
+  )
 }

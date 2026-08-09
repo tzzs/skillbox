@@ -77,6 +77,7 @@ export function SkillInstallPage() {
 
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Marketplace</span>
           <h1 className="page-title">Install skill</h1>
           <p className="page-description">
             Review the source and the security scan, then pick the agents to install for.

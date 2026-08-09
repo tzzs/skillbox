@@ -45,6 +45,7 @@ export function ExplorePage() {
     <section className="page">
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Marketplace</span>
           <h1 className="page-title">Explore</h1>
           <p className="page-description">
             Discover skills from the Skillbox registry and install them into this repository.

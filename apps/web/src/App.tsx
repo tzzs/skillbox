@@ -32,7 +32,7 @@ export function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">sb</span>
+          <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">Skillbox</span>
         </div>
 

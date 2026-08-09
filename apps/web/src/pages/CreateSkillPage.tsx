@@ -52,6 +52,7 @@ export function CreateSkillPage() {
 
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Create</span>
           <h1 className="page-title">New skill</h1>
           <p className="page-description">
             Scaffold a skill directory, register it in the manifest and lockfile, and materialize it

@@ -32,6 +32,7 @@ export function UpdatesPage() {
     <section className="page">
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Updates</span>
           <h1 className="page-title">Updates</h1>
           <p className="page-description">
             {outdatedQuery.isLoading

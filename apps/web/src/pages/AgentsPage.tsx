@@ -20,6 +20,7 @@ export function AgentsPage() {
     <section className="page">
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Agents</span>
           <h1 className="page-title">Agents</h1>
           <p className="page-description">
             {reconcile.isPending

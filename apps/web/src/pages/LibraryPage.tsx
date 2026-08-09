@@ -58,6 +58,7 @@ export function LibraryPage() {
     <section className="page">
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Library</span>
           <h1 className="page-title">Library</h1>
           <p className="page-description">
             {reconcile.isPending

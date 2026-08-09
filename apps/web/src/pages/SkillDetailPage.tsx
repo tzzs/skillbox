@@ -108,6 +108,7 @@ export function SkillDetailPage() {
 
       <header className="page-header">
         <div>
+          <span className="page-eyebrow">Skill</span>
           <div className="page-title-row">
             <h1 className="page-title">{skill.name}</h1>
             <StatusPill status={skill.status} />
