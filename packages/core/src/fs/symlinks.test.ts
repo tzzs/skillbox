@@ -14,7 +14,10 @@ describe('resolveSymlinkTarget', () => {
       await createDirLink(member, link)
       const { target, resolved } = await resolveSymlinkTarget(link)
       expect(target).toBeTruthy()
-      expect(resolved).toBe(member)
+      // `resolved` is canonical (`fs.realpath`); on macOS the temp dir is
+      // `/var` -> `/private/var` and on Windows CI `TEMP` uses 8.3 short
+      // names, so canonicalize the expectation before comparing.
+      expect(resolved).toBe(await fs.realpath(member))
     } finally {
       await cleanup(root)
     }

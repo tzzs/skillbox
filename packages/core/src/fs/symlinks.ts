@@ -37,6 +37,17 @@ export async function resolveSymlinkTarget(
     if (!isNodeError(error) || error.code !== 'ENOENT') {
       throw toFsError(error, `Failed to resolve symlink "${symlinkPath}"`, symlinkPath)
     }
+    // The containing directory always exists (the symlink lives in it), so
+    // canonicalize it before appending the raw target. This keeps the
+    // fallback on the same canonical form as `fs.realpath` (macOS
+    // `/var` -> `/private/var`, Windows 8.3 short names) so containment
+    // checks compare like with like.
+    try {
+      const canonicalDir = await fs.realpath(path.dirname(symlinkPath))
+      resolved = path.resolve(canonicalDir, target)
+    } catch {
+      /* keep the lexical fallback when the directory cannot be canonicalized */
+    }
   }
   return { target, resolved }
 }
@@ -45,13 +56,26 @@ export async function resolveSymlinkTarget(
  * Resolves `symlinkPath` and checks whether its target stays inside `root`.
  */
 export async function checkSymlink(root: string, symlinkPath: string): Promise<SymlinkResolution> {
-  const absoluteRoot = path.resolve(root)
+  const absoluteRoot = await canonicalize(root)
   const { target, resolved } = await resolveSymlinkTarget(symlinkPath)
   return {
     symlinkPath: path.resolve(symlinkPath),
     target,
     resolved,
     insideRoot: isInsideRoot(absoluteRoot, resolved),
+  }
+}
+
+/**
+ * Realpaths `root` so containment compares canonical paths on both sides.
+ * Falls back to the lexical form when the root does not exist yet.
+ */
+async function canonicalize(root: string): Promise<string> {
+  const absoluteRoot = path.resolve(root)
+  try {
+    return await fs.realpath(absoluteRoot)
+  } catch {
+    return absoluteRoot
   }
 }
 
