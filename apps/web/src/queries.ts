@@ -12,6 +12,7 @@ export const queryKeys = {
   skills: ['skills'],
   skill: (name: string) => ['skills', name],
   skillContent: (name: string) => ['skills', name, 'content'],
+  skillDiff: (name: string) => ['skills', name, 'diff'],
   agents: ['agents'],
   status: ['status'],
   settings: ['settings'],
@@ -57,6 +58,16 @@ export function useSkillContent(name: string | undefined) {
   return useQuery({
     queryKey: queryKeys.skillContent(id),
     queryFn: () => api.skillContent(id),
+    enabled: id !== '',
+  })
+}
+
+/** Skill diff views against the upstream (M19.5). */
+export function useSkillDiff(name: string | undefined) {
+  const id = name ?? ''
+  return useQuery({
+    queryKey: queryKeys.skillDiff(id),
+    queryFn: () => api.skillDiff(id),
     enabled: id !== '',
   })
 }

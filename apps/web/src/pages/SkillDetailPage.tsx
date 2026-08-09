@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Check, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
 import type { AgentSummary } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
@@ -115,6 +115,16 @@ export function SkillDetailPage() {
           </div>
           {skill.message !== undefined && <p className="page-description">{skill.message}</p>}
         </div>
+        {(skill.mode === 'managed' || skill.mode === 'forked') && (
+          <div className="page-actions">
+            <Link to={`/skills/${encodeURIComponent(skill.name)}/diff`}>
+              <span className="btn">
+                <GitCompare aria-hidden="true" />
+                View diff
+              </span>
+            </Link>
+          </div>
+        )}
       </header>
 
       <div className="card">

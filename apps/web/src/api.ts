@@ -210,6 +210,34 @@ export interface InstallResult {
   lockfileChanged: boolean
 }
 
+/* ---- V0.4 skill diff API (M19.5) ---- */
+
+/** One changed file of a skill diff view. */
+export interface SkillFileDiff {
+  /** Portable relative path (forward slashes). */
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  /** Unified-diff body for this file (empty for binary files). */
+  patch: string
+  /** True for binary files, whose contents are never rendered. */
+  binary?: boolean
+}
+
+/** One comparison of a skill (e.g. `Current vs Latest`). */
+export interface SkillDiffView {
+  label: string
+  files: SkillFileDiff[]
+}
+
+/** Result of `GET /api/skills/:id/diff`. */
+export interface SkillDiff {
+  name: string
+  mode: 'managed' | 'forked'
+  views: SkillDiffView[]
+  /** True when every view has no changes — the "No changes" case. */
+  unchanged: boolean
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -289,6 +317,8 @@ export interface ApiClient {
   registrySearch(params?: RegistrySearchParams): Promise<RegistrySearchResult[]>
   outdated(): Promise<OutdatedSkill[]>
   installRegistrySkill(input: InstallInput): Promise<InstallResult>
+  /* V0.4 diff API */
+  skillDiff(name: string): Promise<SkillDiff>
 }
 
 function encodeName(name: string): string {
@@ -417,5 +447,10 @@ export const api: ApiClient = {
       body: JSON.stringify(input),
     })
     return response.installed
+  },
+
+  async skillDiff(name) {
+    const response = await request<{ diff: SkillDiff }>(`/api/skills/${encodeName(name)}/diff`)
+    return response.diff
   },
 }

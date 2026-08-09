@@ -3,6 +3,7 @@ import { Library, Bot, Settings, Compass, ArrowUpCircle } from 'lucide-react'
 import { useHealth } from './queries.js'
 import { AgentsPage } from './pages/AgentsPage.js'
 import { CreateSkillPage } from './pages/CreateSkillPage.js'
+import { DiffPage } from './pages/DiffPage.js'
 import { ExplorePage } from './pages/ExplorePage.js'
 import { LibraryPage } from './pages/LibraryPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
@@ -73,6 +74,7 @@ export function App() {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/skills/new" element={<CreateSkillPage />} />
           <Route path="/skills/:name" element={<SkillDetailPage />} />
+          <Route path="/skills/:name/diff" element={<DiffPage />} />
         </Routes>
       </main>
     </div>

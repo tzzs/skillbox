@@ -1506,3 +1506,97 @@ code,
   color: var(--text-2);
   font-size: 12.5px;
 }
+
+/* ---- V0.4 Skill Diff (M19.5) ---- */
+
+.diff-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.diff-file {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file:first-child {
+  padding-top: 0;
+}
+
+.diff-file:last-child {
+  border-bottom: none;
+}
+
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diff-file-head .skill-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-binary-tag {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.diff-binary-note {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.diff-patch {
+  margin: 10px 0 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* added / modified / deleted file status badges */
+.pill--diff {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  text-transform: capitalize;
+}
+
+.pill--diff-added {
+  background: var(--ok-bg);
+  border-color: var(--ok-bg);
+  color: var(--ok);
+}
+
+.pill--diff-modified {
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+  color: var(--warn);
+}
+
+.pill--diff-deleted {
+  background: var(--danger-bg);
+  border-color: var(--danger-bg);
+  color: var(--danger);
+}
