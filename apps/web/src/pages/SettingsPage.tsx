@@ -11,6 +11,7 @@ import {
   useStatus,
 } from '../queries.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
+import { THEME_PREFERENCES, useThemePreference, type ThemePreference } from '../theme.js'
 
 const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction', 'copy']
 
@@ -33,6 +34,7 @@ export function SettingsPage() {
   const agentsQuery = useAgents()
   const reconcile = useReconcile()
   const save = useSaveSettings()
+  const [theme, setTheme] = useThemePreference()
 
   const agents = agentsQuery.data ?? []
   const settings = settingsQuery.data
@@ -187,6 +189,31 @@ export function SettingsPage() {
                 <StatRow label="Agents" value={String(statusQuery.data.agents.length)} />
               </>
             )}
+          </section>
+
+          <section className="settings-card" style={{ gridColumn: '1 / -1' }}>
+            <h2>Appearance</h2>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label className="field-label" htmlFor="setting-theme">
+                Theme
+              </label>
+              <select
+                id="setting-theme"
+                className="field-input"
+                value={theme}
+                onChange={(event) => setTheme(event.target.value as ThemePreference)}
+              >
+                {THEME_PREFERENCES.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+              <p className="field-hint">
+                System follows the OS color scheme. The choice is saved in this browser and applied
+                on the next visit.
+              </p>
+            </div>
           </section>
 
           <section className="settings-card" style={{ gridColumn: '1 / -1' }}>

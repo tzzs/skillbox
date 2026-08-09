@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Skillbox</title>
     <meta name="description" content="Manage the skills your AI agents use." />
+    <script>
+      // Apply the persisted theme before the stylesheet loads so the first
+      // paint is never a flash of the wrong theme. "system" needs no
+      // attribute — the CSS falls back to prefers-color-scheme.
+      try {
+        var theme = localStorage.getItem('skillbox-theme')
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme
+        }
+      } catch (error) {
+        // localStorage unavailable — keep the default (follow the OS).
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

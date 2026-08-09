@@ -10,7 +10,18 @@
  * the LED language; everything else stays disciplined.
  */
 
+/*
+ * Themes: the patch panel ships in two color states — the night-shift blue-black
+ * (the default, defined in :root below) and a daylight paper-white variant.
+ * A theme is chosen by the `data-theme` attribute on <html>:
+ *   - absent or "system"  → follow the OS preference (media query below);
+ *   - "dark" / "light"    → explicit choice, wins over the OS.
+ * The token set is identical in both themes; only the values differ.
+ */
+
 :root {
+  color-scheme: dark;
+
   /* ---- surfaces (night-shift blue-black) ---- */
   --bg: #0d1418;
   --bg-grid: rgba(240, 160, 48, 0.028);
@@ -19,6 +30,15 @@
   --surface-3: #212e37;
   --border: #26323c;
   --border-strong: #3b4a56;
+  --sidebar-bg: #0a1014;
+  --hover-bg: rgba(255, 255, 255, 0.045);
+  --active-bg: rgba(240, 160, 48, 0.1);
+  --input-bg: #0f171c;
+  --th-bg: #111a20;
+  --code-bg: #0f171c;
+  --empty-bg: rgba(21, 30, 37, 0.6);
+  --selection-bg: rgba(240, 160, 48, 0.35);
+  --focus-ring: rgba(240, 160, 48, 0.12);
 
   /* ---- ink (cold paper) ---- */
   --text: #e8ece6;
@@ -32,15 +52,24 @@
   --ok: #57d684; /* LED green */
   --ok-bg: rgba(87, 214, 132, 0.12);
   --ok-glow: rgba(87, 214, 132, 0.35);
+  --ok-line: rgba(87, 214, 132, 0.3);
   --warn: #f0a030; /* LED amber */
   --warn-bg: rgba(240, 160, 48, 0.12);
   --warn-glow: rgba(240, 160, 48, 0.35);
+  --warn-line: rgba(240, 160, 48, 0.3);
   --danger: #ff6b5e; /* LED red */
   --danger-bg: rgba(255, 107, 94, 0.12);
   --danger-glow: rgba(255, 107, 94, 0.35);
+  --danger-line: rgba(255, 107, 94, 0.35);
   --info: #6fb3ff; /* LED blue */
   --info-bg: rgba(111, 179, 255, 0.12);
   --info-glow: rgba(111, 179, 255, 0.35);
+  --info-line: rgba(111, 179, 255, 0.3);
+
+  /* ---- diff reader tints ---- */
+  --diff-add-bg: rgba(87, 214, 132, 0.1);
+  --diff-del-bg: rgba(255, 107, 94, 0.1);
+  --diff-hunk-bg: rgba(240, 160, 48, 0.08);
 
   /* ---- shape ---- */
   --radius: 4px;
@@ -49,6 +78,120 @@
   --shadow-2: 0 10px 28px rgba(0, 0, 0, 0.45);
 
   --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+}
+
+/*
+ * Daylight theme — "paper panel" tokens. Same signal family, tuned for light
+ * backgrounds: the LEDs deepen (a lamp needs saturation to read as lit in the
+ * day), the amber stays the primary signal at a print-ink strength, and the
+ * perforated grid becomes a fainter print impression. Applied both when the OS
+ * prefers light and the user has not forced dark, and when the user explicitly
+ * chose light.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+
+    --bg: #e8ebee;
+    --bg-grid: rgba(181, 106, 0, 0.05);
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --surface-3: #e6eaee;
+    --border: #d5dbe0;
+    --border-strong: #aab6bf;
+    --sidebar-bg: #e2e6ea;
+    --hover-bg: rgba(16, 29, 38, 0.05);
+    --active-bg: rgba(181, 106, 0, 0.1);
+    --input-bg: #ffffff;
+    --th-bg: #edf0f3;
+    --code-bg: #fbfcfd;
+    --empty-bg: rgba(255, 255, 255, 0.72);
+    --selection-bg: rgba(181, 106, 0, 0.22);
+    --focus-ring: rgba(181, 106, 0, 0.12);
+
+    --text: #182127;
+    --text-2: #4d5a64;
+    --text-3: #6f7d87;
+
+    --accent: #b56a00;
+    --accent-hover: #945800;
+    --accent-ink: #ffffff;
+    --ok: #1f9d57;
+    --ok-bg: rgba(31, 157, 87, 0.1);
+    --ok-glow: rgba(31, 157, 87, 0.3);
+    --ok-line: rgba(31, 157, 87, 0.35);
+    --warn: #b56a00;
+    --warn-bg: rgba(181, 106, 0, 0.1);
+    --warn-glow: rgba(181, 106, 0, 0.3);
+    --warn-line: rgba(181, 106, 0, 0.35);
+    --danger: #d9493b;
+    --danger-bg: rgba(217, 73, 59, 0.1);
+    --danger-glow: rgba(217, 73, 59, 0.3);
+    --danger-line: rgba(217, 73, 59, 0.4);
+    --info: #2f74d6;
+    --info-bg: rgba(47, 116, 214, 0.1);
+    --info-glow: rgba(47, 116, 214, 0.3);
+    --info-line: rgba(47, 116, 214, 0.35);
+
+    --diff-add-bg: rgba(31, 157, 87, 0.12);
+    --diff-del-bg: rgba(217, 73, 59, 0.12);
+    --diff-hunk-bg: rgba(181, 106, 0, 0.1);
+
+    --shadow-1: 0 1px 2px rgba(16, 29, 38, 0.08);
+    --shadow-2: 0 10px 28px rgba(16, 29, 38, 0.12);
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #e8ebee;
+  --bg-grid: rgba(181, 106, 0, 0.05);
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e6eaee;
+  --border: #d5dbe0;
+  --border-strong: #aab6bf;
+  --sidebar-bg: #e2e6ea;
+  --hover-bg: rgba(16, 29, 38, 0.05);
+  --active-bg: rgba(181, 106, 0, 0.1);
+  --input-bg: #ffffff;
+  --th-bg: #edf0f3;
+  --code-bg: #fbfcfd;
+  --empty-bg: rgba(255, 255, 255, 0.72);
+  --selection-bg: rgba(181, 106, 0, 0.22);
+  --focus-ring: rgba(181, 106, 0, 0.12);
+
+  --text: #182127;
+  --text-2: #4d5a64;
+  --text-3: #6f7d87;
+
+  --accent: #b56a00;
+  --accent-hover: #945800;
+  --accent-ink: #ffffff;
+  --ok: #1f9d57;
+  --ok-bg: rgba(31, 157, 87, 0.1);
+  --ok-glow: rgba(31, 157, 87, 0.3);
+  --ok-line: rgba(31, 157, 87, 0.35);
+  --warn: #b56a00;
+  --warn-bg: rgba(181, 106, 0, 0.1);
+  --warn-glow: rgba(181, 106, 0, 0.3);
+  --warn-line: rgba(181, 106, 0, 0.35);
+  --danger: #d9493b;
+  --danger-bg: rgba(217, 73, 59, 0.1);
+  --danger-glow: rgba(217, 73, 59, 0.3);
+  --danger-line: rgba(217, 73, 59, 0.4);
+  --info: #2f74d6;
+  --info-bg: rgba(47, 116, 214, 0.1);
+  --info-glow: rgba(47, 116, 214, 0.3);
+  --info-line: rgba(47, 116, 214, 0.35);
+
+  --diff-add-bg: rgba(31, 157, 87, 0.12);
+  --diff-del-bg: rgba(217, 73, 59, 0.12);
+  --diff-hunk-bg: rgba(181, 106, 0, 0.1);
+
+  --shadow-1: 0 1px 2px rgba(16, 29, 38, 0.08);
+  --shadow-2: 0 10px 28px rgba(16, 29, 38, 0.12);
 }
 
 * {
@@ -89,7 +232,7 @@ code,
 }
 
 ::selection {
-  background: rgba(240, 160, 48, 0.35);
+  background: var(--selection-bg);
 }
 
 /* ---- app shell ---- */
@@ -106,7 +249,7 @@ code,
 .sidebar {
   display: flex;
   flex-direction: column;
-  background: #0a1014;
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   padding: 16px 10px;
 }
@@ -172,14 +315,14 @@ code,
 
 .nav-item:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--hover-bg);
   text-decoration: none;
 }
 
 /* Active rail marker: a hard left tick, like a card in a bay slot. */
 .nav-item--active {
   color: var(--text);
-  background: rgba(240, 160, 48, 0.1);
+  background: var(--active-bg);
 }
 
 .nav-item--active::before {
@@ -356,7 +499,7 @@ code,
 
 .btn--danger {
   color: var(--danger);
-  border-color: rgba(255, 107, 94, 0.45);
+  border-color: var(--danger-line);
 }
 
 .btn--danger:hover {
@@ -430,7 +573,7 @@ code,
 .filter-select {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: #0f171c;
+  background: var(--input-bg);
   color: var(--text);
   font: inherit;
   padding: 9px 12px;
@@ -466,9 +609,9 @@ code,
   line-height: 1.6;
 }
 
-select.filter-select {
-  color-scheme: dark;
-}
+/* Native <select> chrome follows the active theme: `color-scheme` is set on
+ * :root and inherited, so a dark-rendered dropdown can never leak into the
+ * light theme. */
 
 .field-error,
 .form-error {
@@ -551,7 +694,7 @@ select.filter-select {
 
 .pill--status.status-ready {
   color: var(--ok);
-  border-color: rgba(87, 214, 132, 0.3);
+  border-color: var(--ok-line);
   background: var(--ok-bg);
 }
 
@@ -562,7 +705,7 @@ select.filter-select {
 
 .pill--status.status-modified {
   color: var(--warn);
-  border-color: rgba(240, 160, 48, 0.3);
+  border-color: var(--warn-line);
   background: var(--warn-bg);
 }
 
@@ -573,7 +716,7 @@ select.filter-select {
 
 .pill--status.status-outdated {
   color: var(--info);
-  border-color: rgba(111, 179, 255, 0.3);
+  border-color: var(--info-line);
   background: var(--info-bg);
 }
 
@@ -585,7 +728,7 @@ select.filter-select {
 .pill--status.status-conflict,
 .pill--status.status-broken {
   color: var(--danger);
-  border-color: rgba(255, 107, 94, 0.35);
+  border-color: var(--danger-line);
   background: var(--danger-bg);
 }
 
@@ -613,17 +756,17 @@ select.filter-select {
 
 .pill--mode-managed {
   color: var(--info);
-  border-color: rgba(111, 179, 255, 0.35);
+  border-color: var(--info-line);
 }
 
 .pill--mode-local {
   color: var(--ok);
-  border-color: rgba(87, 214, 132, 0.35);
+  border-color: var(--ok-line);
 }
 
 .pill--mode-forked {
   color: var(--warn);
-  border-color: rgba(240, 160, 48, 0.35);
+  border-color: var(--warn-line);
 }
 
 .pill--mode-vendored {
@@ -645,17 +788,17 @@ select.filter-select {
 
 .pill--diff-added {
   color: var(--ok);
-  border-color: rgba(87, 214, 132, 0.35);
+  border-color: var(--ok-line);
 }
 
 .pill--diff-modified {
   color: var(--warn);
-  border-color: rgba(240, 160, 48, 0.35);
+  border-color: var(--warn-line);
 }
 
 .pill--diff-deleted {
   color: var(--danger);
-  border-color: rgba(255, 107, 94, 0.4);
+  border-color: var(--danger-line);
 }
 
 /* ---- agent tags ---- */
@@ -762,7 +905,7 @@ select.filter-select {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--text-3);
-  background: #111a20;
+  background: var(--th-bg);
   border-bottom: 1px solid var(--border);
   padding: 10px 16px;
   white-space: nowrap;
@@ -817,7 +960,7 @@ select.filter-select {
 }
 
 .error-state {
-  border: 1px solid rgba(255, 107, 94, 0.4);
+  border: 1px solid var(--danger-line);
   background: var(--danger-bg);
   border-radius: var(--radius);
   padding: 16px 18px;
@@ -838,7 +981,7 @@ select.filter-select {
 .empty-state {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
-  background: rgba(21, 30, 37, 0.6);
+  background: var(--empty-bg);
   text-align: center;
   padding: 56px 24px;
 }
@@ -995,7 +1138,7 @@ select.filter-select {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #0f171c;
+  background: var(--code-bg);
 }
 
 .editor-box textarea {
@@ -1062,7 +1205,7 @@ select.filter-select {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 0 18px rgba(240, 160, 48, 0.12);
+    0 0 18px var(--focus-ring);
   outline: none;
 }
 
@@ -1103,7 +1246,7 @@ select.filter-select {
 }
 
 .agent-check:has(input:checked) {
-  border-color: rgba(240, 160, 48, 0.45);
+  border-color: var(--accent);
 }
 
 .agent-check-text {
@@ -1645,7 +1788,7 @@ select.filter-select {
   align-items: flex-start;
   margin-top: 12px;
   padding: 12px 14px;
-  border: 1px solid rgba(255, 107, 94, 0.4);
+  border: 1px solid var(--danger-line);
   background: var(--danger-bg);
   border-radius: var(--radius-sm);
   color: var(--danger);
@@ -1677,13 +1820,13 @@ select.filter-select {
 
 .finding--high {
   background: var(--danger-bg);
-  border-color: rgba(255, 107, 94, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 
 .finding--warning {
   background: var(--warn-bg);
-  border-color: rgba(240, 160, 48, 0.35);
+  border-color: var(--warn-line);
   color: var(--warn);
 }
 
@@ -1710,7 +1853,7 @@ select.filter-select {
   gap: 8px;
   margin-top: 14px;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 107, 94, 0.5);
+  border: 1px solid var(--danger-line);
   border-radius: var(--radius-sm);
   background: var(--danger-bg);
   color: var(--danger);
@@ -1851,7 +1994,7 @@ select.filter-select {
 .diff-patch {
   margin: 10px 0 0;
   padding: 0;
-  background: #0f171c;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-family: var(--mono);
@@ -1868,17 +2011,17 @@ select.filter-select {
 }
 
 .diff-patch-line--add {
-  background: rgba(87, 214, 132, 0.1);
+  background: var(--diff-add-bg);
   color: var(--ok);
 }
 
 .diff-patch-line--del {
-  background: rgba(255, 107, 94, 0.1);
+  background: var(--diff-del-bg);
   color: var(--danger);
 }
 
 .diff-patch-line--hunk {
-  background: rgba(240, 160, 48, 0.08);
+  background: var(--diff-hunk-bg);
   color: var(--accent);
   font-weight: 700;
 }
@@ -1893,19 +2036,19 @@ select.filter-select {
 
 .pill--diff-added {
   background: var(--ok-bg);
-  border-color: rgba(87, 214, 132, 0.35);
+  border-color: var(--ok-line);
   color: var(--ok);
 }
 
 .pill--diff-modified {
   background: var(--warn-bg);
-  border-color: rgba(240, 160, 48, 0.35);
+  border-color: var(--warn-line);
   color: var(--warn);
 }
 
 .pill--diff-deleted {
   background: var(--danger-bg);
-  border-color: rgba(255, 107, 94, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 
