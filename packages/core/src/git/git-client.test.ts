@@ -84,6 +84,16 @@ describe('GitClient', () => {
     expect(error).toMatchObject({ context: { stderr: 'rejected [REDACTED]' } })
   })
 
+  it.each([
+    ['non-fast-forward update rejected', ErrorCode.GIT_PUSH_REJECTED],
+    ['fatal: Authentication failed for remote', ErrorCode.GIT_AUTH_FAILED],
+  ])('maps push failure "%s" to a stable error', async (stderr, code) => {
+    const spawn: GitSpawn = async () => ({ exitCode: 1, stdout: '', stderr })
+    const client = new GitClient({ spawn })
+    const error = await client.push('/repo').catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ code, recoverable: true })
+  })
+
   it('reports the installed git version', async () => {
     const root = await tempDir()
     const { client } = await seedRepo(root)

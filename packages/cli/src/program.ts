@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import {
   compareManifestToLockfile,
+  createRepositorySync,
   createDefaultAgentRegistry,
   ErrorCode,
   isSkillboxError,
@@ -11,6 +12,8 @@ import {
   type AgentDetectionSummary,
   type AgentRegistry,
   type ReconcileProblem,
+  type RepositorySync,
+  type RepositorySyncEvent,
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
@@ -108,6 +111,8 @@ export interface CliDeps {
   githubProvider?: GitHubProvider
   /** Secret scanner; defaults to the core secret-scan module (V0.2). */
   secretScanner?: SecretScanner
+  /** Deep repository orchestration seam; defaults to Core production wiring. */
+  repositorySync?: RepositorySync
   /** V0.3 marketplace providers; default-constructed from @skillbox/core. */
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
@@ -123,6 +128,7 @@ export interface CliContext {
   gitProvider: GitProvider
   githubProvider: GitHubProvider
   secretScanner: SecretScanner
+  repositorySync?: RepositorySync
   /** V0.3 marketplace provider overrides; defaults applied in buildProgram. */
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
@@ -149,6 +155,15 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
     secretScanner: deps.secretScanner ?? createDefaultSecretScanner(repositoryRoot),
   }
+  if (deps.repositorySync !== undefined) {
+    context.repositorySync = deps.repositorySync
+  } else if (deps.gitProvider === undefined && deps.githubProvider === undefined) {
+    context.repositorySync = createRepositorySync({
+      repositoryRoot,
+      homeRoot,
+      onEvent: (event) => renderRepositorySyncEvent(out, event),
+    })
+  }
   if (deps.marketplace !== undefined) {
     context.marketplace = deps.marketplace
   }
@@ -162,6 +177,17 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     context.isInteractive = deps.isInteractive
   }
   return context
+}
+
+function renderRepositorySyncEvent(out: (chunk: string) => void, event: RepositorySyncEvent): void {
+  if (event.type === 'authorization-required') {
+    out(
+      `Authorize the Skillbox GitHub App to continue.\n` +
+        `  Verification URL  ${event.authorization.verificationUri}\n` +
+        `  Code              ${event.authorization.userCode}\n` +
+        `Waiting for authorization\n`,
+    )
+  }
 }
 
 /** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
@@ -575,6 +601,14 @@ export function buildProgram(ctx: CliContext): Command {
     .command('connect')
     .description('Connect a GitHub account via Device Flow so Git Sync can push')
     .action(async () => {
+      if (ctx.repositorySync !== undefined) {
+        const result = await ctx.repositorySync.connect()
+        ctx.out(
+          `\nConnected GitHub account "${result.account.login}" to "${result.repository.fullName}".` +
+            `\n  origin  ${result.local.remote.action} (${result.local.remote.url})\n`,
+        )
+        return
+      }
       const result = await sync.connect()
       ctx.out(
         result.alreadyConnected
@@ -587,7 +621,11 @@ export function buildProgram(ctx: CliContext): Command {
     .command('disconnect')
     .description('Disconnect GitHub — removes only local credentials and connection metadata')
     .action(async () => {
-      await sync.disconnect()
+      if (ctx.repositorySync !== undefined) {
+        await ctx.repositorySync.disconnect()
+      } else {
+        await sync.disconnect()
+      }
       ctx.out('Disconnected from GitHub. Local and remote repositories were preserved.\n')
     })
 

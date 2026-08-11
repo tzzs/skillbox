@@ -472,7 +472,36 @@ export class GitClient {
     if (options.branch !== undefined) {
       args.push(options.branch)
     }
-    await this.runGit(repositoryRoot, args, authOptions(options.auth))
+    try {
+      await this.runGit(repositoryRoot, args, authOptions(options.auth))
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_COMMAND_FAILED) {
+        const stderr = String(error.context?.stderr ?? '').toLowerCase()
+        if (
+          stderr.includes('authentication failed') ||
+          stderr.includes('could not read username') ||
+          stderr.includes('invalid username or password')
+        ) {
+          throw new SkillboxError(ErrorCode.GIT_AUTH_FAILED, 'Git remote authentication failed', {
+            cause: error,
+            recoverable: true,
+            context: { phase: 'push', stderr: error.context?.stderr },
+          })
+        }
+        if (stderr.includes('non-fast-forward') || stderr.includes('rejected')) {
+          throw new SkillboxError(
+            ErrorCode.GIT_PUSH_REJECTED,
+            'Git push was rejected; local commits were preserved',
+            {
+              cause: error,
+              recoverable: true,
+              context: { phase: 'push', stderr: error.context?.stderr },
+            },
+          )
+        }
+      }
+      throw error
+    }
   }
 
   /**
