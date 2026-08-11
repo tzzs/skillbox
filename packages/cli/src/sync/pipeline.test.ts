@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRegistry,
   ErrorCode,
@@ -15,7 +15,6 @@ import {
   SyncService,
   createDefaultGitHubProvider,
   createDefaultSecretScanner,
-  createGitHubProviderFromCore,
   createGitProviderFromCore,
   createSecretScannerFromCore,
   type DeviceFlowStart,
@@ -396,12 +395,6 @@ describe('loaders (wiring points)', () => {
     expect(fake.pushCalls).toBe(1)
   })
 
-  it('fails with GITHUB_UNAVAILABLE until the core GitHubService exists', async () => {
-    const provider = createGitHubProviderFromCore('C:\\home', async () => ({}))
-    const error = await provider.connectionState().catch((e: unknown) => e)
-    expect(error).toMatchObject({ code: ErrorCode.GITHUB_UNAVAILABLE })
-  })
-
   it('default GitHub provider reads the shipped core connection state', async () => {
     const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-wiring-'))
     try {
@@ -409,6 +402,65 @@ describe('loaders (wiring points)', () => {
         credentialStore: new MemoryCredentialStore(),
       })
       await expect(provider.connectionState()).resolves.toBe('not-connected')
+    } finally {
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('default GitHub provider maps Device Flow seconds to CLI milliseconds', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-device-'))
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          device_code: 'device-code',
+          user_code: 'ABCD-EFGH',
+          verification_uri: 'https://github.com/login/device',
+          expires_in: 900,
+          interval: 7,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', request)
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, {
+        clientId: 'test-client-id',
+        credentialStore: new MemoryCredentialStore(),
+      })
+      await expect(provider.startDeviceFlow()).resolves.toEqual({
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://github.com/login/device',
+        intervalMs: 7_000,
+        expiresInMs: 900_000,
+      })
+    } finally {
+      vi.unstubAllGlobals()
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('default GitHub provider disconnect clears credentials and machine metadata', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-disconnect-'))
+    const store = new MemoryCredentialStore()
+    await store.set(
+      { service: 'skillbox-github', account: 'oauth-tokens' },
+      JSON.stringify({ accessToken: 'test-token', tokenType: 'bearer' }),
+    )
+    await fs.writeFile(
+      path.join(homeRoot, 'config.json'),
+      JSON.stringify({ github: { connected: true, login: 'octocat', provider: 'github-app' } }),
+    )
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, { credentialStore: store })
+      await expect(provider.connectionState()).resolves.toBe('connected')
+      await provider.disconnect()
+      await expect(provider.connectionState()).resolves.toBe('not-connected')
+      await expect(
+        store.get({ service: 'skillbox-github', account: 'oauth-tokens' }),
+      ).resolves.toBeNull()
+      await expect(fs.readFile(path.join(homeRoot, 'config.json'), 'utf8')).resolves.not.toContain(
+        'github',
+      )
     } finally {
       await fs.rm(homeRoot, { recursive: true, force: true })
     }

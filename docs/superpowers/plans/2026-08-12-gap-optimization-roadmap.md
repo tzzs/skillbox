@@ -56,15 +56,15 @@ Red：
 
 - [x] 测试默认 factory 构建真实 Core `GitHubService`
 - [x] 测试 `connectionState` 映射 `GitHubConnectionSnapshot.state`
-- [ ] 测试 Device Flow 字段与时间单位映射
-- [ ] 测试 disconnect 调用真实 Core 方法名
+- [x] 测试 Device Flow 字段与时间单位映射
+- [x] 测试 disconnect 调用真实 Core 方法名
 
 Green：
 
 - [x] 增加强类型 production factory
 - [x] 注入 GitHubApi、CredentialStore、TokenStore、GitHubConfigStore
 - [x] 从明确配置读取 Client ID；缺失时返回稳定可恢复错误
-- [ ] 删除旧构造器和旧方法名猜测
+- [x] 删除旧构造器和旧方法名猜测
 
 完成标准：默认 CLI provider 不依赖 fake 即可查询连接状态，测试对旧接线保持敏感。
 
@@ -83,7 +83,7 @@ Red：
 
 - [x] local bare remote fixture 返回真实 origin URL
 - [x] upstream 分支返回真实 ahead/behind
-- [ ] 无 remote 与 detached HEAD 返回明确状态
+- [x] 无 remote 与 detached HEAD 返回明确状态
 - [x] pull/push 不再因 adapter 丢失 remote 而误报
 
 Green：
@@ -93,6 +93,25 @@ Green：
 - [x] GitClientAdapter 完整映射 status
 
 完成标准：真实 local Git repository 的状态与 Git 命令结果一致。
+
+### 0.4 Marketplace Update production wiring
+
+只读审计发现默认 `skillbox update` 不会先注册 Core provider：`RegistryClientAdapter` 仅在自身被
+调用时注册 provider，而 update 直接进入 `InstallServiceAdapter`，导致独立进程中的
+`defaultRegistry` 为空。
+
+Red：
+
+- [ ] 使用默认 production wiring 与 Local provider 执行 update
+- [ ] 证明测试不依赖预先调用 search/outdated 的副作用
+
+Green：
+
+- [ ] production factory 构建时统一注册默认 provider
+- [ ] update 与 add 使用同一 registry 实例
+- [ ] 保留重复注册幂等性
+
+完成标准：全新进程可直接执行默认 `skillbox update`，不依赖其他命令预热 registry。
 
 ### 阶段 0 退出门禁
 
@@ -124,6 +143,8 @@ Green：
 ### 1.2 Connect repository orchestration
 
 - [ ] Device Flow 完成后获取当前用户
+- [ ] denied/expired/failed 立即返回稳定 terminal outcome
+- [ ] slow-down 更新后续 polling interval
 - [ ] 创建或选择默认 private repository
 - [ ] 非 Git 目录按明确策略初始化
 - [ ] 无 origin 时添加 origin
@@ -135,6 +156,8 @@ Green：
 
 - [ ] Credential Bridge 为 fetch/pull/push 提供临时凭据
 - [ ] token 不进入 argv、environment dump、remote URL、日志
+- [ ] commit 在限定 managed paths 上显式执行 add，包含首次出现的 untracked 文件
+- [ ] 首次 push 使用 `--set-upstream origin <branch>`
 - [ ] push 失败保留本地 commit 并标记 recoverable
 - [ ] disconnect 不修改 remote repository 或本地 Skill
 

@@ -211,62 +211,6 @@ export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
   )
 }
 
-/* ---------------------------------------------------------------------- *
- * GitHub compatibility loader
- *
- * Kept for tests and partial-build diagnostics. Production construction uses
- * the typed factory below and never relies on this historical shape.
- * ---------------------------------------------------------------------- */
-
-interface GitHubServiceShape {
-  connectionState: () => unknown
-  startDeviceFlow: () => unknown
-  pollDeviceFlow: () => unknown
-  disconnect: () => Promise<void>
-}
-
-class GitHubAdapter implements GitHubProvider {
-  constructor(
-    private readonly homeRoot: string,
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  private async service(): Promise<GitHubServiceShape> {
-    const core = await this.loadCore()
-    const GitHubService = core.GitHubService as
-      (new (root: string) => GitHubServiceShape) | undefined
-    if (typeof GitHubService !== 'function') {
-      throw unavailable('GITHUB_UNAVAILABLE', this.hint)
-    }
-    return new GitHubService(this.homeRoot)
-  }
-
-  async connectionState(): Promise<GithubConnectionState> {
-    return (await (await this.service()).connectionState()) as GithubConnectionState
-  }
-
-  async startDeviceFlow(): Promise<DeviceFlowStart> {
-    return (await (await this.service()).startDeviceFlow()) as DeviceFlowStart
-  }
-
-  async pollDeviceFlow(): Promise<GithubConnectionState> {
-    return (await (await this.service()).pollDeviceFlow()) as GithubConnectionState
-  }
-
-  async disconnect(): Promise<void> {
-    await (await this.service()).disconnect()
-  }
-}
-
-export function createGitHubProviderFromCore(
-  homeRoot: string,
-  loadCore: CoreModuleLoader,
-  hint: string = 'GitHub Connect is not available in this build yet (V0.2 Device Flow not wired).',
-): GitHubProvider {
-  return new GitHubAdapter(homeRoot, loadCore, hint)
-}
-
 export const GITHUB_CLIENT_ID_ENV = 'SKILLBOX_GITHUB_CLIENT_ID'
 
 export interface ProductionGitHubProviderOptions {

@@ -204,6 +204,65 @@ describe('GitClient', () => {
     })
   }, 20000)
 
+  it('status still reports origin when the branch has no upstream', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# local')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'local only')
+      await rawGit(root, ['remote', 'add', 'origin', bare])
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({
+        branch: 'main',
+        remote: { name: 'origin', url: bare },
+        ahead: 0,
+        behind: 0,
+      })
+      expect(status.upstream).toBeUndefined()
+    })
+  })
+
+  it('status omits remote details when the repository has no remotes', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# local')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'local only')
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({ branch: 'main', ahead: 0, behind: 0 })
+      expect(status.upstream).toBeUndefined()
+      expect(status.remote).toBeUndefined()
+    })
+  })
+
+  it('status keeps the configured remote for a detached HEAD', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# tracked')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'tracked')
+      await rawGit(root, ['remote', 'add', 'origin', bare])
+      await rawGit(root, ['push', '-u', 'origin', 'main'])
+      await rawGit(root, ['checkout', '--detach', 'HEAD'])
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({
+        remote: { name: 'origin', url: bare },
+        ahead: 0,
+        behind: 0,
+        clean: true,
+      })
+      expect(status.branch).toBeUndefined()
+      expect(status.upstream).toBeUndefined()
+    })
+  })
+
   it('materialize clones when absent and pulls when present', async () => {
     await withTempDir(async (dir) => {
       const bare = path.join(dir, 'remote.git')

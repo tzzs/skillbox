@@ -291,9 +291,14 @@ export class GitClient {
     ahead: number
     behind: number
   }> {
+    const configuredRemote = await this.configuredRemote(repositoryRoot)
     const branch = await this.currentBranch(repositoryRoot)
     if (branch === undefined) {
-      return { ahead: 0, behind: 0 }
+      return {
+        ...(configuredRemote === undefined ? {} : { remote: configuredRemote }),
+        ahead: 0,
+        behind: 0,
+      }
     }
     const upstreamResult = await this.runGit(repositoryRoot, [
       'for-each-ref',
@@ -302,7 +307,12 @@ export class GitClient {
     ])
     const upstream = upstreamResult.stdout.trim()
     if (upstream.length === 0) {
-      return { branch, ahead: 0, behind: 0 }
+      return {
+        branch,
+        ...(configuredRemote === undefined ? {} : { remote: configuredRemote }),
+        ahead: 0,
+        behind: 0,
+      }
     }
     const separator = upstream.indexOf('/')
     const remoteName = separator > 0 ? upstream.slice(0, separator) : undefined
@@ -334,6 +344,26 @@ export class GitClient {
       }
     }
     return tracking
+  }
+
+  /** Prefers origin, otherwise reports the sole configured remote. */
+  private async configuredRemote(
+    repositoryRoot: string,
+  ): Promise<{ name: string; url: string } | undefined> {
+    const remotes = (await this.runGit(repositoryRoot, ['remote'])).stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+    const name = remotes.includes('origin')
+      ? 'origin'
+      : remotes.length === 1
+        ? remotes[0]
+        : undefined
+    if (name === undefined) {
+      return undefined
+    }
+    const url = (await this.runGit(repositoryRoot, ['remote', 'get-url', name])).stdout.trim()
+    return url.length === 0 ? undefined : { name, url }
   }
 
   /**
