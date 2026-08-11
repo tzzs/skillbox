@@ -18,6 +18,7 @@ import type {
   GitCommitOutcome,
   GithubConnectionState,
   DeviceFlowStart,
+  DeviceFlowPollResult,
   SecretScanResult,
   SecretScanner,
 } from './providers.js'
@@ -237,9 +238,15 @@ class CoreGitHubProviderAdapter implements GitHubProvider {
     }
   }
 
-  async pollDeviceFlow(): Promise<GithubConnectionState> {
-    await this.service.pollDeviceAuthorization()
-    return (await this.service.getConnectionState()).state
+  async pollDeviceFlow(): Promise<DeviceFlowPollResult> {
+    const result = await this.service.pollDeviceAuthorization()
+    if (result.status === 'slow-down') {
+      return { status: 'slow-down', intervalMs: result.interval * 1_000 }
+    }
+    if (result.status === 'failed' && result.message !== undefined) {
+      return { status: 'failed', message: result.message }
+    }
+    return { status: result.status }
   }
 
   async disconnect(): Promise<void> {

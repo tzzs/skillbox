@@ -9,6 +9,7 @@ import {
 } from '@skillbox/core'
 import { renderTable } from '../table.js'
 import type {
+  DeviceFlowPollResult,
   GitHubProvider,
   GitProvider,
   GitStatusReport,
@@ -359,32 +360,53 @@ export class SyncService {
 
     const deadline = Date.now() + start.expiresInMs
     let last: GithubConnectionState = initial
+    let intervalMs = start.intervalMs
     for (;;) {
-      await this.sleep(start.intervalMs)
-      let state: GithubConnectionState
+      await this.sleep(intervalMs)
+      let poll: DeviceFlowPollResult
       try {
-        state = await this.githubProvider.pollDeviceFlow()
+        poll = await this.githubProvider.pollDeviceFlow()
       } catch (error) {
         this.out('\n')
         throw error
       }
+      if (poll.status === 'authorized') {
+        this.out('\n')
+        return { state: 'connected', alreadyConnected: false }
+      }
+      if (poll.status === 'denied') {
+        this.out('\n')
+        throw new SkillboxError(
+          ErrorCode.GITHUB_AUTHORIZATION_DENIED,
+          'GitHub authorization was denied — re-run `skillbox connect` when ready to approve it.',
+          { recoverable: true },
+        )
+      }
+      if (poll.status === 'expired') {
+        this.out('\n')
+        throw new SkillboxError(
+          ErrorCode.GITHUB_AUTHORIZATION_EXPIRED,
+          'The device code expired — re-run `skillbox connect` for a fresh code.',
+          { recoverable: true },
+        )
+      }
+      if (poll.status === 'failed') {
+        this.out('\n')
+        throw new SkillboxError(
+          ErrorCode.GITHUB_AUTH_FAILED,
+          poll.message ?? 'GitHub authorization failed — re-run `skillbox connect` to retry.',
+          { recoverable: true },
+        )
+      }
+      if (poll.status === 'slow-down') {
+        intervalMs = poll.intervalMs
+      }
+      const state: GithubConnectionState = 'authorizing'
       if (state !== last) {
         this.out(`\n  status: ${state}`)
         last = state
       } else {
         this.out('.')
-      }
-      if (state === 'connected') {
-        this.out('\n')
-        return { state: 'connected', alreadyConnected: false }
-      }
-      if (state === 'refresh-required' || state === 'reauthorization-required') {
-        this.out('\n')
-        throw new SkillboxError(
-          ErrorCode.GITHUB_NOT_CONNECTED,
-          `GitHub authorization is ${state} — re-run \`skillbox connect\` and approve again.`,
-          { context: { state } },
-        )
       }
       if (Date.now() > deadline) {
         this.out('\n')

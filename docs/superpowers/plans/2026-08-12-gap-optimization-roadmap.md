@@ -143,8 +143,8 @@ Green：
 ### 1.2 Connect repository orchestration
 
 - [ ] Device Flow 完成后获取当前用户
-- [ ] denied/expired/failed 立即返回稳定 terminal outcome
-- [ ] slow-down 更新后续 polling interval
+- [x] denied/expired/failed 立即返回稳定 terminal outcome
+- [x] slow-down 更新后续 polling interval
 - [ ] 创建或选择默认 private repository
 - [ ] 非 Git 目录按明确策略初始化
 - [ ] 无 origin 时添加 origin

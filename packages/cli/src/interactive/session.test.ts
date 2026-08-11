@@ -96,7 +96,7 @@ function createHarness(answers: string[]): SessionHarness {
         intervalMs: 100,
         expiresInMs: 600000,
       }),
-      pollDeviceFlow: async () => 'not-connected',
+      pollDeviceFlow: async () => ({ status: 'pending' as const }),
       disconnect: async () => undefined,
     },
     secretScanner: {

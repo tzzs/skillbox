@@ -4,6 +4,7 @@
  */
 export type {
   DeviceFlowStart,
+  DeviceFlowPollResult,
   GitHubProvider,
   GitCommitOutcome,
   GitProvider,

@@ -68,11 +68,20 @@ export interface DeviceFlowStart {
   expiresInMs: number
 }
 
+/** Outcome of one Device Flow token poll; terminal failures remain explicit. */
+export type DeviceFlowPollResult =
+  | { status: 'authorized' }
+  | { status: 'pending' }
+  | { status: 'slow-down'; intervalMs: number }
+  | { status: 'expired' }
+  | { status: 'denied' }
+  | { status: 'failed'; message?: string }
+
 /** GitHub Device Flow + connection lifecycle (agent 2 contract). */
 export interface GitHubProvider {
   connectionState(): Promise<GithubConnectionState>
   startDeviceFlow(): Promise<DeviceFlowStart>
-  pollDeviceFlow(): Promise<GithubConnectionState>
+  pollDeviceFlow(): Promise<DeviceFlowPollResult>
   disconnect(): Promise<void>
 }
 
