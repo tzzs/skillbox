@@ -1,4 +1,15 @@
-import { ErrorCode, SkillboxError } from '@skillbox/core'
+import * as path from 'node:path'
+import {
+  createCredentialStore,
+  ErrorCode,
+  GitHubApi,
+  GitHubConfigStore,
+  GitHubService,
+  RuntimeConfigService,
+  SkillboxError,
+  TokenStore,
+  type CredentialStore,
+} from '@skillbox/core'
 import type {
   GitHubProvider,
   GitProvider,
@@ -16,9 +27,8 @@ import type {
  * implementation (`@skillbox/core`) onto the CLI contract, so the pipeline
  * logic never needs to know about git internals.
  *
- * TODO(sync): the GitHub adapter is the remaining wiring point — agent 2 has
- * not exported a `GitHubService` from `@skillbox/core` yet, so GitHub calls
- * fail with `GITHUB_UNAVAILABLE` until it lands.
+ * Default factories use the shipped Core modules. The injectable dynamic
+ * loaders remain only as compatibility seams for focused wiring tests.
  */
 
 /** Loads the core package as an opaque module map (injectable in tests). */
@@ -256,13 +266,66 @@ export function createGitHubProviderFromCore(
   return new GitHubAdapter(homeRoot, loadCore, hint)
 }
 
-export function createDefaultGitHubProvider(homeRoot: string): GitHubProvider {
-  return createGitHubProviderFromCore(
-    homeRoot,
-    loadSkillboxCore,
-    'GitHub Connect is not available in this build yet — the GitHub core module has not landed. ' +
-      'Run `skillbox connect` once the Device Flow integration ships.',
+export const GITHUB_CLIENT_ID_ENV = 'SKILLBOX_GITHUB_CLIENT_ID'
+
+export interface ProductionGitHubProviderOptions {
+  /** Public GitHub App client id; defaults to SKILLBOX_GITHUB_CLIENT_ID. */
+  clientId?: string
+  /** Test/platform seam. Production defaults to the native credential store. */
+  credentialStore?: CredentialStore
+}
+
+/** Typed adapter over the shipped Core GitHubService. */
+class CoreGitHubProviderAdapter implements GitHubProvider {
+  constructor(private readonly service: GitHubService) {}
+
+  async connectionState(): Promise<GithubConnectionState> {
+    return (await this.service.getConnectionState()).state
+  }
+
+  async startDeviceFlow(): Promise<DeviceFlowStart> {
+    const device = await this.service.startDeviceAuthorization()
+    return {
+      userCode: device.userCode,
+      verificationUri: device.verificationUri,
+      intervalMs: device.interval * 1_000,
+      expiresInMs: device.expiresIn * 1_000,
+    }
+  }
+
+  async pollDeviceFlow(): Promise<GithubConnectionState> {
+    await this.service.pollDeviceAuthorization()
+    return (await this.service.getConnectionState()).state
+  }
+
+  async disconnect(): Promise<void> {
+    await this.service.disconnect()
+  }
+}
+
+/** Constructs the production GitHub graph with machine-local persistence. */
+export function createProductionGitHubProvider(
+  homeRoot: string,
+  options: ProductionGitHubProviderOptions = {},
+): GitHubProvider {
+  const clientId = options.clientId ?? process.env[GITHUB_CLIENT_ID_ENV] ?? ''
+  const api = new GitHubApi({ clientId })
+  const credentialStore =
+    options.credentialStore ??
+    createCredentialStore({ secretsDir: path.join(homeRoot, 'state', 'secrets') })
+  const tokenStore = new TokenStore({ store: credentialStore })
+  const configStore = new GitHubConfigStore(
+    new RuntimeConfigService({ configFilePath: path.join(homeRoot, 'config.json') }),
   )
+  const service = new GitHubService({ clientId, api, tokenStore, configStore })
+  return new CoreGitHubProviderAdapter(service)
+}
+
+export function createDefaultGitHubProvider(
+  homeRoot: string,
+  options: ProductionGitHubProviderOptions = {},
+): GitHubProvider {
+  return createProductionGitHubProvider(homeRoot, options)
 }
 
 /* ---------------------------------------------------------------------- *

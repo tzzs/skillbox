@@ -1,14 +1,19 @@
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   AgentRegistry,
   ErrorCode,
   isSkillboxError,
+  MemoryCredentialStore,
   SkillboxError,
   type ReconcileResult,
   type SkillService,
 } from '@skillbox/core'
 import {
   SyncService,
+  createDefaultGitHubProvider,
   createDefaultSecretScanner,
   createGitHubProviderFromCore,
   createGitProviderFromCore,
@@ -385,6 +390,18 @@ describe('loaders (wiring points)', () => {
     const provider = createGitHubProviderFromCore('C:\\home', async () => ({}))
     const error = await provider.connectionState().catch((e: unknown) => e)
     expect(error).toMatchObject({ code: ErrorCode.GITHUB_UNAVAILABLE })
+  })
+
+  it('default GitHub provider reads the shipped core connection state', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-wiring-'))
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, {
+        credentialStore: new MemoryCredentialStore(),
+      })
+      await expect(provider.connectionState()).resolves.toBe('not-connected')
+    } finally {
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
   })
 
   it('secret scanner reports not-ready and empty scans when unwired', async () => {
