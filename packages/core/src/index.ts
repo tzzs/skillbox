@@ -13,6 +13,7 @@ export * from './services/index.js'
 export * from './git/index.js'
 export * from './logging/index.js'
 export * from './github/index.js'
+export * from './sync/index.js'
 export * from './ignore/index.js'
 export * from './install/index.js'
 // Both the manifest helper and the install transaction export `updateSkill`;

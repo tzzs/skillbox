@@ -134,23 +134,23 @@ Green：
 
 任务：
 
-- [ ] 定义 `status/connect/disconnect/sync/pull/push` interface
+- [x] 定义 `status/connect/disconnect/sync/pull/push` interface
 - [ ] 将现有 SyncService 行为迁入 module implementation
 - [ ] CLI 与 Interactive CLI 只依赖该 interface
-- [ ] 保留窄范围 adapter 注入供测试
+- [x] 保留窄范围 adapter 注入供测试
 - [ ] 删除重复 Git/GitHub orchestration
 
 ### 1.2 Connect repository orchestration
 
-- [ ] Device Flow 完成后获取当前用户
+- [x] Device Flow 完成后获取当前用户
 - [x] denied/expired/failed 立即返回稳定 terminal outcome
 - [x] slow-down 更新后续 polling interval
-- [ ] 创建或选择默认 private repository
-- [ ] 非 Git 目录按明确策略初始化
-- [ ] 无 origin 时添加 origin
-- [ ] origin 相同时幂等成功
-- [ ] origin 不同时拒绝覆盖并给出显式选择
-- [ ] 只在所有步骤完成后写 connected repository metadata
+- [x] 创建或选择默认 private repository
+- [x] 非 Git 目录按明确策略初始化
+- [x] 无 origin 时添加 origin
+- [x] origin 相同时幂等成功
+- [x] origin 不同时拒绝覆盖并给出显式选择
+- [x] 只在所有步骤完成后写 connected repository metadata
 
 ### 1.3 Private Git transport
 
@@ -165,7 +165,7 @@ Green：
 
 - [ ] `connect → repository bind → sync → push`
 - [ ] `clone → connect/install → pull`
-- [ ] already-connected 幂等路径
+- [x] already-connected 幂等路径
 - [ ] authorization timeout/cancel/retry
 - [ ] private remote authentication failure
 

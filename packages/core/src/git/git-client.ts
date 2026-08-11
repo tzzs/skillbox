@@ -239,6 +239,19 @@ export class GitClient {
     }
   }
 
+  /** Whether `repositoryRoot` is inside a Git working tree. */
+  async isRepository(repositoryRoot: string): Promise<boolean> {
+    try {
+      const result = await this.runGit(repositoryRoot, ['rev-parse', '--is-inside-work-tree'])
+      return result.stdout.trim() === 'true'
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_COMMAND_FAILED) {
+        return false
+      }
+      throw error
+    }
+  }
+
   /** `git init` — creates a new git repository at `repositoryRoot`. */
   async init(repositoryRoot: string): Promise<void> {
     await this.runGit(repositoryRoot, ['init'])

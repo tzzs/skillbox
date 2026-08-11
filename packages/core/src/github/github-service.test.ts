@@ -264,6 +264,23 @@ describe('GitHubService authenticated operations', () => {
 })
 
 describe('GitHubService.ensureRepository', () => {
+  it('resolves a repository without persisting its binding until explicitly bound', async () => {
+    await withTempDir(async (dir) => {
+      const { api } = apiMock()
+      ;(api.createRepository as ReturnType<typeof vi.fn>).mockResolvedValue(repository)
+      const { service, configStore, tokenStore } = makeService(dir, api)
+      await tokenStore.save(validRecord)
+      await configStore.writeConnected({ login: 'octocat', provider: 'github-app' })
+
+      const result = await service.resolveRepository()
+      expect(result).toEqual({ repository, reused: false })
+      expect((await configStore.read()).repository).toBeUndefined()
+
+      await service.bindRepository(repository)
+      expect((await configStore.read()).repository).toBe(repository.fullName)
+    })
+  })
+
   it('creates a private repository and rebinds the config', async () => {
     await withTempDir(async (dir) => {
       const { api } = apiMock()

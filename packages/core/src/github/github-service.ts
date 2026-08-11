@@ -135,10 +135,10 @@ export class GitHubService {
 
   /**
    * Creates a private repository (default name `skillbox-skills`) or reuses
-   * an existing one with the same name (idempotent; GAP_ANALYSIS §2.2,
-   * MVP_TASKS §111E). On success the config is rebound to the result.
+   * an existing one with the same name without changing local repository
+   * metadata. Call {@link bindRepository} only after local Git binding works.
    */
-  async ensureRepository(options: EnsureRepositoryOptions = {}): Promise<EnsureRepositoryResult> {
+  async resolveRepository(options: EnsureRepositoryOptions = {}): Promise<EnsureRepositoryResult> {
     const record = await this.requireToken()
     const meta = await this.configStore.read()
     const user = await this.api.getCurrentUser(record.accessToken)
@@ -169,22 +169,29 @@ export class GitHubService {
       }
     }
 
-    await this.configStore.writeConnected({
-      login,
-      provider: GITHUB_PROVIDER_ID,
-      repository: repository.fullName,
-    })
     return { repository, reused }
   }
 
-  /** Binds an already-existing repository (selection flow). */
-  async selectRepository(repository: GitHubRepository): Promise<void> {
+  /** Backward-compatible resolve-and-bind operation. */
+  async ensureRepository(options: EnsureRepositoryOptions = {}): Promise<EnsureRepositoryResult> {
+    const result = await this.resolveRepository(options)
+    await this.bindRepository(result.repository)
+    return result
+  }
+
+  /** Persists a repository binding after the local Git remote is ready. */
+  async bindRepository(repository: GitHubRepository): Promise<void> {
     const meta = await this.configStore.read()
     await this.configStore.writeConnected({
       login: meta.login ?? repository.owner,
       provider: GITHUB_PROVIDER_ID,
       repository: repository.fullName,
     })
+  }
+
+  /** Binds an already-existing repository (selection flow). */
+  async selectRepository(repository: GitHubRepository): Promise<void> {
+    await this.bindRepository(repository)
   }
 
   /** Attempts a silent refresh; returns the resulting authorization state. */
