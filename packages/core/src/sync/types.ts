@@ -8,7 +8,12 @@ import type {
   GitHubRepository,
   GitHubUser,
 } from '../github/index.js'
-import type { GitPushOptions, GitStatusResult } from '../git/index.js'
+import type {
+  GitPullOptions,
+  GitPushOptions,
+  GitStatusResult,
+  GitTransportAuth,
+} from '../git/index.js'
 
 export type RepositorySyncPhase =
   'authorize' | 'repository' | 'init' | 'bind-remote' | 'persist' | 'pull' | 'push'
@@ -47,7 +52,7 @@ export interface RepositoryGitPort {
   ): Promise<{ name: string; url: string } | undefined>
   addRemote(repositoryRoot: string, name: string, url: string): Promise<void>
   removeRemote(repositoryRoot: string, name: string): Promise<void>
-  pull(repositoryRoot: string): Promise<void>
+  pull(repositoryRoot: string, options?: GitPullOptions): Promise<void>
   push(repositoryRoot: string, options?: GitPushOptions): Promise<void>
 }
 
@@ -56,6 +61,7 @@ export interface RepositoryHostPort {
   startDeviceAuthorization(): Promise<DeviceAuthorization>
   pollDeviceAuthorization(): Promise<DevicePollResult>
   getCurrentUser(): Promise<GitHubUser>
+  getGitTransportAuth(): Promise<GitTransportAuth>
   resolveRepository(options?: EnsureRepositoryOptions): Promise<EnsureRepositoryResult>
   bindRepository(repository: GitHubRepository): Promise<void>
   disconnect(): Promise<void>

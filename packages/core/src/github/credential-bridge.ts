@@ -1,4 +1,5 @@
 import { REDACTED } from '../logging/redact.js'
+import type { GitTransportAuth } from '../git/index.js'
 
 /**
  * HTTPS Credential Bridge (SPEC §125.4, MVP_TASKS §111G, ARCHITECTURE §40/§15.3).
@@ -24,12 +25,7 @@ export const GIT_AUTH_USERNAME = 'x-access-token'
 /** Disable interactive credential prompts so a broken token fails loudly. */
 export const GIT_TERMINAL_PROMPT_ENV = 'GIT_TERMINAL_PROMPT'
 
-export interface GitAuthEnvironment {
-  /** Extra argv entries to pass to `git` BEFORE the subcommand (`-c` flags). */
-  args: string[]
-  /** Environment overrides to merge into the `git` subprocess environment. */
-  env: Record<string, string>
-}
+export type GitAuthEnvironment = GitTransportAuth
 
 /** Builds the transient, process-level auth environment for a System Git run. */
 export function buildGitAuthEnvironment(token: string): GitAuthEnvironment {
@@ -37,8 +33,16 @@ export function buildGitAuthEnvironment(token: string): GitAuthEnvironment {
   // is expanded by the helper's shell from the child environment.
   const helper = `!f() { echo username=${GIT_AUTH_USERNAME}; echo password=\$${GIT_AUTH_TOKEN_ENV}; }; f`
   return {
-    args: ['-c', `credential.helper=${helper}`],
+    prefixArgs: [
+      '-c',
+      'credential.helper=',
+      '-c',
+      `credential.helper=${helper}`,
+      '-c',
+      'core.hooksPath=/dev/null',
+    ],
     env: { [GIT_AUTH_TOKEN_ENV]: token, [GIT_TERMINAL_PROMPT_ENV]: '0' },
+    sensitiveEnvKeys: [GIT_AUTH_TOKEN_ENV],
   }
 }
 
@@ -48,7 +52,7 @@ export function buildGitAuthEnvironment(token: string): GitAuthEnvironment {
  */
 export function describeGitAuthEnvironment(env: GitAuthEnvironment): string {
   return JSON.stringify({
-    args: env.args,
+    prefixArgs: env.prefixArgs,
     env: { [GIT_AUTH_TOKEN_ENV]: REDACTED, [GIT_TERMINAL_PROMPT_ENV]: '0' },
   })
 }

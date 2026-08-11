@@ -114,7 +114,8 @@ export class RepositorySyncService implements RepositorySync {
   }
 
   async pull(): Promise<void> {
-    await this.git.pull(this.repositoryRoot)
+    const auth = await this.host.getGitTransportAuth()
+    await this.git.pull(this.repositoryRoot, { auth })
   }
 
   async push(): Promise<void> {
@@ -125,10 +126,12 @@ export class RepositorySyncService implements RepositorySync {
         context: { phase: 'push' },
       })
     }
+    const auth = await this.host.getGitTransportAuth()
     await this.git.push(this.repositoryRoot, {
       ...(status.remote === undefined ? {} : { remote: status.remote.name }),
       branch: status.branch,
       setUpstream: status.upstream === undefined,
+      auth,
     })
   }
 

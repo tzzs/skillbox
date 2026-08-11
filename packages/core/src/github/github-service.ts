@@ -4,6 +4,8 @@ import type { GitHubConnectionMetadata } from './config.js'
 import { DeviceFlowService } from './device-flow.js'
 import { GitHubError, GitHubErrorCode, isRepositoryReuseError } from './errors.js'
 import { TokenStore, computeAuthorizationState } from './token-store.js'
+import { buildGitAuthEnvironment } from './credential-bridge.js'
+import type { GitTransportAuth } from '../git/index.js'
 import { GITHUB_PROVIDER_ID, DEFAULT_REPOSITORY_NAME } from './types.js'
 import type {
   AuthorizationState,
@@ -125,6 +127,12 @@ export class GitHubService {
   async getCurrentUser(): Promise<GitHubUser> {
     const record = await this.requireToken()
     return this.api.getCurrentUser(record.accessToken)
+  }
+
+  /** Builds credentials for one Git transport invocation without exposing the raw token. */
+  async getGitTransportAuth(): Promise<GitTransportAuth> {
+    const record = await this.requireToken()
+    return buildGitAuthEnvironment(record.accessToken)
   }
 
   /** Repositories owned by the authenticated user (for selection). */

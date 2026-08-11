@@ -154,8 +154,8 @@ Green：
 
 ### 1.3 Private Git transport
 
-- [ ] Credential Bridge 为 fetch/pull/push 提供临时凭据
-- [ ] token 不进入 argv、environment dump、remote URL、日志
+- [x] Credential Bridge 为 fetch/pull/push 提供临时凭据
+- [x] token 不进入 argv、environment dump、remote URL、日志
 - [x] commit 在限定 managed paths 上显式执行 add，包含首次出现的 untracked 文件
 - [x] 首次 push 使用 `--set-upstream origin <branch>`
 - [ ] push 失败保留本地 commit 并标记 recoverable

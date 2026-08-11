@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import * as path from 'node:path'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
+import { REDACTED } from '../logging/redact.js'
 import { conflictsOf, parsePorcelainStatus, type GitFileStatus } from './porcelain.js'
 
 /** Result of one spawned `git` process. */
@@ -27,6 +28,13 @@ export interface GitClientOptions {
   /** Process runner; defaults to `execFile('git', ...)`. */
   spawn?: GitSpawn
   filesystem?: FilesystemService
+}
+
+/** Process-scoped authentication applied to exactly one Git transport invocation. */
+export interface GitTransportAuth {
+  prefixArgs: readonly string[]
+  env: Readonly<NodeJS.ProcessEnv>
+  sensitiveEnvKeys: readonly string[]
 }
 
 export interface GitStatusResult {
@@ -74,6 +82,7 @@ export interface GitPullOptions {
   branch?: string
   /** Pull strategy; defaults to git's native merge. */
   strategy?: 'merge' | 'ff-only' | 'rebase'
+  auth?: GitTransportAuth
 }
 
 export interface GitPushOptions {
@@ -81,11 +90,13 @@ export interface GitPushOptions {
   branch?: string
   /** Establish branch tracking on the first push. */
   setUpstream?: boolean
+  auth?: GitTransportAuth
 }
 
 export interface GitCloneOptions {
   ref?: string
   depth?: number
+  auth?: GitTransportAuth
 }
 
 export interface GitMaterializeOptions {
@@ -95,6 +106,7 @@ export interface GitMaterializeOptions {
   targetDir: string
   /** Branch/tag to check out after syncing the clone. */
   ref?: string
+  auth?: GitTransportAuth
 }
 
 export interface GitMaterializeResult {
@@ -102,6 +114,10 @@ export interface GitMaterializeResult {
   cloned: boolean
   /** The checked-out revision (full object id). */
   headRev: string
+}
+
+function authOptions(auth: GitTransportAuth | undefined): { auth?: GitTransportAuth } {
+  return auth === undefined ? {} : { auth }
 }
 
 /** Default timeout for a single git subprocess (2 minutes). */
@@ -166,18 +182,24 @@ export class GitClient {
   private async runGit(
     repositoryRoot: string,
     args: string[],
-    options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+    options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; auth?: GitTransportAuth } = {},
   ): Promise<GitExecResult> {
+    const invocationArgs = [...(options.auth?.prefixArgs ?? []), ...args]
+    const sensitiveValues = (options.auth?.sensitiveEnvKeys ?? [])
+      .map((key) => options.auth?.env[key])
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    const redact = (value: string): string =>
+      sensitiveValues.reduce((current, sensitive) => current.replaceAll(sensitive, REDACTED), value)
     let result: GitExecResult
     try {
       const spawnOptions: GitSpawnOptions = { cwd: repositoryRoot }
-      if (options.env !== undefined) {
-        spawnOptions.env = options.env
+      if (options.env !== undefined || options.auth !== undefined) {
+        spawnOptions.env = { ...options.env, ...options.auth?.env }
       }
       if (options.timeoutMs !== undefined) {
         spawnOptions.timeoutMs = options.timeoutMs
       }
-      result = await this.spawn(args, spawnOptions)
+      result = await this.spawn(invocationArgs, spawnOptions)
     } catch (error) {
       if (
         error instanceof Error &&
@@ -186,29 +208,31 @@ export class GitClient {
       ) {
         throw new SkillboxError(
           ErrorCode.GIT_NOT_FOUND,
-          `Git is not installed or not on PATH (needed for "git ${args.join(' ')}")`,
-          { context: { command: args.join(' '), repositoryRoot } },
+          `Git is not installed or not on PATH (needed for "git ${invocationArgs.join(' ')}")`,
+          { context: { command: redact(invocationArgs.join(' ')), repositoryRoot } },
         )
       }
       const errno = error as Error & { code?: unknown; stdout?: string; stderr?: string }
       result = {
         exitCode: typeof errno.code === 'number' ? errno.code : 1,
-        stdout: errno.stdout ?? '',
-        stderr: (errno.stderr ?? '') || errno.message,
+        stdout: redact(errno.stdout ?? ''),
+        stderr: redact((errno.stderr ?? '') || errno.message),
       }
     }
+
+    result = { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) }
 
     if (result.exitCode !== 0) {
       const stderr = result.stderr.trim()
       throw new SkillboxError(
         ErrorCode.GIT_COMMAND_FAILED,
-        `git ${args.join(' ')} failed (exit ${result.exitCode})${
+        `git ${redact(invocationArgs.join(' '))} failed (exit ${result.exitCode})${
           firstStderrLine(stderr) === undefined ? '' : `: ${firstStderrLine(stderr)}`
         }`,
         {
           recoverable: true,
           context: {
-            command: args.join(' '),
+            command: redact(invocationArgs.join(' ')),
             repositoryRoot,
             exitCode: result.exitCode,
             stderr,
@@ -268,7 +292,7 @@ export class GitClient {
     // exist before spawning or the node ENOENT is misread as a missing git.
     await this.filesystem.mkdir(path.dirname(targetDir))
     const repositoryRoot = path.dirname(targetDir)
-    await this.runGit(repositoryRoot, args)
+    await this.runGit(repositoryRoot, args, authOptions(options.auth))
   }
 
   /**
@@ -430,7 +454,7 @@ export class GitClient {
     if (options.branch !== undefined) {
       args.push(options.branch)
     }
-    await this.runGit(repositoryRoot, args)
+    await this.runGit(repositoryRoot, args, authOptions(options.auth))
   }
 
   /** `git push [remote [branch]]` (defaults the remote to `origin`). */
@@ -448,7 +472,7 @@ export class GitClient {
     if (options.branch !== undefined) {
       args.push(options.branch)
     }
-    await this.runGit(repositoryRoot, args)
+    await this.runGit(repositoryRoot, args, authOptions(options.auth))
   }
 
   /**
@@ -490,8 +514,8 @@ export class GitClient {
   }
 
   /** `git fetch [remote]` against a specific remote (default `origin`). */
-  async fetch(repositoryRoot: string, remote = 'origin'): Promise<void> {
-    await this.runGit(repositoryRoot, ['fetch', '--prune', remote])
+  async fetch(repositoryRoot: string, remote = 'origin', auth?: GitTransportAuth): Promise<void> {
+    await this.runGit(repositoryRoot, ['fetch', '--prune', remote], authOptions(auth))
   }
 
   /** `git checkout <ref>` — switches the worktree to a branch/tag/commit. */
@@ -523,10 +547,10 @@ export class GitClient {
     let strategy: 'ff-only' | undefined
 
     if (!hasGitDir) {
-      await this.clone(input.url, input.targetDir)
+      await this.clone(input.url, input.targetDir, authOptions(input.auth))
       cloned = true
     } else {
-      await this.fetch(input.targetDir)
+      await this.fetch(input.targetDir, 'origin', input.auth)
     }
 
     const current = await this.currentBranch(input.targetDir)
@@ -541,7 +565,7 @@ export class GitClient {
     if (strategy === 'ff-only') {
       const branch = await this.currentBranch(input.targetDir)
       if (branch !== undefined) {
-        await this.pull(input.targetDir, { strategy: 'ff-only' })
+        await this.pull(input.targetDir, { strategy: 'ff-only', ...authOptions(input.auth) })
       }
     }
 

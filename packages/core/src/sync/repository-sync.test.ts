@@ -12,7 +12,7 @@ import type {
   GitHubRepository,
   GitHubUser,
 } from '../github/index.js'
-import type { GitStatusResult } from '../git/index.js'
+import type { GitPushOptions, GitStatusResult, GitTransportAuth } from '../git/index.js'
 import { RepositorySyncService } from './repository-sync.js'
 import type { RepositoryGitPort, RepositoryHostPort } from './types.js'
 
@@ -32,6 +32,8 @@ class FakeGit implements RepositoryGitPort {
   remote: { name: string; url: string } | undefined
   events: string[] = []
   failAdd = false
+  pushOptions: GitPushOptions | undefined
+  pullAuth: GitTransportAuth | undefined
 
   async isInstalled(): Promise<boolean> {
     return true
@@ -71,8 +73,12 @@ class FakeGit implements RepositoryGitPort {
     this.events.push('remove-remote')
     this.remote = undefined
   }
-  async pull(): Promise<void> {}
-  async push(): Promise<void> {}
+  async pull(_root: string, options?: { auth?: GitTransportAuth }): Promise<void> {
+    this.pullAuth = options?.auth
+  }
+  async push(_root: string, options?: GitPushOptions): Promise<void> {
+    this.pushOptions = options
+  }
 }
 
 class FakeHost implements RepositoryHostPort {
@@ -91,6 +97,13 @@ class FakeHost implements RepositoryHostPort {
   }
   async getCurrentUser(): Promise<GitHubUser> {
     return { id: 1, login: 'octocat', htmlUrl: 'https://github.com/octocat' }
+  }
+  async getGitTransportAuth(): Promise<GitTransportAuth> {
+    return {
+      prefixArgs: ['-c', 'credential.helper=!helper'],
+      env: { SKILLBOX_GITHUB_ACCESS_TOKEN: 'secret' },
+      sensitiveEnvKeys: ['SKILLBOX_GITHUB_ACCESS_TOKEN'],
+    }
   }
   async resolveRepository(): Promise<{ repository: GitHubRepository; reused: boolean }> {
     this.events.push('resolve')
@@ -183,6 +196,27 @@ describe('RepositorySyncService.connect', () => {
       remote: { name: 'origin', url: repository.cloneUrl, action: 'unchanged' },
     })
     expect(host.events).toEqual(['resolve', 'persist'])
+  })
+})
+
+describe('RepositorySyncService transport', () => {
+  it('injects one-shot credentials and establishes upstream on first push', async () => {
+    const git = new FakeGit()
+    git.repository = true
+    git.remote = { name: 'origin', url: repository.cloneUrl }
+    const host = new FakeHost()
+    const service = new RepositorySyncService({ repositoryRoot: '/repo', git, host })
+
+    await service.pull()
+    await service.push()
+
+    expect(git.pullAuth?.env.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe('secret')
+    expect(git.pushOptions).toMatchObject({
+      remote: 'origin',
+      branch: 'main',
+      setUpstream: true,
+    })
+    expect(git.pushOptions?.auth?.env.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe('secret')
   })
 })
 

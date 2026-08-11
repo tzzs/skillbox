@@ -206,6 +206,17 @@ describe('GitHubService device authorization', () => {
 })
 
 describe('GitHubService authenticated operations', () => {
+  it('builds process-scoped Git transport auth from the current token', async () => {
+    await withTempDir(async (dir) => {
+      const { service, tokenStore } = makeService(dir, apiMock().api)
+      await tokenStore.save(validRecord)
+      const auth = await service.getGitTransportAuth()
+      expect(auth.prefixArgs.join(' ')).not.toContain(validRecord.accessToken)
+      expect(auth.env.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe(validRecord.accessToken)
+      expect(auth.sensitiveEnvKeys).toEqual(['SKILLBOX_GITHUB_ACCESS_TOKEN'])
+    })
+  })
+
   it('throws GITHUB_NOT_CONNECTED when no token is stored', async () => {
     await withTempDir(async (dir) => {
       const { service } = makeService(dir, apiMock().api)

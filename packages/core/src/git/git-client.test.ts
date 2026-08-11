@@ -4,8 +4,9 @@ import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { GitClient } from './git-client.js'
 import { ErrorCode, isSkillboxError } from '../errors.js'
+import { buildGitAuthEnvironment } from '../github/credential-bridge.js'
 import { tempDir, withTempDir } from '../fs/test-utils.js'
-import type { GitExecResult } from './git-client.js'
+import type { GitExecResult, GitSpawn, GitTransportAuth } from './git-client.js'
 
 interface GitConfig {
   client: GitClient
@@ -44,6 +45,45 @@ async function writeFile(dir: string, name: string, content: string): Promise<st
 }
 
 describe('GitClient', () => {
+  it('injects transport auth for one push without placing the token in argv', async () => {
+    const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = []
+    const spawn: GitSpawn = async (args, options) => {
+      calls.push({ args, ...(options.env === undefined ? {} : { env: options.env }) })
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    const client = new GitClient({ spawn })
+    const auth: GitTransportAuth = {
+      prefixArgs: ['-c', 'credential.helper=!helper'],
+      env: { SKILLBOX_GITHUB_ACCESS_TOKEN: 'top-secret' },
+      sensitiveEnvKeys: ['SKILLBOX_GITHUB_ACCESS_TOKEN'],
+    }
+
+    await client.push('/repo', { remote: 'origin', branch: 'main', auth })
+    await client.gitVersion('/repo')
+
+    expect(calls[0]?.args).toEqual(['-c', 'credential.helper=!helper', 'push', 'origin', 'main'])
+    expect(calls[0]?.args.join(' ')).not.toContain('top-secret')
+    expect(calls[0]?.env?.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe('top-secret')
+    expect(calls[1]?.args).toEqual(['--version'])
+    expect(calls[1]?.env).toBeUndefined()
+  })
+
+  it('redacts transport credentials from Git errors', async () => {
+    const token = 'token-that-must-not-leak'
+    const spawn: GitSpawn = async () => ({ exitCode: 1, stdout: '', stderr: `rejected ${token}` })
+    const client = new GitClient({ spawn })
+    const auth: GitTransportAuth = {
+      prefixArgs: [],
+      env: { SKILLBOX_GITHUB_ACCESS_TOKEN: token },
+      sensitiveEnvKeys: ['SKILLBOX_GITHUB_ACCESS_TOKEN'],
+    }
+
+    const error = await client.push('/repo', { auth }).catch((caught: unknown) => caught)
+    expect(JSON.stringify(error)).not.toContain(token)
+    expect((error as Error).message).not.toContain(token)
+    expect(error).toMatchObject({ context: { stderr: 'rejected [REDACTED]' } })
+  })
+
   it('reports the installed git version', async () => {
     const root = await tempDir()
     const { client } = await seedRepo(root)
@@ -156,6 +196,34 @@ describe('GitClient', () => {
       await client.push(root, { remote: 'origin', branch: 'main', setUpstream: true })
 
       expect((await client.status(root)).upstream).toBe('origin/main')
+    })
+  })
+
+  it('prevents repository hooks from reading transport credentials', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      const marker = path.join(dir, 'hook-ran.txt')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await client.commit(root, 'seed', ['skillbox.yaml'])
+      await client.addRemote(root, 'origin', bare)
+      const hook = path.join(root, '.git', 'hooks', 'pre-push')
+      await fs.writeFile(
+        hook,
+        '#!/bin/sh\nprintf "%s" "$SKILLBOX_GITHUB_ACCESS_TOKEN" > "$SKILLBOX_HOOK_MARKER"\n',
+        'utf8',
+      )
+      await fs.chmod(hook, 0o755)
+      const baseAuth = buildGitAuthEnvironment('hook-secret')
+      const auth: GitTransportAuth = {
+        ...baseAuth,
+        env: { ...baseAuth.env, SKILLBOX_HOOK_MARKER: marker },
+      }
+
+      await client.push(root, { remote: 'origin', branch: 'main', auth })
+
+      await expect(fs.access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
     })
   })
 
