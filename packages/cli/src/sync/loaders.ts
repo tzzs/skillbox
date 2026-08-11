@@ -73,6 +73,10 @@ interface GitFileShape {
 
 interface GitClientShape {
   status: (root: string) => Promise<{
+    branch?: string
+    remote?: { name: string; url: string }
+    ahead?: number
+    behind?: number
     files: GitFileShape[]
     conflicts: GitFileShape[]
     staged: GitFileShape[]
@@ -100,8 +104,6 @@ class GitClientAdapter implements GitProvider {
     if (typeof GitClient !== 'function') {
       throw unavailable('GIT_UNAVAILABLE', this.hint)
     }
-    // TODO(sync): agent 1 may add ahead/behind + remote introspection to
-    // GitClient later; wire them here when available.
     return new GitClient()
   }
 
@@ -128,21 +130,25 @@ class GitClientAdapter implements GitProvider {
     }
 
     const branch =
-      typeof client.currentBranch === 'function'
+      result.branch ??
+      (typeof client.currentBranch === 'function'
         ? await client.currentBranch(this.repositoryRoot)
-        : undefined
+        : undefined)
     const changed = result.files.filter((file) => !file.conflict)
 
     const report: GitStatusReport = {
       isRepository: true,
-      ahead: 0,
-      behind: 0,
+      ahead: result.ahead ?? 0,
+      behind: result.behind ?? 0,
       changedFiles: changed.map((file) => file.path),
       stagedFiles: result.staged.map((file) => file.path),
       conflicts: result.conflicts.map((file) => file.path),
     }
     if (branch !== undefined) {
       report.branch = branch
+    }
+    if (result.remote !== undefined) {
+      report.remote = result.remote
     }
     return report
   }
@@ -206,13 +212,10 @@ export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
 }
 
 /* ---------------------------------------------------------------------- *
- * GitHub (agent 2 — @skillbox/core/github)
+ * GitHub compatibility loader
  *
- * Expected export (not yet shipped):
- *   class GitHubService {
- *     connectionState(); startDeviceFlow(); pollDeviceFlow(); disconnect();
- *   }
- * constructed with the Skillbox home root.
+ * Kept for tests and partial-build diagnostics. Production construction uses
+ * the typed factory below and never relies on this historical shape.
  * ---------------------------------------------------------------------- */
 
 interface GitHubServiceShape {
@@ -236,8 +239,6 @@ class GitHubAdapter implements GitHubProvider {
     if (typeof GitHubService !== 'function') {
       throw unavailable('GITHUB_UNAVAILABLE', this.hint)
     }
-    // TODO(sync): adapt constructor/method names here if agent 2's GitHub
-    // public API differs from the shape above.
     return new GitHubService(this.homeRoot)
   }
 

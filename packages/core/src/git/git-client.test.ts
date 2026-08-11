@@ -168,6 +168,42 @@ describe('GitClient', () => {
     })
   }, 30000)
 
+  it('status reports the tracked remote and real ahead/behind counts', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+
+      const local = await seedRepo(path.join(dir, 'local'))
+      await writeFile(local.root, 'base.txt', 'base')
+      await rawGit(local.root, ['add', 'base.txt'])
+      await local.client.commit(local.root, 'base')
+      await rawGit(local.root, ['remote', 'add', 'origin', bare])
+      await rawGit(local.root, ['push', '-u', 'origin', 'main'])
+
+      const peerRoot = path.join(dir, 'peer')
+      await local.client.clone(bare, peerRoot, { ref: 'main' })
+      await rawGit(peerRoot, ['config', 'user.email', 'skillbox-test@example.com'])
+      await rawGit(peerRoot, ['config', 'user.name', 'Skillbox Test'])
+      await writeFile(peerRoot, 'remote.txt', 'remote')
+      await rawGit(peerRoot, ['add', 'remote.txt'])
+      await rawGit(peerRoot, ['commit', '-m', 'remote advance'])
+      await rawGit(peerRoot, ['push', 'origin', 'main'])
+
+      await writeFile(local.root, 'local.txt', 'local')
+      await rawGit(local.root, ['add', 'local.txt'])
+      await local.client.commit(local.root, 'local advance')
+      await local.client.fetch(local.root)
+
+      const status = await local.client.status(local.root)
+      expect(status).toMatchObject({
+        branch: 'main',
+        remote: { name: 'origin', url: bare },
+        ahead: 1,
+        behind: 1,
+      })
+    })
+  }, 20000)
+
   it('materialize clones when absent and pulls when present', async () => {
     await withTempDir(async (dir) => {
       const bare = path.join(dir, 'remote.git')

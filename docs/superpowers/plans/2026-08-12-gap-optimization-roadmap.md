@@ -30,13 +30,13 @@
 
 任务：
 
-- [ ] `pnpm install --frozen-lockfile`
-- [ ] `pnpm lint`
-- [ ] `pnpm typecheck`
-- [ ] `pnpm test`
-- [ ] `pnpm build`
-- [ ] 记录失败命令、错误类别、是否为当前改动引入
-- [ ] 确认工作区没有构建产物或无关文件进入 Git
+- [x] `pnpm install --frozen-lockfile`
+- [x] `pnpm lint`
+- [x] `pnpm typecheck`
+- [x] `pnpm test`
+- [x] `pnpm build`
+- [x] 记录失败命令、错误类别、是否为当前改动引入
+- [x] 确认工作区没有构建产物或无关文件进入 Git
 
 完成标准：依赖缺失不再掩盖测试结果；所有现有失败均有明确归属。
 
@@ -54,16 +54,16 @@
 
 Red：
 
-- [ ] 测试默认 factory 构建真实 Core `GitHubService`
-- [ ] 测试 `connectionState` 映射 `GitHubConnectionSnapshot.state`
+- [x] 测试默认 factory 构建真实 Core `GitHubService`
+- [x] 测试 `connectionState` 映射 `GitHubConnectionSnapshot.state`
 - [ ] 测试 Device Flow 字段与时间单位映射
 - [ ] 测试 disconnect 调用真实 Core 方法名
 
 Green：
 
-- [ ] 增加强类型 production factory
-- [ ] 注入 GitHubApi、CredentialStore、TokenStore、GitHubConfigStore
-- [ ] 从明确配置读取 Client ID；缺失时返回稳定可恢复错误
+- [x] 增加强类型 production factory
+- [x] 注入 GitHubApi、CredentialStore、TokenStore、GitHubConfigStore
+- [x] 从明确配置读取 Client ID；缺失时返回稳定可恢复错误
 - [ ] 删除旧构造器和旧方法名猜测
 
 完成标准：默认 CLI provider 不依赖 fake 即可查询连接状态，测试对旧接线保持敏感。
@@ -81,16 +81,16 @@ Green：
 
 Red：
 
-- [ ] local bare remote fixture 返回真实 origin URL
-- [ ] upstream 分支返回真实 ahead/behind
+- [x] local bare remote fixture 返回真实 origin URL
+- [x] upstream 分支返回真实 ahead/behind
 - [ ] 无 remote 与 detached HEAD 返回明确状态
-- [ ] pull/push 不再因 adapter 丢失 remote 而误报
+- [x] pull/push 不再因 adapter 丢失 remote 而误报
 
 Green：
 
-- [ ] GitClient 增加 remote/upstream introspection
-- [ ] 计算 `HEAD...@{upstream}` ahead/behind
-- [ ] GitClientAdapter 完整映射 status
+- [x] GitClient 增加 remote/upstream introspection
+- [x] 计算 `HEAD...@{upstream}` ahead/behind
+- [x] GitClientAdapter 完整映射 status
 
 完成标准：真实 local Git repository 的状态与 Git 命令结果一致。
 

@@ -352,6 +352,10 @@ describe('loaders (wiring points)', () => {
     const FakeGitClient = class {
       constructor(_root: string) {}
       status = async () => ({
+        branch: 'main',
+        remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
+        ahead: 2,
+        behind: 3,
         files: [
           {
             path: 'skillbox.lock',
@@ -381,7 +385,13 @@ describe('loaders (wiring points)', () => {
     }
     const provider = createGitProviderFromCore(REPO, async () => ({ GitClient: FakeGitClient }))
     const report = await provider.status()
-    expect(report.isRepository).toBe(true)
+    expect(report).toMatchObject({
+      isRepository: true,
+      branch: 'main',
+      remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
+      ahead: 2,
+      behind: 3,
+    })
     await provider.push()
     expect(fake.pushCalls).toBe(1)
   })

@@ -31,6 +31,16 @@ export interface GitClientOptions {
 
 export interface GitStatusResult {
   repositoryRoot: string
+  /** Current local branch; absent for detached HEAD. */
+  branch?: string
+  /** Configured upstream ref, for example `origin/main`. */
+  upstream?: string
+  /** Tracked remote derived from the upstream ref. */
+  remote?: { name: string; url: string }
+  /** Commits in HEAD but not in the tracked upstream. */
+  ahead: number
+  /** Commits in the tracked upstream but not in HEAD. */
+  behind: number
   /** Every changed/untracked file, in git output order. */
   files: GitFileStatus[]
   /** Entries flagged as merge conflicts (`UU`/`AA`/`DD`/...). */
@@ -259,8 +269,10 @@ export class GitClient {
     ])
     const files = parsePorcelainStatus(result.stdout)
     const conflicts = conflictsOf(files)
+    const tracking = await this.trackingStatus(repositoryRoot)
     return {
       repositoryRoot,
+      ...tracking,
       files,
       conflicts,
       hasConflicts: conflicts.length > 0,
@@ -269,6 +281,59 @@ export class GitClient {
       untracked: files.filter((file) => file.untracked),
       clean: files.length === 0,
     }
+  }
+
+  /** Branch/upstream facts used by status, pull and push orchestration. */
+  private async trackingStatus(repositoryRoot: string): Promise<{
+    branch?: string
+    upstream?: string
+    remote?: { name: string; url: string }
+    ahead: number
+    behind: number
+  }> {
+    const branch = await this.currentBranch(repositoryRoot)
+    if (branch === undefined) {
+      return { ahead: 0, behind: 0 }
+    }
+    const upstreamResult = await this.runGit(repositoryRoot, [
+      'for-each-ref',
+      '--format=%(upstream:short)',
+      `refs/heads/${branch}`,
+    ])
+    const upstream = upstreamResult.stdout.trim()
+    if (upstream.length === 0) {
+      return { branch, ahead: 0, behind: 0 }
+    }
+    const separator = upstream.indexOf('/')
+    const remoteName = separator > 0 ? upstream.slice(0, separator) : undefined
+    const countsResult = await this.runGit(repositoryRoot, [
+      'rev-list',
+      '--left-right',
+      '--count',
+      `HEAD...${upstream}`,
+    ])
+    const [aheadText = '0', behindText = '0'] = countsResult.stdout.trim().split(/\s+/)
+    const tracking: {
+      branch: string
+      upstream: string
+      remote?: { name: string; url: string }
+      ahead: number
+      behind: number
+    } = {
+      branch,
+      upstream,
+      ahead: Number.parseInt(aheadText, 10) || 0,
+      behind: Number.parseInt(behindText, 10) || 0,
+    }
+    if (remoteName !== undefined) {
+      const url = (
+        await this.runGit(repositoryRoot, ['remote', 'get-url', remoteName])
+      ).stdout.trim()
+      if (url.length > 0) {
+        tracking.remote = { name: remoteName, url }
+      }
+    }
+    return tracking
   }
 
   /**
