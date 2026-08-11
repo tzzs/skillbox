@@ -156,8 +156,8 @@ Green：
 
 - [ ] Credential Bridge 为 fetch/pull/push 提供临时凭据
 - [ ] token 不进入 argv、environment dump、remote URL、日志
-- [ ] commit 在限定 managed paths 上显式执行 add，包含首次出现的 untracked 文件
-- [ ] 首次 push 使用 `--set-upstream origin <branch>`
+- [x] commit 在限定 managed paths 上显式执行 add，包含首次出现的 untracked 文件
+- [x] 首次 push 使用 `--set-upstream origin <branch>`
 - [ ] push 失败保留本地 commit 并标记 recoverable
 - [ ] disconnect 不修改 remote repository 或本地 Skill
 

@@ -115,6 +115,50 @@ describe('GitClient', () => {
     })
   })
 
+  it('commit stages a new managed path without staging unrelated untracked files', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await writeFile(root, 'notes.txt', 'personal')
+
+      await client.commit(root, 'managed only', ['skillbox.yaml'])
+
+      const committed = await rawGit(root, ['show', '--name-only', '--format=', 'HEAD'])
+      expect(committed.stdout).toContain('skillbox.yaml')
+      expect(committed.stdout).not.toContain('notes.txt')
+      expect((await client.status(root)).untracked.map((file) => file.path)).toEqual(['notes.txt'])
+    })
+  })
+
+  it('adds, reads and removes a named remote idempotently', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', bare])
+
+      expect(await client.getRemote(root, 'origin')).toBeUndefined()
+      await client.addRemote(root, 'origin', bare)
+      expect(await client.getRemote(root, 'origin')).toEqual({ name: 'origin', url: bare })
+      await client.removeRemote(root, 'origin')
+      expect(await client.getRemote(root, 'origin')).toBeUndefined()
+    })
+  })
+
+  it('sets the upstream on the first push', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await client.commit(root, 'seed', ['skillbox.yaml'])
+      await client.addRemote(root, 'origin', bare)
+
+      await client.push(root, { remote: 'origin', branch: 'main', setUpstream: true })
+
+      expect((await client.status(root)).upstream).toBe('origin/main')
+    })
+  })
+
   it('diff reports changes between two refs and in the worktree', async () => {
     await withTempDir(async (dir) => {
       const { client, root } = await seedRepo(path.join(dir, 'repo'))

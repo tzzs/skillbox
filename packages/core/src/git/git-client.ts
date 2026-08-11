@@ -79,6 +79,8 @@ export interface GitPullOptions {
 export interface GitPushOptions {
   remote?: string
   branch?: string
+  /** Establish branch tracking on the first push. */
+  setUpstream?: boolean
 }
 
 export interface GitCloneOptions {
@@ -366,6 +368,33 @@ export class GitClient {
     return url.length === 0 ? undefined : { name, url }
   }
 
+  /** Returns a named remote when configured. */
+  async getRemote(
+    repositoryRoot: string,
+    name: string,
+  ): Promise<{ name: string; url: string } | undefined> {
+    const remotes = (await this.runGit(repositoryRoot, ['remote'])).stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+    if (!remotes.includes(name)) {
+      return undefined
+    }
+    const url = (await this.runGit(repositoryRoot, ['remote', 'get-url', name])).stdout.trim()
+    return url.length === 0 ? undefined : { name, url }
+  }
+
+  /** Adds a named remote. Callers inspect conflicts with {@link getRemote}. */
+  async addRemote(repositoryRoot: string, name: string, url: string): Promise<void> {
+    await this.runGit(repositoryRoot, ['remote', 'add', name, url])
+  }
+
+  /** Removes a named remote; an already-absent remote is a no-op. */
+  async removeRemote(repositoryRoot: string, name: string): Promise<void> {
+    if ((await this.getRemote(repositoryRoot, name)) !== undefined) {
+      await this.runGit(repositoryRoot, ['remote', 'remove', name])
+    }
+  }
+
   /**
    * `git pull [--ff-only|--rebase] [remote [branch]]`. A pull that ends in
    * conflicts exits non-zero and throws `GIT_COMMAND_FAILED`; the worktree is
@@ -394,6 +423,9 @@ export class GitClient {
   /** `git push [remote [branch]]` (defaults the remote to `origin`). */
   async push(repositoryRoot: string, options: GitPushOptions = {}): Promise<void> {
     const args = ['push']
+    if (options.setUpstream === true) {
+      args.push('--set-upstream')
+    }
     if (options.branch !== undefined && options.remote === undefined) {
       args.push('origin')
     }
@@ -416,6 +448,9 @@ export class GitClient {
     message: string,
     files: readonly string[] = [],
   ): Promise<GitCommitResult> {
+    if (files.length > 0) {
+      await this.runGit(repositoryRoot, ['add', '-A', '--', ...files])
+    }
     const args = ['commit', '-m', message]
     if (files.length > 0) {
       args.push('--', ...files)
