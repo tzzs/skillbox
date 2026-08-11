@@ -141,10 +141,10 @@ async function openContext(options: DiffSkillOptions): Promise<DiffContext> {
     remoteRoot: options.remoteRoot,
     filesystem: options.filesystem,
   })
-  const [manifest, lockfile] = await Promise.all([
-    readManifest(options.repositoryRoot),
-    readLockfile(options.repositoryRoot),
-  ])
+  // Read sequentially so a failure cannot leave filesystem work running after
+  // diffSkill has rejected, which can race with cleanup on Windows.
+  const manifest = await readManifest(options.repositoryRoot)
+  const lockfile = await readLockfile(options.repositoryRoot)
   return { manifest, lockfile, resolver }
 }
 
