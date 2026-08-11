@@ -1,3 +1,5 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ErrorCode, SkillboxError } from '@skillbox/core'
 import { main, type CliDeps } from '../index.js'
@@ -355,35 +357,36 @@ skills:
     expect(wiring.io.err()).toContain('is not installed')
   })
 
-  it('runs the real update transaction and reports an unwired registry (exit 2)', async () => {
-    // No marketplace overrides → the default installer adapter delegates to
-    // core's install-transaction `updateSkill` (M16.2). The transaction
-    // needs a registry provider, and none is registered in this process, so
-    // it surfaces `SOURCE_UNSUPPORTED` (a validation error → exit 2).
+  it('runs the real update transaction without prewarming the default registry', async () => {
+    // No marketplace overrides and no preceding registry-client call: the
+    // installer adapter must make the first-party providers available itself.
     const io = capture()
     const fixture = createFixture()
     try {
+      const localSkill = path.join(fixture.base, 'upstream-skill')
+      fs.mkdirSync(localSkill)
+      const yamlPath = localSkill.replaceAll('\\', '/')
       fixture.writeLockfile(
         `lockfileVersion: 1
 skills:
-  react-best-practices:
+  local-managed:
     mode: managed
     source:
-      type: github
-      repo: vercel-labs/agent-skills
-      path: skills/react-best-practices
-    revision: aaaaaaa
+      type: local
+      path: ${yamlPath}
+    revision: local
     integrity: h1
 `,
       )
-      const exit = await main(['update', 'react-best-practices'], {
+      const exit = await main(['update', 'local-managed'], {
         ...io,
         repositoryRoot: fixture.repositoryRoot,
         homeRoot: fixture.homeRoot,
         isInteractive: false,
       })
-      expect(exit).toBe(2)
-      expect(io.err()).toContain('No registry provider registered')
+      expect(exit).toBe(0)
+      expect(io.out()).toContain('local-managed')
+      expect(io.err()).toBe('')
     } finally {
       fixture.cleanup()
     }

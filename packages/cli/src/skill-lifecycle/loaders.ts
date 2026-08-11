@@ -21,18 +21,17 @@ import type {
  * Follows the V0.2 sync (`./sync/loaders.js`) and V0.3 marketplace
  * (`./marketplace/loaders.js`) convention: the CLI defines the contracts in
  * `./types.js` and adapts the core modules onto them at runtime through a
- * dynamic import. When a core export has not landed yet, the call fails with
- * a typed SkillboxError + a recovery hint instead of crashing, so the
- * commands stay safe to run in the meantime.
+ * dynamic import. A build missing an expected export fails with a typed
+ * SkillboxError and recovery hint instead of crashing.
  *
  * Current mapping onto `@skillbox/core`:
- * - `forkSkill(alias, options)`                  (lifecycle/fork.js — LANDED)
- * - `vendorSkill(alias, options)`                (lifecycle/vendor.js — LANDED)
- * - `detectManagedModifications(alias, options)` (lifecycle/modification.js — LANDED;
+ * - `forkSkill(alias, options)`                  (lifecycle/fork.js)
+ * - `vendorSkill(alias, options)`                (lifecycle/vendor.js)
+ * - `detectManagedModifications(alias, options)` (lifecycle/modification.js;
  *   returns `boolean`, the CLI contract's `{ modified, files? }` is derived)
- * - `restoreManagedSkill`                        — NOT LANDED (TODO below)
+ * - `restoreManagedSkill`                        — not implemented
  * - `diffSkill` / `mergeSkill` / `continueMerge` / `abortMerge`
- *                                                — NOT LANDED YET (TODO below)
+ *                                                (diff/ and merge/)
  */
 
 /** Loads the core package as an opaque module map (injectable in tests). */
@@ -176,7 +175,7 @@ function mapModifications(raw: unknown, name: string): ManagedModifications {
 }
 
 /* ------------------------------------------------------------------ *
- * Lifecycle provider (agent 1 — @skillbox/core/lifecycle)
+ * Lifecycle provider — @skillbox/core/lifecycle
  * ------------------------------------------------------------------ */
 
 class LifecycleProviderAdapter implements LifecycleProvider {
@@ -257,7 +256,7 @@ export function createDefaultLifecycleProvider(
 }
 
 /* ------------------------------------------------------------------ *
- * Diff provider (agent 2 — @skillbox/core/diff)
+ * Diff provider — @skillbox/core/diff
  * ------------------------------------------------------------------ */
 
 class DiffProviderAdapter implements DiffProvider {
@@ -283,7 +282,7 @@ class DiffProviderAdapter implements DiffProvider {
     if (typeof diffSkill !== 'function') {
       throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
     }
-    // TODO(diff, agent 2): adapt the mapping onto core's diffSkill signature
+    // Adapt the CLI shape onto Core's diffSkill signature.
     // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
     // `{ name, mode, views: [{ label, files: [{ path, status, patch }] }] }`).
     return (await diffSkill(input.name, coreOptions(input))) as SkillDiff
@@ -299,7 +298,7 @@ export function createDefaultDiffProvider(
 }
 
 /* ------------------------------------------------------------------ *
- * Merge provider (agent 2 — @skillbox/core/merge)
+ * Merge provider — @skillbox/core/merge
  * ------------------------------------------------------------------ */
 
 class MergeProviderAdapter implements MergeProvider {
@@ -325,7 +324,7 @@ class MergeProviderAdapter implements MergeProvider {
     if (typeof mergeSkill !== 'function') {
       throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
     }
-    // TODO(merge, agent 2): adapt the mapping onto core's mergeSkill signature
+    // Adapt the CLI shape onto Core's mergeSkill signature.
     // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
     // `{ name, conflicts: [{ path, hunks, reason? }], filesMerged, changes,
     //   baseRevision? }`).

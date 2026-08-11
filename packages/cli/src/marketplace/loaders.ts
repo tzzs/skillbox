@@ -20,11 +20,10 @@ import type {
  *
  * Follows the V0.2 sync convention (`./sync/loaders.js`): the CLI defines the
  * contracts in `./types.js` and adapts the core modules onto them at runtime
- * through a dynamic import. When a core export has not landed yet, the call
- * fails with a typed SkillboxError + a recovery hint instead of crashing, so
- * the commands stay safe to run in the meantime.
+ * through a dynamic import. A build missing an expected export fails with a
+ * typed SkillboxError and recovery hint instead of crashing.
  *
- * Current mapping onto `@skillbox/core` (agents 1/2):
+ * Current mapping onto `@skillbox/core`:
  * - `parseSource`                     (registry/source.js)
  * - `defaultRegistry` / `resolveProvider` (registry/registry.js)
  * - `installSkill` / `updateSkill` / `clearCache` (install/transaction.js + cache.js)
@@ -48,7 +47,7 @@ function unavailable(code: SkillboxErrorCode, hint: string): SkillboxError {
 }
 
 /* ------------------------------------------------------------------ *
- * Source parser (agent 1 — @skillbox/core/registry)
+ * Source parser — @skillbox/core/registry
  * ------------------------------------------------------------------ */
 
 class SourceParserAdapter implements SourceParser {
@@ -75,14 +74,13 @@ class SourceParserAdapter implements SourceParser {
 
 export function createDefaultSourceParser(
   loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The V0.3 source parser is not available in this build yet — ' +
-    'the core registry module has not landed. Try again after the marketplace ships.',
+  hint: string = 'This build is missing the Core source parser export. Reinstall or upgrade skillbox.',
 ): SourceParser {
   return new SourceParserAdapter(loadCore, hint)
 }
 
 /* ------------------------------------------------------------------ *
- * Registry client (agent 1 — @skillbox/core/registry)
+ * Registry client — @skillbox/core/registry
  * ------------------------------------------------------------------ */
 
 /** Structural shape of a core `RegistryProvider` (registry/types.js). */
@@ -99,10 +97,31 @@ interface ProviderRegistryShape {
   listProviders: () => RegistryProviderShape[]
 }
 
+/** Makes first-party providers available to every production marketplace entrypoint. */
+function ensureDefaultProvidersRegistered(core: Record<string, unknown>): void {
+  const registerProvider = core.registerProvider as ((provider: unknown) => unknown) | undefined
+  const registry = core.defaultRegistry as ProviderRegistryShape | undefined
+  if (typeof registerProvider !== 'function' || registry?.listProviders === undefined) {
+    return
+  }
+  for (const candidate of [core.GitHubProvider, core.SkillsShProvider, core.LocalProvider]) {
+    if (typeof candidate !== 'function') {
+      continue
+    }
+    const Provider = candidate as new () => RegistryProviderShape
+    try {
+      const provider = new Provider()
+      if (!registry.listProviders().some((existing) => existing.id === provider.id)) {
+        registerProvider(provider)
+      }
+    } catch {
+      // An unavailable optional provider must not take down the marketplace.
+    }
+  }
+}
+
 class RegistryClientAdapter implements RegistryClient {
   private modulePromise?: Promise<Record<string, unknown>>
-  /** One-shot guard: the default providers register at most once per adapter. */
-  private providersRegistered = false
 
   constructor(
     private readonly loadCore: CoreModuleLoader,
@@ -113,55 +132,8 @@ class RegistryClientAdapter implements RegistryClient {
   private async core(): Promise<Record<string, unknown>> {
     this.modulePromise ??= this.loadCore()
     const core = await this.modulePromise
-    this.ensureProvidersRegistered(core)
+    ensureDefaultProvidersRegistered(core)
     return core
-  }
-
-  /**
-   * Registers the first-party default providers (github / skills-sh / local)
-   * onto core's `defaultRegistry` right after the module loads. Core's
-   * `registerProvider` replaces same-id entries, but re-instantiating on
-   * every call would be wasteful — the flag plus an id check keep this
-   * one-shot. When the core build lacks these exports (or a test injects
-   * `{}`), the registration is skipped silently and the existing
-   * REGISTRY_UNAVAILABLE degradation still applies.
-   */
-  private ensureProvidersRegistered(core: Record<string, unknown>): void {
-    if (this.providersRegistered) {
-      return
-    }
-    this.providersRegistered = true
-    const registerProvider = core.registerProvider as ((provider: unknown) => unknown) | undefined
-    if (typeof registerProvider !== 'function') {
-      return
-    }
-    const registry = core.defaultRegistry as ProviderRegistryShape | undefined
-    const providerClasses: unknown[] = [
-      core.GitHubProvider,
-      core.SkillsShProvider,
-      core.LocalProvider,
-    ]
-    for (const candidate of providerClasses) {
-      if (typeof candidate !== 'function') {
-        continue
-      }
-      const Provider = candidate as new () => RegistryProviderShape
-      let provider: RegistryProviderShape
-      try {
-        provider = new Provider()
-      } catch {
-        // a broken constructor must not take the registry client down
-        continue
-      }
-      if (registry?.listProviders().some((existing) => existing.id === provider.id)) {
-        continue
-      }
-      try {
-        registerProvider(provider)
-      } catch {
-        // best effort: registration must never break search/resolve
-      }
-    }
   }
 
   private providerForSync(
@@ -214,14 +186,13 @@ class RegistryClientAdapter implements RegistryClient {
 export function createDefaultRegistryClient(
   _homeRoot: string,
   loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The skill registry is not available in this build yet — ' +
-    'the V0.3 registry services are under construction.',
+  hint: string = 'This build is missing the Core registry exports. Reinstall or upgrade skillbox.',
 ): RegistryClient {
   return new RegistryClientAdapter(loadCore, hint)
 }
 
 /* ------------------------------------------------------------------ *
- * Install transaction (agent 2 — @skillbox/core/install)
+ * Install transaction — @skillbox/core/install
  * ------------------------------------------------------------------ */
 
 /**
@@ -265,7 +236,9 @@ class InstallServiceAdapter implements InstallService {
 
   private async core(): Promise<Record<string, unknown>> {
     this.modulePromise ??= this.loadCore()
-    return this.modulePromise
+    const core = await this.modulePromise
+    ensureDefaultProvidersRegistered(core)
+    return core
   }
 
   async installSkill(
@@ -312,9 +285,7 @@ class InstallServiceAdapter implements InstallService {
     if (!isTransactionUpdate) {
       throw unavailable(
         'INSTALL_DOWNLOAD_FAILED',
-        'The V0.3 update flow is not available in this build yet — `skillbox update` ' +
-          'lands with the install/security milestone. Run `skillbox outdated` to see ' +
-          'what is behind, and `skillbox add <source>` for fresh installs.',
+        'This build is missing the Core update transaction export. Reinstall or upgrade skillbox.',
       )
     }
     const options: Record<string, unknown> = {
@@ -364,16 +335,14 @@ class InstallServiceAdapter implements InstallService {
 export function createDefaultInstallService(
   options: { repositoryRoot: string; homeRoot: string },
   loadCore: CoreModuleLoader = loadSkillboxCore,
-  installHint: string = 'The V0.3 install transaction is not available in this build yet — ' +
-    'the core install module has not landed. Try again after the marketplace ships.',
-  cacheHint: string = 'The V0.3 cache module is not available in this build yet — ' +
-    'there is nothing to clean.',
+  installHint: string = 'This build is missing the Core install transaction export. Reinstall or upgrade skillbox.',
+  cacheHint: string = 'This build is missing the Core cache export; there is nothing to clean.',
 ): InstallService {
   return new InstallServiceAdapter(options, loadCore, installHint, cacheHint)
 }
 
 /* ------------------------------------------------------------------ *
- * Security scanner (agent 2 — @skillbox/core/security)
+ * Security scanner — @skillbox/core/security
  * ------------------------------------------------------------------ */
 
 class SecurityScannerAdapter implements SecurityScanner {
@@ -395,8 +364,7 @@ class SecurityScannerAdapter implements SecurityScanner {
 
 export function createDefaultSecurityScanner(
   loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The V0.3 security scanner is not available in this build yet — ' +
-    'the core security module has not landed.',
+  hint: string = 'This build is missing the Core security scanner export. Reinstall or upgrade skillbox.',
 ): SecurityScanner {
   return new SecurityScannerAdapter(loadCore, hint)
 }

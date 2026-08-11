@@ -56,7 +56,7 @@ function isNotARepositoryError(error: unknown): boolean {
 }
 
 /* ---------------------------------------------------------------------- *
- * Git (agent 1 — @skillbox/core/git)
+ * Git — @skillbox/core/git
  *
  * `GitClient` takes options and receives `repositoryRoot` per call:
  *   status(root) -> { files, conflicts, staged, unstaged, untracked, clean }
@@ -197,7 +197,7 @@ class GitClientAdapter implements GitProvider {
 export function createGitProviderFromCore(
   repositoryRoot: string,
   loadCore: CoreModuleLoader,
-  hint: string = 'Git sync is not available in this build yet (V0.2 GitClient not wired).',
+  hint: string = 'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
 ): GitProvider {
   return new GitClientAdapter(repositoryRoot, loadCore, hint)
 }
@@ -206,8 +206,7 @@ export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
   return createGitProviderFromCore(
     repositoryRoot,
     loadSkillboxCore,
-    'Git sync is not available in this build yet — the GitClient core module has not landed. ' +
-      'Run `skillbox status` to inspect Skills and Agents in the meantime.',
+    'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
   )
 }
 
@@ -274,7 +273,7 @@ export function createDefaultGitHubProvider(
 }
 
 /* ---------------------------------------------------------------------- *
- * Secret scanner (agent 4 — @skillbox/core/secret-scan)
+ * Secret scanner — @skillbox/core/secret-scan
  *
  * Exported function `scanFiles(files, { root }) -> ScanResult`
  * with `{ findings, blocked, block }`. `block` blocks the pipeline.

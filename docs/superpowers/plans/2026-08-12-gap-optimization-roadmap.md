@@ -102,22 +102,22 @@ Green：
 
 Red：
 
-- [ ] 使用默认 production wiring 与 Local provider 执行 update
-- [ ] 证明测试不依赖预先调用 search/outdated 的副作用
+- [x] 使用默认 production wiring 与 Local provider 执行 update
+- [x] 证明测试不依赖预先调用 search/outdated 的副作用
 
 Green：
 
-- [ ] production factory 构建时统一注册默认 provider
-- [ ] update 与 add 使用同一 registry 实例
-- [ ] 保留重复注册幂等性
+- [x] production adapter 加载时统一注册默认 provider
+- [x] update 与 add 使用同一 Core defaultRegistry
+- [x] 保留重复注册幂等性
 
 完成标准：全新进程可直接执行默认 `skillbox update`，不依赖其他命令预热 registry。
 
 ### 阶段 0 退出门禁
 
-- [ ] 全量质量命令通过，或现有失败已形成独立修复任务
-- [ ] 两个 production wiring 缺陷均有先失败、后通过的测试
-- [ ] 过时注释不再描述已不存在的接口事实
+- [x] 全量质量命令通过，或现有失败已形成独立修复任务
+- [x] 两个 production wiring 缺陷均有先失败、后通过的测试
+- [x] 过时注释不再描述已不存在的接口事实
 
 ## 3. 阶段 1 — 打通 GitHub/Git 主流程
 
