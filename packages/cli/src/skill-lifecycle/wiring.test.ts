@@ -52,7 +52,13 @@ function createFixture(): {
       fs.writeFileSync(path.join(repositoryRoot, 'skillbox.lock'), yaml),
     writeManifest: (yaml: string) =>
       fs.writeFileSync(path.join(repositoryRoot, 'skillbox.yaml'), yaml),
-    cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
+    cleanup: () =>
+      fs.rmSync(base, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      }),
   }
 }
 
