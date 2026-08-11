@@ -1,0 +1,21 @@
+/**
+ * Shared sync types. Re-exports the provider contracts plus the pipeline's
+ * step vocabulary so commands/tests import from a single surface.
+ */
+export type {
+  DeviceFlowStart,
+  GitHubProvider,
+  GitCommitOutcome,
+  GitProvider,
+  GitPullOutcome,
+  GitStatusReport,
+  GithubConnectionState,
+  SecretFinding,
+  SecretScanResult,
+  SecretScanner,
+  SecretSeverity,
+} from './providers.js'
+
+export type SyncStepId = 'scan' | 'detect' | 'secret-scan' | 'pull' | 'resolve' | 'commit' | 'push'
+
+export type SyncStepStatus = 'ok' | 'skipped' | 'warning'
