@@ -208,6 +208,40 @@ export function createWebApp(options: WebAppOptions): Hono {
     return c.json<ReconcileResponse>({ reconcile })
   })
 
+  /* ---- lifecycle mutations: Core owns every transaction ---- */
+
+  app.post('/api/skills/:id/fork', async (c) => {
+    return c.json({ forked: await services.lifecycle.fork(c.req.param('id')) })
+  })
+  app.post('/api/skills/:id/vendor', async (c) => {
+    const body = await optionalJsonBody(c)
+    const keepProvenance = booleanField(body, 'keepProvenance')
+    const removeBaseSnapshot = booleanField(body, 'removeBaseSnapshot')
+    return c.json({
+      vendored: await services.lifecycle.vendor(c.req.param('id'), {
+        ...(keepProvenance === undefined ? {} : { keepProvenance }),
+        ...(removeBaseSnapshot === undefined ? {} : { removeBaseSnapshot }),
+      }),
+    })
+  })
+  app.post('/api/skills/:id/restore', async (c) =>
+    c.json({ restored: await services.lifecycle.restore(c.req.param('id')) }),
+  )
+  app.post('/api/skills/:id/merge', async (c) =>
+    c.json({ merge: await services.lifecycle.merge(c.req.param('id')) }),
+  )
+  app.post('/api/skills/:id/merge/continue', async (c) =>
+    c.json({ merge: await services.lifecycle.continueMerge(c.req.param('id')) }),
+  )
+  app.post('/api/skills/:id/merge/abort', async (c) =>
+    c.json({ merge: await services.lifecycle.abortMerge(c.req.param('id')) }),
+  )
+  app.post('/api/operations/rollback', async (c) => {
+    const body = await optionalJsonBody(c)
+    const operationId = optionalStringField(body, 'operationId')
+    return c.json({ rollback: await services.operations.rollback(operationId) })
+  })
+
   /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
 
   /**
@@ -308,6 +342,35 @@ async function requireJsonBody(c: { req: JsonRequestLike }): Promise<Record<stri
     throw new WebApiError('INVALID_REQUEST', 'The request body must be a JSON object')
   }
   return payload as Record<string, unknown>
+}
+
+async function optionalJsonBody(c: {
+  req: JsonRequestLike & { raw: Request }
+}): Promise<Record<string, unknown>> {
+  // Hono's synthetic no-body POST requests omit Content-Length; only that
+  // case is optional. A non-empty malformed body must retain the normal 400.
+  const length = c.req.raw.headers.get('content-length')
+  const contentType = c.req.raw.headers.get('content-type')
+  if ((length === null || length === '0') && contentType === null) return {}
+  return requireJsonBody(c)
+}
+
+function optionalStringField(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field]
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a non-empty string`)
+  }
+  return value
+}
+
+function booleanField(body: Record<string, unknown>, field: string): boolean | undefined {
+  const value = body[field]
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a boolean`)
+  }
+  return value
 }
 
 function stringField(body: Record<string, unknown>, field: string): string {

@@ -94,3 +94,26 @@ describe('sync API client', () => {
     await expect(api.sync()).resolves.toMatchObject({ kind: 'blocked', retryable: true })
   })
 })
+
+describe('lifecycle API client', () => {
+  it('uses the Core-backed lifecycle and operation routes', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ forked: { alias: 'hello', mode: 'forked' } }))
+      .mockResolvedValueOnce(response({ merge: { name: 'hello', conflicts: [] } }))
+      .mockResolvedValueOnce(response({ rollback: { operationId: 'op-1', restoredTargets: [] } }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(api.forkSkill('hello world')).resolves.toMatchObject({ mode: 'forked' })
+    await expect(api.mergeSkill('hello world')).resolves.toMatchObject({ name: 'hello' })
+    await expect(api.rollbackOperation('op-1')).resolves.toMatchObject({ operationId: 'op-1' })
+
+    expect(fetch.mock.calls[0]?.[0]).toBe('/api/skills/hello%20world/fork')
+    expect(fetch.mock.calls[1]?.[0]).toBe('/api/skills/hello%20world/merge')
+    expect(fetch.mock.calls[2]?.[0]).toBe('/api/operations/rollback')
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ operationId: 'op-1' }),
+    })
+  })
+})

@@ -1,6 +1,7 @@
 import {
   createDefaultAgentRegistry,
   createRepositorySync,
+  continueMerge,
   defaultRegistry,
   diffSkill,
   ErrorCode,
@@ -12,9 +13,15 @@ import {
   parseSource,
   readLockfile,
   readManifest,
+  restoreManagedSkill,
+  rollbackOperation,
   RuntimeConfigService,
   SkillsShProvider,
   SkillService,
+  forkSkill,
+  vendorSkill,
+  mergeSkill,
+  abortMerge,
   sourceToString,
   StatusService,
   type AgentRegistry,
@@ -31,6 +38,8 @@ import type {
   InstallInput,
   InstallResult,
   InstallService,
+  LifecycleService,
+  OperationService,
   OutdatedSkill,
   RegistrySearchOptions,
   RegistrySearchResult,
@@ -69,6 +78,10 @@ export interface CreateWebServicesOptions {
    * `defaultRegistry`); tests inject fakes to override.
    */
   diff?: DiffService
+  /** Core-backed lifecycle adapter; injectable for HTTP contract tests. */
+  lifecycle?: LifecycleService
+  /** Core-backed operation rollback adapter; injectable for HTTP contract tests. */
+  operations?: OperationService
   sync?: RepositorySync
 }
 
@@ -101,7 +114,33 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     updates: options.updates ?? createUpdatesService(repositoryRoot),
     install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
     diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
+    lifecycle: options.lifecycle ?? createLifecycleService(repositoryRoot, homeRoot),
+    operations: options.operations ?? createOperationService(repositoryRoot, homeRoot),
     sync: options.sync ?? createRepositorySync({ repositoryRoot, homeRoot }),
+  }
+}
+
+/** The HTTP layer delegates every lifecycle mutation to the public Core API. */
+function createLifecycleService(repositoryRoot: string, homeRoot: string): LifecycleService {
+  const scoped = { repositoryRoot, homeRoot }
+  return {
+    fork: (name) => forkSkill(name, scoped),
+    vendor: (name, input) => vendorSkill(name, { ...scoped, ...input }),
+    restore: (name) => restoreManagedSkill(name, scoped),
+    merge: (name) => mergeSkill(name, { ...scoped, registry: defaultRegistry }),
+    continueMerge: (name) => continueMerge(name, scoped),
+    abortMerge: (name) => abortMerge(name, scoped),
+  }
+}
+
+function createOperationService(repositoryRoot: string, homeRoot: string): OperationService {
+  return {
+    rollback: (operationId) =>
+      rollbackOperation({
+        repositoryRoot,
+        homeRoot,
+        ...(operationId === undefined ? {} : { operationId }),
+      }),
   }
 }
 

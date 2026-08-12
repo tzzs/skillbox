@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Check, GitCompare, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
 import type { AgentSummary } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
@@ -9,6 +9,7 @@ import {
   useSaveSkillContent,
   useSkill,
   useSkillContent,
+  useSkillLifecycle,
   useToggleSkill,
 } from '../queries.js'
 import { AgentTags, ModePill, SkillPath, StatusPill } from '../components/Pills.js'
@@ -29,6 +30,7 @@ export function SkillDetailPage() {
   const agentsQuery = useAgents()
   const remove = useRemoveSkill()
   const save = useSaveSkillContent()
+  const lifecycle = useSkillLifecycle()
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -162,6 +164,65 @@ export function SkillDetailPage() {
         </div>
       </div>
 
+      {(skill.mode === 'managed' || skill.mode === 'forked') && (
+        <div className="card">
+          <h2 className="card-title">Lifecycle</h2>
+          <p className="page-description">
+            These actions run the same verified Core transactions as the CLI. Changes create a
+            recoverable operation record.
+          </p>
+          <div className="form-actions">
+            {skill.mode === 'managed' && (
+              <LifecycleButton
+                action="fork"
+                label="Fork into repository"
+                lifecycle={lifecycle}
+                name={skill.name}
+              />
+            )}
+            {skill.mode === 'managed' && (
+              <LifecycleButton
+                action="restore"
+                label="Restore pinned version"
+                lifecycle={lifecycle}
+                name={skill.name}
+              />
+            )}
+            <LifecycleButton
+              action="vendor"
+              label="Vendor and freeze"
+              lifecycle={lifecycle}
+              name={skill.name}
+            />
+            <LifecycleButton
+              action="merge"
+              label="Merge upstream"
+              lifecycle={lifecycle}
+              name={skill.name}
+            />
+            {skill.mode === 'forked' && (
+              <>
+                <LifecycleButton
+                  action="continue-merge"
+                  label="Finish merge"
+                  lifecycle={lifecycle}
+                  name={skill.name}
+                />
+                <LifecycleButton
+                  action="abort-merge"
+                  label="Abort merge"
+                  lifecycle={lifecycle}
+                  name={skill.name}
+                  danger
+                />
+              </>
+            )}
+          </div>
+          {lifecycle.isSuccess && <p className="saved-note">Lifecycle operation completed.</p>}
+          {lifecycle.isError && <div className="form-error">{errorMessage(lifecycle.error)}</div>}
+        </div>
+      )}
+
       <div className="card">
         <h2 className="card-title">Agents</h2>
         <AgentToggleList
@@ -259,6 +320,33 @@ export function SkillDetailPage() {
         {remove.isError && <div className="form-error">{errorMessage(remove.error)}</div>}
       </div>
     </section>
+  )
+}
+
+function LifecycleButton({
+  action,
+  label,
+  lifecycle,
+  name,
+  danger = false,
+}: {
+  action: 'fork' | 'vendor' | 'restore' | 'merge' | 'continue-merge' | 'abort-merge'
+  label: string
+  lifecycle: ReturnType<typeof useSkillLifecycle>
+  name: string
+  danger?: boolean
+}) {
+  const pending = lifecycle.isPending && lifecycle.variables?.action === action
+  return (
+    <button
+      type="button"
+      className={`btn btn--small${danger ? ' btn--danger' : ''}`}
+      onClick={() => lifecycle.mutate({ name, action })}
+      disabled={lifecycle.isPending}
+    >
+      {pending ? <span className="spinner" /> : <RotateCcw aria-hidden="true" />}
+      {label}
+    </button>
   )
 }
 

@@ -256,6 +256,42 @@ export function useRestoreSyncSnapshot() {
   })
 }
 
+/** Mutates through the public lifecycle endpoints and refreshes all skill state. */
+export function useSkillLifecycle() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: {
+      name: string
+      action: 'fork' | 'vendor' | 'restore' | 'merge' | 'continue-merge' | 'abort-merge'
+    }) => {
+      switch (input.action) {
+        case 'fork':
+          return api.forkSkill(input.name)
+        case 'vendor':
+          return api.vendorSkill(input.name, { keepProvenance: true })
+        case 'restore':
+          return api.restoreSkill(input.name)
+        case 'merge':
+          return api.mergeSkill(input.name)
+        case 'continue-merge':
+          return api.continueMerge(input.name)
+        case 'abort-merge':
+          return api.abortMerge(input.name)
+      }
+    },
+    onSuccess: (_data, input) => {
+      for (const key of [
+        queryKeys.skill(input.name),
+        queryKeys.skillContent(input.name),
+        queryKeys.skills,
+        queryKeys.status,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
+  })
+}
+
 /**
  * Remote install / update transaction (M15 + M16.3 Update button). On success
  * the library, status and outdated views are refreshed.

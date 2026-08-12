@@ -6,9 +6,16 @@ import type {
   RuntimeConfigService,
   RepositorySync,
   ConflictResolution,
+  AbortMergeResult,
+  ContinueMergeResult,
+  ForkSkillResult,
+  MergeSkillResult,
+  RestoreManagedSkillResult,
+  RollbackOperationResult,
   SkillDiff,
   SkillService,
   StatusService,
+  VendorSkillResult,
 } from '@skillbox/core'
 
 /**
@@ -137,6 +144,28 @@ export interface DiffService {
 }
 
 /**
+ * Lifecycle operations exposed by the web server.  This deliberately mirrors
+ * the public Core functions instead of reimplementing manifest or filesystem
+ * mutations in the HTTP layer.
+ */
+export interface LifecycleService {
+  fork(name: string): Promise<ForkSkillResult>
+  vendor(
+    name: string,
+    input?: { keepProvenance?: boolean; removeBaseSnapshot?: boolean },
+  ): Promise<VendorSkillResult>
+  restore(name: string): Promise<RestoreManagedSkillResult>
+  merge(name: string): Promise<MergeSkillResult>
+  continueMerge(name: string): Promise<ContinueMergeResult>
+  abortMerge(name: string): Promise<AbortMergeResult>
+}
+
+/** User-requested rollback of the latest (or explicitly identified) operation. */
+export interface OperationService {
+  rollback(operationId?: string): Promise<RollbackOperationResult>
+}
+
+/**
  * The Core services the Web layer is allowed to talk to. Every API route goes
  * through one of these services; the web layer never touches skill files or
  * manifests directly (M10.6).
@@ -155,6 +184,8 @@ export interface WebServices {
   install: InstallService
   /** V0.4 skill diff computation (agent 2 contract). */
   diff: DiffService
+  lifecycle: LifecycleService
+  operations: OperationService
   sync: RepositorySync
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string

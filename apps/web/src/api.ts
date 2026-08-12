@@ -67,6 +67,17 @@ export interface SavedSkillContent {
   status: 'ready' | 'modified'
 }
 
+/** Results returned by the Core-backed lifecycle routes. */
+export interface LifecycleResult {
+  alias?: string
+  name?: string
+  mode?: 'forked' | 'vendored'
+  filesRestored?: number
+  filesMerged?: number
+  conflicts?: unknown[]
+  resolved?: boolean
+}
+
 export interface AgentAssignment {
   name: string
   agent: string
@@ -375,6 +386,18 @@ export interface ApiClient {
   conflict(id: string): Promise<ConflictSessionView>
   resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
   restoreSyncSnapshot(id: string): Promise<void>
+  forkSkill(name: string): Promise<LifecycleResult>
+  vendorSkill(
+    name: string,
+    input?: { keepProvenance?: boolean; removeBaseSnapshot?: boolean },
+  ): Promise<LifecycleResult>
+  restoreSkill(name: string): Promise<LifecycleResult>
+  mergeSkill(name: string): Promise<LifecycleResult>
+  continueMerge(name: string): Promise<LifecycleResult>
+  abortMerge(name: string): Promise<LifecycleResult>
+  rollbackOperation(
+    operationId?: string,
+  ): Promise<{ operationId: string; restoredTargets: string[] }>
 }
 
 function encodeName(name: string): string {
@@ -547,5 +570,64 @@ export const api: ApiClient = {
 
   async restoreSyncSnapshot(id) {
     await request<unknown>(`/api/sync/snapshots/${encodeName(id)}/restore`, { method: 'POST' })
+  },
+
+  async forkSkill(name) {
+    return (
+      await request<{ forked: LifecycleResult }>(`/api/skills/${encodeName(name)}/fork`, {
+        method: 'POST',
+      })
+    ).forked
+  },
+
+  async vendorSkill(name, input) {
+    return (
+      await request<{ vendored: LifecycleResult }>(`/api/skills/${encodeName(name)}/vendor`, {
+        method: 'POST',
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+      })
+    ).vendored
+  },
+
+  async restoreSkill(name) {
+    return (
+      await request<{ restored: LifecycleResult }>(`/api/skills/${encodeName(name)}/restore`, {
+        method: 'POST',
+      })
+    ).restored
+  },
+
+  async mergeSkill(name) {
+    return (
+      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge`, {
+        method: 'POST',
+      })
+    ).merge
+  },
+
+  async continueMerge(name) {
+    return (
+      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge/continue`, {
+        method: 'POST',
+      })
+    ).merge
+  },
+
+  async abortMerge(name) {
+    return (
+      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge/abort`, {
+        method: 'POST',
+      })
+    ).merge
+  },
+
+  async rollbackOperation(operationId) {
+    const response = await request<{
+      rollback: { operationId: string; restoredTargets: string[] }
+    }>('/api/operations/rollback', {
+      method: 'POST',
+      ...(operationId === undefined ? {} : { body: JSON.stringify({ operationId }) }),
+    })
+    return response.rollback
   },
 }

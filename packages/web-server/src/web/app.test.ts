@@ -37,6 +37,8 @@ import type {
   DiffService,
   InstallResult,
   InstallService,
+  LifecycleService,
+  OperationService,
   OutdatedSkill,
   RegistrySearchOptions,
   RegistrySearchResult,
@@ -981,6 +983,147 @@ describe('GET /api/skills/:id/diff', () => {
     )
   })
 })
+
+describe('lifecycle API', () => {
+  it('delegates every lifecycle and rollback request through the injected Core-facing services', async () => {
+    const calls: string[] = []
+    await withLifecycleApp(calls, async (app) => {
+      await expect(
+        app.request('/api/skills/hello/fork', { method: 'POST' }),
+      ).resolves.toMatchObject({
+        status: 200,
+      })
+      await expect(
+        app.request('/api/skills/hello/vendor', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ keepProvenance: true, removeBaseSnapshot: false }),
+        }),
+      ).resolves.toMatchObject({ status: 200 })
+      await expect(
+        app.request('/api/skills/hello/restore', { method: 'POST' }),
+      ).resolves.toMatchObject({
+        status: 200,
+      })
+      await expect(
+        app.request('/api/skills/hello/merge', { method: 'POST' }),
+      ).resolves.toMatchObject({
+        status: 200,
+      })
+      await expect(
+        app.request('/api/skills/hello/merge/continue', { method: 'POST' }),
+      ).resolves.toMatchObject({ status: 200 })
+      await expect(
+        app.request('/api/skills/hello/merge/abort', { method: 'POST' }),
+      ).resolves.toMatchObject({
+        status: 200,
+      })
+      const rollback = await app.request('/api/operations/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operationId: 'op-7' }),
+      })
+      expect(rollback.status).toBe(200)
+      await expect(rollback.json()).resolves.toMatchObject({ rollback: { operationId: 'op-7' } })
+    })
+    expect(calls).toEqual([
+      'fork:hello',
+      'vendor:hello:true:false',
+      'restore:hello',
+      'merge:hello',
+      'continue:hello',
+      'abort:hello',
+      'rollback:op-7',
+    ])
+  })
+
+  it('rejects malformed optional lifecycle JSON instead of silently changing behavior', async () => {
+    await withLifecycleApp([], async (app) => {
+      const response = await app.request('/api/skills/hello/vendor', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{',
+      })
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'INVALID_REQUEST' } })
+    })
+  })
+})
+
+async function withLifecycleApp(calls: string[], run: (app: Hono) => Promise<void>): Promise<void> {
+  const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-lifecycle-repo-'))
+  const home = await mkdtemp(join(tmpdir(), 'skillbox-web-lifecycle-home-'))
+  const lifecycle: LifecycleService = {
+    async fork(name) {
+      calls.push(`fork:${name}`)
+      return {
+        alias: name,
+        mode: 'forked',
+        repositoryPath: `skills/${name}`,
+        absolutePath: `/repo/skills/${name}`,
+        integrity: 'sha256:fork',
+        upstream: { type: 'github', repo: 'org/repo' },
+        baseRevision: 'r1',
+        baseIntegrity: 'sha256:base',
+        baseSnapshotPath: '/repo/.skillbox/bases/hello/r1',
+        agents: [],
+      }
+    },
+    async vendor(name, input) {
+      calls.push(
+        `vendor:${name}:${String(input?.keepProvenance)}:${String(input?.removeBaseSnapshot)}`,
+      )
+      return {
+        alias: name,
+        mode: 'vendored',
+        repositoryPath: `skills/${name}`,
+        absolutePath: `/repo/skills/${name}`,
+        integrity: 'sha256:vendor',
+        fromFork: false,
+        agents: [],
+      }
+    },
+    async restore(name) {
+      calls.push(`restore:${name}`)
+      return {
+        alias: name,
+        filesRestored: 1,
+        integrity: 'sha256:restore',
+        materializedPath: '/home/library/managed/hello',
+      }
+    },
+    async merge(name) {
+      calls.push(`merge:${name}`)
+      return { name, conflicts: [], filesMerged: 1, changes: 0 }
+    },
+    async continueMerge(name) {
+      calls.push(`continue:${name}`)
+      return { name, resolved: true, remainingConflicts: [], filesMerged: 1, changes: 0 }
+    },
+    async abortMerge(name) {
+      calls.push(`abort:${name}`)
+      return { name, filesRestored: 1 }
+    },
+  }
+  const operations: OperationService = {
+    async rollback(operationId) {
+      calls.push(`rollback:${operationId ?? 'latest'}`)
+      return { operationId: operationId ?? 'latest', restoredTargets: ['/repo/skillbox.yaml'] }
+    },
+  }
+  try {
+    const services = createWebServices({
+      repositoryRoot: repository,
+      homeRoot: home,
+      lifecycle,
+      operations,
+    })
+    await run(createWebApp({ services }))
+  } finally {
+    await rm(repository, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }
+}
 
 interface DiffFakes {
   diffResult?: SkillDiff
