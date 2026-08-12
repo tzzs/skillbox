@@ -76,6 +76,11 @@ import {
   renderRollbackSummary,
   type RollbackProvider,
 } from './operations/index.js'
+import {
+  createDefaultDiagnosticsProvider,
+  renderDiagnostics,
+  type DiagnosticsProvider,
+} from './diagnostics/index.js'
 
 /** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
 export interface MarketplaceDeps {
@@ -124,6 +129,8 @@ export interface CliDeps {
   lifecycle?: LifecycleDeps
   /** User-level operation rollback; default-constructed from @skillbox/core. */
   rollbackProvider?: RollbackProvider
+  /** Environment diagnostics; default-constructed from @skillbox/core. */
+  diagnosticsProvider?: DiagnosticsProvider
 }
 
 export interface CliContext {
@@ -141,6 +148,7 @@ export interface CliContext {
   /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
   lifecycle?: LifecycleDeps
   rollbackProvider?: RollbackProvider
+  diagnosticsProvider?: DiagnosticsProvider
   /** Prompt implementation for the interactive `add` flow. */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -180,6 +188,9 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   }
   if (deps.rollbackProvider !== undefined) {
     context.rollbackProvider = deps.rollbackProvider
+  }
+  if (deps.diagnosticsProvider !== undefined) {
+    context.diagnosticsProvider = deps.diagnosticsProvider
   }
   if (deps.prompts !== undefined) {
     context.prompts = deps.prompts
@@ -834,6 +845,21 @@ export function buildProgram(ctx: CliContext): Command {
         ...(operationId === undefined ? {} : { operationId }),
       })
       ctx.out(`${renderRollbackSummary(result)}\n`)
+    })
+
+  program
+    .command('doctor')
+    .description('Check local prerequisites and Skillbox repository state')
+    .option('--json', 'emit the Core diagnostic report as JSON')
+    .action(async (options: { json?: boolean }) => {
+      const report = await (ctx.diagnosticsProvider ?? createDefaultDiagnosticsProvider()).collect({
+        repositoryRoot: ctx.repositoryRoot,
+      })
+      if (options.json === true) {
+        printJson(ctx.out, report)
+        return
+      }
+      ctx.out(`${renderDiagnostics(report)}\n`)
     })
 
   // M10/M11 — the `web` subcommand is registered by the web module; the

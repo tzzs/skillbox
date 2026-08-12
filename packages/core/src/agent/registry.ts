@@ -8,6 +8,7 @@ import type { AgentAdapter } from './adapter.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { CursorAdapter } from './adapters/cursor.js'
+import { CopilotAdapter } from './adapters/copilot.js'
 import { GeminiAdapter } from './adapters/gemini.js'
 import { OpenCodeAdapter } from './adapters/opencode.js'
 import { WindsurfAdapter } from './adapters/windsurf.js'
@@ -118,6 +119,7 @@ export function createDefaultAgentRegistry(): AgentRegistry {
     .register(new ClaudeAdapter())
     .register(new CodexAdapter())
     .register(new CursorAdapter())
+    .register(new CopilotAdapter())
     .register(new GeminiAdapter())
     .register(new OpenCodeAdapter())
     .register(new WindsurfAdapter())
