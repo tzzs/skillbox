@@ -10,6 +10,7 @@ import {
   useSkill,
   useSkillContent,
   useSkillLifecycle,
+  useRollbackLatestOperation,
   useToggleSkill,
 } from '../queries.js'
 import { AgentTags, ModePill, SkillPath, StatusPill } from '../components/Pills.js'
@@ -31,11 +32,13 @@ export function SkillDetailPage() {
   const remove = useRemoveSkill()
   const save = useSaveSkillContent()
   const lifecycle = useSkillLifecycle()
+  const rollback = useRollbackLatestOperation()
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [dirty, setDirty] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const [confirmRollback, setConfirmRollback] = useState(false)
 
   useEffect(() => {
     if (skillQuery.isSuccess && !dirty) {
@@ -220,6 +223,46 @@ export function SkillDetailPage() {
           </div>
           {lifecycle.isSuccess && <p className="saved-note">Lifecycle operation completed.</p>}
           {lifecycle.isError && <div className="form-error">{errorMessage(lifecycle.error)}</div>}
+          {confirmRollback ? (
+            <div className="form-actions">
+              <button
+                type="button"
+                className="btn btn--danger btn--small"
+                onClick={() =>
+                  rollback.mutate(undefined, { onSuccess: () => setConfirmRollback(false) })
+                }
+                disabled={rollback.isPending}
+              >
+                {rollback.isPending ? (
+                  <span className="spinner" />
+                ) : (
+                  <RotateCcw aria-hidden="true" />
+                )}
+                Confirm undo latest operation
+              </button>
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => setConfirmRollback(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--danger btn--small"
+              onClick={() => setConfirmRollback(true)}
+              disabled={lifecycle.isPending || rollback.isPending}
+            >
+              <RotateCcw aria-hidden="true" />
+              Undo latest operation
+            </button>
+          )}
+          {rollback.isSuccess && (
+            <p className="saved-note">Latest recoverable operation was undone.</p>
+          )}
+          {rollback.isError && <div className="form-error">{errorMessage(rollback.error)}</div>}
         </div>
       )}
 

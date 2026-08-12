@@ -7,6 +7,7 @@ import { ManagedCache } from '../install/cache.js'
 import { readLockfile } from '../lockfile/index.js'
 import { readManifest } from '../manifest/index.js'
 import { createSkillSourceResolver } from '../sources/index.js'
+import { createOperationRuntime } from '../operations/index.js'
 import { detectManagedModifications } from './modification.js'
 import { modifyManagedCopy, seedManagedSkill } from './test-utils.js'
 import { restoreManagedSkill } from './restore.js'
@@ -25,6 +26,25 @@ async function seedPinnedCache(seed: Awaited<ReturnType<typeof seedManagedSkill>
 }
 
 describe('restoreManagedSkill', () => {
+  it('records the prior managed runtime so restore can be rolled back', async () => {
+    await withTempDir(async (dir) => {
+      const seed = await seedManagedSkill(dir)
+      await seedPinnedCache(seed)
+      await modifyManagedCopy(seed)
+
+      await restoreManagedSkill(seed.alias, {
+        repositoryRoot: seed.repositoryRoot,
+        homeRoot: seed.homeRoot,
+      })
+      await createOperationRuntime({
+        repositoryRoot: seed.repositoryRoot,
+        homeRoot: seed.homeRoot,
+      }).rollback()
+
+      expect(await fs.readFile(path.join(seed.managedPath, 'edited.md'), 'utf8')).toBe('changed\n')
+    })
+  })
+
   it('restores modified managed content from the exact pinned cache entry without changing metadata', async () => {
     await withTempDir(async (dir) => {
       const seed = await seedManagedSkill(dir)

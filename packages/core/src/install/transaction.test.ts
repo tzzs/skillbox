@@ -22,6 +22,7 @@ import { installSkill, defaultAliasFor } from './transaction.js'
 import { ManagedCache } from './cache.js'
 import { createSkillSourceResolver } from '../sources/index.js'
 import type { CanonicalSkillSource, SkillSourceAdapter } from '../sources/types.js'
+import { createOperationRuntime } from '../operations/index.js'
 
 const GITHUB_SOURCE: NormalizedSource = {
   type: 'github',
@@ -134,6 +135,32 @@ class FakeAgentAdapter implements AgentAdapter {
 }
 
 describe('installSkill', () => {
+  it('records install targets so the completed install can be rolled back', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      const seed = path.join(dir, 'seed')
+      await fs.mkdir(repoRoot, { recursive: true })
+      await seedRepo(seed)
+
+      await installSkill(GITHUB_SOURCE, {
+        repositoryRoot: repoRoot,
+        homeRoot,
+        provider: new FakeGithubProvider(seed, 'abc123'),
+      })
+
+      const rollback = await createOperationRuntime({
+        repositoryRoot: repoRoot,
+        homeRoot,
+      }).rollback()
+      expect(rollback.restoredTargets).toContain(path.join(repoRoot, 'skillbox.yaml'))
+      await expect(fs.stat(path.join(repoRoot, 'skillbox.yaml'))).rejects.toThrow()
+      await expect(
+        fs.stat(path.join(buildSkillboxHomeLayout(homeRoot).library, 'managed', 'hello')),
+      ).rejects.toThrow()
+    })
+  })
+
   it('uses the injected canonical source resolver for resolve and materialize', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')

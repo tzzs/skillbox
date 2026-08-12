@@ -33,6 +33,7 @@ import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
+import { createOperationRuntime } from '../operations/runtime.js'
 import { scanSkillForSecurity } from '../security/index.js'
 import { createSkillSourceResolver } from '../sources/resolver.js'
 import type {
@@ -348,6 +349,41 @@ export async function installSkill(
  * its agents" (M16.2 update).
  */
 async function runInstallTransaction(
+  source: NormalizedSource,
+  options: InstallSkillOptions,
+  extras: { replacing?: boolean } = {},
+): Promise<InstallResult> {
+  // Preserve the public precondition: unsupported local sources must fail
+  // before the runtime creates its backup/journal directories.
+  if (source.type === 'local') {
+    throw new SkillboxError(
+      ErrorCode.SOURCE_UNSUPPORTED,
+      'installSkill targets remote sources; local skills use the import flow (runtime/import.ts)',
+      { context: { source } },
+    )
+  }
+  const repositoryRoot = path.resolve(options.repositoryRoot)
+  const layout = buildSkillboxHomeLayout(options.homeRoot ?? resolveSkillboxHome())
+  const alias =
+    options.alias !== undefined ? validateSkillAlias(options.alias) : defaultAliasFor(source)
+  const operationRuntime =
+    options.operationRuntime ??
+    createOperationRuntime({ repositoryRoot, homeRoot: options.homeRoot ?? resolveSkillboxHome() })
+  const operation = await operationRuntime.runExclusive({
+    kind: extras.replacing === true ? 'update' : 'install',
+    targets: [
+      path.join(repositoryRoot, MANIFEST_FILE_NAME),
+      path.join(repositoryRoot, LOCKFILE_FILE_NAME),
+      new RuntimeLibraryService(layout.library).pathFor(alias, 'managed'),
+      layout.linksFile,
+      layout.cache,
+    ],
+    execute: () => runInstallTransactionUnsafe(source, options, extras),
+  })
+  return operation.result
+}
+
+async function runInstallTransactionUnsafe(
   source: NormalizedSource,
   options: InstallSkillOptions,
   extras: { replacing?: boolean } = {},
@@ -808,6 +844,9 @@ export async function updateSkill(
   }
   if (options.filesystem !== undefined) {
     transactionOptions.filesystem = options.filesystem
+  }
+  if (options.operationRuntime !== undefined) {
+    transactionOptions.operationRuntime = options.operationRuntime
   }
   return runInstallTransaction(source, transactionOptions, { replacing: true })
 }

@@ -8,6 +8,7 @@ import { deriveMode, readManifest, validateSkillAlias } from '../manifest/index.
 import type { NormalizedSource } from '../registry/types.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
+import { createOperationRuntime } from '../operations/runtime.js'
 import type { CanonicalSkillSource } from '../sources/types.js'
 import type { RestoreManagedSkillOptions, RestoreManagedSkillResult } from './types.js'
 
@@ -85,6 +86,25 @@ async function materializePinnedCacheEntry(input: {
  * deliberately read-only: Restore clears local drift, never advances a pin.
  */
 export async function restoreManagedSkill(
+  aliasInput: string,
+  options: RestoreManagedSkillOptions,
+): Promise<RestoreManagedSkillResult> {
+  const alias = validateSkillAlias(aliasInput)
+  const repositoryRoot = path.resolve(options.repositoryRoot)
+  const homeRoot = options.homeRoot ?? resolveSkillboxHome()
+  const layout = buildSkillboxHomeLayout(homeRoot)
+  const runtimePath = new RuntimeLibraryService(layout.library).pathFor(alias, 'managed')
+  const operationRuntime =
+    options.operationRuntime ?? createOperationRuntime({ repositoryRoot, homeRoot })
+  const operation = await operationRuntime.runExclusive({
+    kind: 'restore',
+    targets: [runtimePath, layout.cache],
+    execute: () => restoreManagedSkillUnsafe(alias, options),
+  })
+  return operation.result
+}
+
+async function restoreManagedSkillUnsafe(
   aliasInput: string,
   options: RestoreManagedSkillOptions,
 ): Promise<RestoreManagedSkillResult> {

@@ -1,7 +1,8 @@
 # 0.1.0 End-to-End Acceptance Test（E2E 验收手册）
 
 > **来源：** MVP_TASKS §98 — 0.1.0 End-to-End Acceptance Test
-> **状态：** 分步操作手册（不依赖自动化测试框架，纯手工逐步验收）
+> **状态：** 分步操作手册；基础 CLI、Git fixture 与 pack/install 旅程已自动化，以下平台与真实
+> Agent/credential-store 情形仍需人工留证。
 > **版本：** 0.1
 > **Last Updated：** 2026-08-09
 
@@ -322,4 +323,4 @@ curl -X POST http://127.0.0.1:43821/api/skills/existing-skill-a/enable \
 - MVP_TASKS §97（0.1.0 Release Gate）
 - `INSTALLATION.md`（构建与运行）
 - `scripts/verify-package.mjs`（发布形态验证）
-- Web API：`packages/cli/src/web/app.ts`（`/api/health|skills|agents|status|settings|skills/:id/enable|disable`）
+- Web API：`packages/web-server/src/web/app.ts`（`/api/health|skills|agents|status|settings|skills/:id/enable|disable`）

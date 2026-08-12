@@ -256,6 +256,24 @@ export function useRestoreSyncSnapshot() {
   })
 }
 
+/** Rolls back the most recently completed recoverable operation. */
+export function useRollbackLatestOperation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.rollbackOperation(),
+    onSuccess: () => {
+      for (const key of [
+        queryKeys.skills,
+        queryKeys.agents,
+        queryKeys.status,
+        queryKeys.syncStatus,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
+  })
+}
+
 /** Mutates through the public lifecycle endpoints and refreshes all skill state. */
 export function useSkillLifecycle() {
   const queryClient = useQueryClient()

@@ -3,6 +3,7 @@ import type { FilesystemService } from '../fs/filesystem-service.js'
 import type { NormalizedSource, RegistryProvider } from '../registry/types.js'
 import type { SecurityMetadata } from '../security/types.js'
 import type { SkillSourceResolver } from '../sources/types.js'
+import type { OperationRuntime } from '../operations/runtime.js'
 
 /**
  * Install-time security policy overrides (M15.1 Security step). A skill whose
@@ -45,6 +46,8 @@ export interface InstallSkillOptions {
   /** Skillbox home root (defaults to `SKILLBOX_HOME` / `~/.skillbox`). */
   homeRoot?: string
   filesystem?: FilesystemService
+  /** Atomic boundary for all persistent install mutations. */
+  operationRuntime?: OperationRuntime
 }
 
 /**
@@ -77,6 +80,8 @@ export interface UpdateSkillOptions {
   /** Skillbox home root (defaults to `SKILLBOX_HOME` / `~/.skillbox`). */
   homeRoot?: string
   filesystem?: FilesystemService
+  /** Atomic boundary for all persistent update mutations. */
+  operationRuntime?: OperationRuntime
 }
 
 /** Outcome of a completed install transaction (M15.1). */

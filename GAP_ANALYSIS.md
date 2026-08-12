@@ -3,8 +3,8 @@
 > 对照 `PRD.md`、`SKILLBOX_SPEC.md`、`ARCHITECTURE.md`、`MVP_TASKS.md`、
 > `docs/superpowers/specs/2026-08-09-github-integration-design.md` 与当前代码。
 >
-> 当前代码基线：`03a48f5`（2026-08-12，PR #2 合并后）加本工作区的 Managed Restore
-> 变更（2026-08-13，尚未提交）。
+> 当前代码基线：`petrel`（2026-08-13）。本文件的历史分段保留了当时的差距判断；下列状态
+> 摘要是当前实现的权威口径。
 >
 > 本次更新（2026-08-13）基于一次完整的 install / lint / typecheck / test / build 验证
 > （见 §10），已将 PR #2 落地的 GitHub 默认接线与仓库同步能力从 P0 清单移入
@@ -12,6 +12,19 @@
 >
 > 本文只把当前代码中仍未闭环的能力列为缺口。旧版清单中已经实现的项目已移至“已落地基线”，
 > 避免将过时 TODO、历史注释或仅有测试替身的能力误判为当前状态。
+
+## 0. 2026-08-13 交付状态
+
+| 领域                | 当前状态                                                                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source 与 Lifecycle | Canonical `SkillSourceResolver` 已覆盖 install/update/reconcile/diff/merge/restore/Marketplace；Web 与 CLI 都调用 Core lifecycle。                                                                                |
+| Recoverability      | `OperationRuntime` 已为 install/update/fork/vendor/restore/remove/merge/continue/abort 建立仓库级锁、journal、精确快照与保留的用户级 rollback；CLI 与 Web 都可执行 rollback。                                     |
+| Sync 与验收         | 多设备语义合并、可恢复 conflict session、真实 bare-remote E2E fixture、打包 CLI journey 与 pack/install smoke 已在 CI 路径验证。                                                                                  |
+| 入口与扩展          | Hono 已抽至 `@skillbox/web-server`；Web 已提供 lifecycle 与 rollback 确认入口；CLI 提供 fullscreen TUI、doctor、migrate、debug-bundle；Gemini、OpenCode、Windsurf、Copilot adapter 已通过共享 conformance suite。 |
+| 仍需人工/外部授权   | npm scope ownership、发布版本与实际 publish、以及 Windows/macOS/Linux 的真实设备/Agent/credential-store 验收，不能由仓库测试替代。详见 `docs/release-readiness.md` 与 `docs/e2e-acceptance.md`。                  |
+
+已验证的自动门禁：`pnpm lint`、`pnpm typecheck`、各包测试、`pnpm build`、`pnpm release:smoke`。
+平台人工证据仍应在完成后写入 `docs/e2e-evidence/`；在此之前不应宣称已完成跨平台发布验收。
 
 ---
 

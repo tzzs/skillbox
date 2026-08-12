@@ -38,6 +38,7 @@ import type { ProviderRegistry } from '../registry/index.js'
 import { SkillContentResolver, scanSkillTree, type TreeEntry } from '../diff/sources.js'
 import { containsConflictMarkers } from './merge.js'
 import type { SkillSourceResolver } from '../sources/index.js'
+import { createOperationRuntime, type OperationRuntime } from '../operations/runtime.js'
 import { mergeTrees, type BinaryMergePolicy } from './tree.js'
 import {
   createBackup,
@@ -100,6 +101,8 @@ export interface MergeSkillOptions {
   filesystem?: FilesystemService
   /** Canonical remote-source resolution for base and latest content views. */
   sourceResolver?: SkillSourceResolver
+  /** Shared atomic boundary for merge lifecycle mutations. */
+  operationRuntime?: OperationRuntime
 }
 
 interface MergeContext {
@@ -147,75 +150,89 @@ export async function mergeSkill(
   const localDir = await resolveLocalDir(ctx, name, skill, mode)
   const baseContent = await ctx.resolver.base(skill, locked)
   const upstreamContent = await ctx.resolver.upstream(skill, locked)
+  const operationRuntime =
+    options.operationRuntime ??
+    createOperationRuntime({ repositoryRoot: options.repositoryRoot, homeRoot: ctx.homeRoot })
   try {
-    /* M20.8 — pre-merge backup, before anything touches the content. */
-    await createBackup({
-      homeRoot: ctx.homeRoot,
-      alias: name,
-      localDir,
-      filesystem: ctx.filesystem,
-    })
-
-    const [baseTree, localTree, upstreamTree] = await Promise.all([
-      scanSkillTree(baseContent.dir),
-      scanSkillTree(localDir),
-      scanSkillTree(upstreamContent.dir),
-    ])
-    const merged = mergeTrees(baseTree, localTree, upstreamTree, {
-      binary: options.binary ?? 'fail',
-    })
-    const conflictFiles = merged.conflicts.map((file) => ({
-      path: file.path,
-      hunks: file.hunks.length,
-    }))
-    const mergedRevision =
-      upstreamContent.revision ?? upstream.latestRevision ?? upstream.baseRevision
-
-    if (conflictFiles.length > 0) {
-      // Snapshot the three views while local is still the pre-merge content.
-      await saveMergeState({
-        homeRoot: ctx.homeRoot,
-        alias: name,
-        mode,
-        baseRevision: upstream.baseRevision,
-        latestRevision: mergedRevision,
-        conflictFiles,
-        baseDir: baseContent.dir,
+    const operation = await operationRuntime.runExclusive({
+      kind: 'merge',
+      targets: [
         localDir,
-        upstreamDir: upstreamContent.dir,
-        filesystem: ctx.filesystem,
-      })
-    }
+        path.join(options.repositoryRoot, 'skillbox.lock'),
+        mergeStateRoot(ctx, name),
+      ],
+      execute: async () => {
+        /* M20.8 — pre-merge backup, before anything touches the content. */
+        await createBackup({
+          homeRoot: ctx.homeRoot,
+          alias: name,
+          localDir,
+          filesystem: ctx.filesystem,
+        })
 
-    await writeSkillTree(localDir, merged.files, localTree, ctx.filesystem)
+        const [baseTree, localTree, upstreamTree] = await Promise.all([
+          scanSkillTree(baseContent.dir),
+          scanSkillTree(localDir),
+          scanSkillTree(upstreamContent.dir),
+        ])
+        const merged = mergeTrees(baseTree, localTree, upstreamTree, {
+          binary: options.binary ?? 'fail',
+        })
+        const conflictFiles = merged.conflicts.map((file) => ({
+          path: file.path,
+          hunks: file.hunks.length,
+        }))
+        const mergedRevision =
+          upstreamContent.revision ?? upstream.latestRevision ?? upstream.baseRevision
 
-    if (conflictFiles.length > 0) {
-      return {
-        name,
-        conflicts: conflictFiles,
-        filesMerged: merged.changedCount,
-        changes: merged.conflicts.reduce((sum, file) => sum + file.hunks.length, 0),
-      }
-    }
+        if (conflictFiles.length > 0) {
+          // Snapshot the three views while local is still the pre-merge content.
+          await saveMergeState({
+            homeRoot: ctx.homeRoot,
+            alias: name,
+            mode,
+            baseRevision: upstream.baseRevision,
+            latestRevision: mergedRevision,
+            conflictFiles,
+            baseDir: baseContent.dir,
+            localDir,
+            upstreamDir: upstreamContent.dir,
+            filesystem: ctx.filesystem,
+          })
+        }
 
-    await advanceLockfileMetadata({
-      repositoryRoot: options.repositoryRoot,
-      lockfile: ctx.lockfile,
-      alias: name,
-      locked,
-      mode,
-      mergedRevision,
-      localDir,
-      upstreamDir: upstreamContent.dir,
-      filesystem: ctx.filesystem,
+        await writeSkillTree(localDir, merged.files, localTree, ctx.filesystem)
+
+        if (conflictFiles.length > 0) {
+          return {
+            name,
+            conflicts: conflictFiles,
+            filesMerged: merged.changedCount,
+            changes: merged.conflicts.reduce((sum, file) => sum + file.hunks.length, 0),
+          }
+        }
+
+        await advanceLockfileMetadata({
+          repositoryRoot: options.repositoryRoot,
+          lockfile: ctx.lockfile,
+          alias: name,
+          locked,
+          mode,
+          mergedRevision,
+          localDir,
+          upstreamDir: upstreamContent.dir,
+          filesystem: ctx.filesystem,
+        })
+        return {
+          name,
+          conflicts: [],
+          filesMerged: merged.changedCount,
+          changes: 0,
+          baseRevision: mergedRevision,
+        }
+      },
     })
-    return {
-      name,
-      conflicts: [],
-      filesMerged: merged.changedCount,
-      changes: 0,
-      baseRevision: mergedRevision,
-    }
+    return operation.result
   } finally {
     await safeCleanup(baseContent)
     await safeCleanup(upstreamContent)
@@ -263,26 +280,40 @@ export async function continueMerge(
     return { name, resolved: false, remainingConflicts: remaining, filesMerged: 0, changes: 0 }
   }
 
-  await advanceLockfileMetadata({
-    repositoryRoot: options.repositoryRoot,
-    lockfile: ctx.lockfile,
-    alias: name,
-    locked,
-    mode,
-    mergedRevision: state.latestRevision,
-    localDir,
-    upstreamDir: statePaths.upstreamDir,
-    filesystem: ctx.filesystem,
+  const operationRuntime =
+    options.operationRuntime ??
+    createOperationRuntime({ repositoryRoot: options.repositoryRoot, homeRoot: ctx.homeRoot })
+  const operation = await operationRuntime.runExclusive({
+    kind: 'merge',
+    targets: [
+      localDir,
+      path.join(options.repositoryRoot, 'skillbox.lock'),
+      mergeStateRoot(ctx, name),
+    ],
+    execute: async () => {
+      await advanceLockfileMetadata({
+        repositoryRoot: options.repositoryRoot,
+        lockfile: ctx.lockfile,
+        alias: name,
+        locked,
+        mode,
+        mergedRevision: state.latestRevision,
+        localDir,
+        upstreamDir: statePaths.upstreamDir,
+        filesystem: ctx.filesystem,
+      })
+      await removeMergeState(ctx.homeRoot, name, ctx.filesystem)
+      return {
+        name,
+        resolved: true,
+        remainingConflicts: [],
+        filesMerged: state.conflictFiles.length,
+        changes: state.conflictFiles.reduce((sum, entry) => sum + entry.hunks, 0),
+        baseRevision: state.latestRevision,
+      }
+    },
   })
-  await removeMergeState(ctx.homeRoot, name, ctx.filesystem)
-  return {
-    name,
-    resolved: true,
-    remainingConflicts: [],
-    filesMerged: state.conflictFiles.length,
-    changes: state.conflictFiles.reduce((sum, entry) => sum + entry.hunks, 0),
-    baseRevision: state.latestRevision,
-  }
+  return operation.result
 }
 
 /**
@@ -306,11 +337,25 @@ export async function abortMerge(
   const localDir = await resolveLocalDir(ctx, name, skill, mode)
   const statePaths = mergeStatePaths(ctx.homeRoot, name)
 
-  const filesRestored = await countFilesIn(statePaths.localDir)
-  await ctx.filesystem.remove(localDir)
-  await ctx.filesystem.copy(statePaths.localDir, localDir)
-  await removeMergeState(ctx.homeRoot, name, ctx.filesystem)
-  return { name, filesRestored }
+  const operationRuntime =
+    options.operationRuntime ??
+    createOperationRuntime({ repositoryRoot: options.repositoryRoot, homeRoot: ctx.homeRoot })
+  const operation = await operationRuntime.runExclusive({
+    kind: 'merge',
+    targets: [
+      localDir,
+      path.join(options.repositoryRoot, 'skillbox.lock'),
+      mergeStateRoot(ctx, name),
+    ],
+    execute: async () => {
+      const filesRestored = await countFilesIn(statePaths.localDir)
+      await ctx.filesystem.remove(localDir)
+      await ctx.filesystem.copy(statePaths.localDir, localDir)
+      await removeMergeState(ctx.homeRoot, name, ctx.filesystem)
+      return { name, filesRestored }
+    },
+  })
+  return operation.result
 }
 
 /* ------------------------------------------------------------------ *
@@ -343,6 +388,10 @@ async function openContext(options: MergeSkillOptions): Promise<MergeContext> {
 
 function resolverFilesystem(options: MergeSkillOptions): FilesystemService {
   return options.filesystem ?? new FilesystemService()
+}
+
+function mergeStateRoot(ctx: MergeContext, name: string): string {
+  return path.dirname(mergeStatePaths(ctx.homeRoot, name).stateFile)
 }
 
 function requireSkill(manifest: SkillboxManifest, name: string): ManifestSkill {
