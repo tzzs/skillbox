@@ -24,6 +24,8 @@ export interface RepositorySyncServiceOptions {
   onEvent?: (event: RepositorySyncEvent) => void
   sleep?: (milliseconds: number) => Promise<void>
   now?: () => number
+  /** Runs only after a validated repository result has been committed and pushed. */
+  reconcile?: () => Promise<void>
 }
 
 /** Owns the GitHub-account, hosted-repository, and local-Git consistency boundary. */
@@ -35,6 +37,7 @@ export class RepositorySyncService implements RepositorySync {
   private readonly onEvent: (event: RepositorySyncEvent) => void
   private readonly sleep: (milliseconds: number) => Promise<void>
   private readonly now: () => number
+  private readonly reconcile: (() => Promise<void>) | undefined
 
   constructor(options: RepositorySyncServiceOptions) {
     this.repositoryRoot = options.repositoryRoot
@@ -47,6 +50,7 @@ export class RepositorySyncService implements RepositorySync {
       options.sleep ??
       ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
     this.now = options.now ?? (() => Date.now())
+    this.reconcile = options.reconcile
   }
 
   async status() {
@@ -156,7 +160,9 @@ export class RepositorySyncService implements RepositorySync {
       event: (phase) => this.phase(phase),
     })
     const outcome = await transaction.run()
-    if (outcome.kind !== 'blocked' || outcome.reason !== 'recovery-required') return outcome
+    if (outcome.kind !== 'blocked' || outcome.reason !== 'recovery-required') {
+      return this.reconcileAfterPublish(outcome)
+    }
     const status = await this.status()
     if (status.hasConflicts) {
       return {
@@ -174,7 +180,10 @@ export class RepositorySyncService implements RepositorySync {
       // writes conflict markers itself.
       await this.pull()
       await this.push()
-      return { kind: 'completed', summary: { automaticallyMerged: 0, retriedPushes: 0 } }
+      return this.reconcileAfterPublish({
+        kind: 'completed',
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      })
     } catch (error) {
       if (error instanceof SkillboxError && error.code === ErrorCode.GIT_PUSH_REJECTED) {
         return {
@@ -187,6 +196,28 @@ export class RepositorySyncService implements RepositorySync {
         }
       }
       throw error
+    }
+  }
+
+  private async reconcileAfterPublish(outcome: SyncOutcome): Promise<SyncOutcome> {
+    if (outcome.kind !== 'completed' || this.reconcile === undefined) return outcome
+    this.phase('reconcile')
+    try {
+      await this.reconcile()
+      return outcome
+    } catch {
+      return {
+        kind: 'blocked',
+        reason: 'recovery-required',
+        recovery: {
+          retryable: true,
+          ...(outcome.summary.createdSnapshotId === undefined
+            ? {}
+            : { snapshotId: outcome.summary.createdSnapshotId }),
+          message:
+            'The repository was synchronized, but this device could not refresh its runtime. Retry the runtime refresh.',
+        },
+      }
     }
   }
 
