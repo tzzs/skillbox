@@ -52,21 +52,19 @@ describe('sync API client', () => {
   it('treats a conflict response as an actionable sync outcome, not a network error', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          response(
-            {
-              sync: {
-                kind: 'conflicts',
-                sessionId: 'session',
-                conflictCount: 1,
-                snapshotId: 'restore-1',
-              },
+      vi.fn().mockResolvedValue(
+        response(
+          {
+            sync: {
+              kind: 'conflicts',
+              sessionId: 'session',
+              conflictCount: 1,
+              snapshotId: 'restore-1',
             },
-            409,
-          ),
+          },
+          409,
         ),
+      ),
     )
 
     await expect(api.sync()).resolves.toMatchObject({
@@ -78,21 +76,19 @@ describe('sync API client', () => {
   it('keeps a safely blocked sync available to the UI', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          response(
-            {
-              sync: {
-                kind: 'blocked',
-                reason: 'operation-locked',
-                message: 'Try again soon.',
-                retryable: true,
-              },
+      vi.fn().mockResolvedValue(
+        response(
+          {
+            sync: {
+              kind: 'blocked',
+              reason: 'operation-locked',
+              message: 'Try again soon.',
+              retryable: true,
             },
-            423,
-          ),
+          },
+          423,
         ),
+      ),
     )
 
     await expect(api.sync()).resolves.toMatchObject({ kind: 'blocked', retryable: true })
