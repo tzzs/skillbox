@@ -4,8 +4,9 @@ import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { GitClient } from './git-client.js'
 import { ErrorCode, isSkillboxError } from '../errors.js'
+import { buildGitAuthEnvironment } from '../github/credential-bridge.js'
 import { tempDir, withTempDir } from '../fs/test-utils.js'
-import type { GitExecResult } from './git-client.js'
+import type { GitExecResult, GitSpawn, GitTransportAuth } from './git-client.js'
 
 interface GitConfig {
   client: GitClient
@@ -44,6 +45,55 @@ async function writeFile(dir: string, name: string, content: string): Promise<st
 }
 
 describe('GitClient', () => {
+  it('injects transport auth for one push without placing the token in argv', async () => {
+    const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = []
+    const spawn: GitSpawn = async (args, options) => {
+      calls.push({ args, ...(options.env === undefined ? {} : { env: options.env }) })
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    const client = new GitClient({ spawn })
+    const auth: GitTransportAuth = {
+      prefixArgs: ['-c', 'credential.helper=!helper'],
+      env: { SKILLBOX_GITHUB_ACCESS_TOKEN: 'top-secret' },
+      sensitiveEnvKeys: ['SKILLBOX_GITHUB_ACCESS_TOKEN'],
+    }
+
+    await client.push('/repo', { remote: 'origin', branch: 'main', auth })
+    await client.gitVersion('/repo')
+
+    expect(calls[0]?.args).toEqual(['-c', 'credential.helper=!helper', 'push', 'origin', 'main'])
+    expect(calls[0]?.args.join(' ')).not.toContain('top-secret')
+    expect(calls[0]?.env?.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe('top-secret')
+    expect(calls[1]?.args).toEqual(['--version'])
+    expect(calls[1]?.env).toBeUndefined()
+  })
+
+  it('redacts transport credentials from Git errors', async () => {
+    const token = 'token-that-must-not-leak'
+    const spawn: GitSpawn = async () => ({ exitCode: 1, stdout: '', stderr: `rejected ${token}` })
+    const client = new GitClient({ spawn })
+    const auth: GitTransportAuth = {
+      prefixArgs: [],
+      env: { SKILLBOX_GITHUB_ACCESS_TOKEN: token },
+      sensitiveEnvKeys: ['SKILLBOX_GITHUB_ACCESS_TOKEN'],
+    }
+
+    const error = await client.push('/repo', { auth }).catch((caught: unknown) => caught)
+    expect(JSON.stringify(error)).not.toContain(token)
+    expect((error as Error).message).not.toContain(token)
+    expect(error).toMatchObject({ context: { stderr: 'rejected [REDACTED]' } })
+  })
+
+  it.each([
+    ['non-fast-forward update rejected', ErrorCode.GIT_PUSH_REJECTED],
+    ['fatal: Authentication failed for remote', ErrorCode.GIT_AUTH_FAILED],
+  ])('maps push failure "%s" to a stable error', async (stderr, code) => {
+    const spawn: GitSpawn = async () => ({ exitCode: 1, stdout: '', stderr })
+    const client = new GitClient({ spawn })
+    const error = await client.push('/repo').catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ code, recoverable: true })
+  })
+
   it('reports the installed git version', async () => {
     const root = await tempDir()
     const { client } = await seedRepo(root)
@@ -115,6 +165,78 @@ describe('GitClient', () => {
     })
   })
 
+  it('commit stages a new managed path without staging unrelated untracked files', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await writeFile(root, 'notes.txt', 'personal')
+
+      await client.commit(root, 'managed only', ['skillbox.yaml'])
+
+      const committed = await rawGit(root, ['show', '--name-only', '--format=', 'HEAD'])
+      expect(committed.stdout).toContain('skillbox.yaml')
+      expect(committed.stdout).not.toContain('notes.txt')
+      expect((await client.status(root)).untracked.map((file) => file.path)).toEqual(['notes.txt'])
+    })
+  })
+
+  it('adds, reads and removes a named remote idempotently', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', bare])
+
+      expect(await client.getRemote(root, 'origin')).toBeUndefined()
+      await client.addRemote(root, 'origin', bare)
+      expect(await client.getRemote(root, 'origin')).toEqual({ name: 'origin', url: bare })
+      await client.removeRemote(root, 'origin')
+      expect(await client.getRemote(root, 'origin')).toBeUndefined()
+    })
+  })
+
+  it('sets the upstream on the first push', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await client.commit(root, 'seed', ['skillbox.yaml'])
+      await client.addRemote(root, 'origin', bare)
+
+      await client.push(root, { remote: 'origin', branch: 'main', setUpstream: true })
+
+      expect((await client.status(root)).upstream).toBe('origin/main')
+    })
+  })
+
+  it('prevents repository hooks from reading transport credentials', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      const bare = path.join(dir, 'remote.git')
+      const marker = path.join(dir, 'hook-ran.txt')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      await writeFile(root, 'skillbox.yaml', 'version: 1')
+      await client.commit(root, 'seed', ['skillbox.yaml'])
+      await client.addRemote(root, 'origin', bare)
+      const hook = path.join(root, '.git', 'hooks', 'pre-push')
+      await fs.writeFile(
+        hook,
+        '#!/bin/sh\nprintf "%s" "$SKILLBOX_GITHUB_ACCESS_TOKEN" > "$SKILLBOX_HOOK_MARKER"\n',
+        'utf8',
+      )
+      await fs.chmod(hook, 0o755)
+      const baseAuth = buildGitAuthEnvironment('hook-secret')
+      const auth: GitTransportAuth = {
+        ...baseAuth,
+        env: { ...baseAuth.env, SKILLBOX_HOOK_MARKER: marker },
+      }
+
+      await client.push(root, { remote: 'origin', branch: 'main', auth })
+
+      await expect(fs.access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  })
+
   it('diff reports changes between two refs and in the worktree', async () => {
     await withTempDir(async (dir) => {
       const { client, root } = await seedRepo(path.join(dir, 'repo'))
@@ -167,6 +289,101 @@ describe('GitClient', () => {
       expect(pulled.stdout).toContain('extra.txt')
     })
   }, 30000)
+
+  it('status reports the tracked remote and real ahead/behind counts', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+
+      const local = await seedRepo(path.join(dir, 'local'))
+      await writeFile(local.root, 'base.txt', 'base')
+      await rawGit(local.root, ['add', 'base.txt'])
+      await local.client.commit(local.root, 'base')
+      await rawGit(local.root, ['remote', 'add', 'origin', bare])
+      await rawGit(local.root, ['push', '-u', 'origin', 'main'])
+
+      const peerRoot = path.join(dir, 'peer')
+      await local.client.clone(bare, peerRoot, { ref: 'main' })
+      await rawGit(peerRoot, ['config', 'user.email', 'skillbox-test@example.com'])
+      await rawGit(peerRoot, ['config', 'user.name', 'Skillbox Test'])
+      await writeFile(peerRoot, 'remote.txt', 'remote')
+      await rawGit(peerRoot, ['add', 'remote.txt'])
+      await rawGit(peerRoot, ['commit', '-m', 'remote advance'])
+      await rawGit(peerRoot, ['push', 'origin', 'main'])
+
+      await writeFile(local.root, 'local.txt', 'local')
+      await rawGit(local.root, ['add', 'local.txt'])
+      await local.client.commit(local.root, 'local advance')
+      await local.client.fetch(local.root)
+
+      const status = await local.client.status(local.root)
+      expect(status).toMatchObject({
+        branch: 'main',
+        remote: { name: 'origin', url: bare },
+        ahead: 1,
+        behind: 1,
+      })
+    })
+  }, 20000)
+
+  it('status still reports origin when the branch has no upstream', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# local')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'local only')
+      await rawGit(root, ['remote', 'add', 'origin', bare])
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({
+        branch: 'main',
+        remote: { name: 'origin', url: bare },
+        ahead: 0,
+        behind: 0,
+      })
+      expect(status.upstream).toBeUndefined()
+    })
+  })
+
+  it('status omits remote details when the repository has no remotes', async () => {
+    await withTempDir(async (dir) => {
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# local')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'local only')
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({ branch: 'main', ahead: 0, behind: 0 })
+      expect(status.upstream).toBeUndefined()
+      expect(status.remote).toBeUndefined()
+    })
+  })
+
+  it('status keeps the configured remote for a detached HEAD', async () => {
+    await withTempDir(async (dir) => {
+      const bare = path.join(dir, 'remote.git')
+      await rawGit(dir, ['init', '--bare', '--initial-branch=main', bare])
+      const { client, root } = await seedRepo(path.join(dir, 'repo'))
+      await writeFile(root, 'skill.md', '# tracked')
+      await rawGit(root, ['add', 'skill.md'])
+      await client.commit(root, 'tracked')
+      await rawGit(root, ['remote', 'add', 'origin', bare])
+      await rawGit(root, ['push', '-u', 'origin', 'main'])
+      await rawGit(root, ['checkout', '--detach', 'HEAD'])
+
+      const status = await client.status(root)
+      expect(status).toMatchObject({
+        remote: { name: 'origin', url: bare },
+        ahead: 0,
+        behind: 0,
+        clean: true,
+      })
+      expect(status.branch).toBeUndefined()
+      expect(status.upstream).toBeUndefined()
+    })
+  })
 
   it('materialize clones when absent and pulls when present', async () => {
     await withTempDir(async (dir) => {

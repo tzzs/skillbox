@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import * as path from 'node:path'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
+import { REDACTED } from '../logging/redact.js'
 import { conflictsOf, parsePorcelainStatus, type GitFileStatus } from './porcelain.js'
 
 /** Result of one spawned `git` process. */
@@ -29,8 +30,25 @@ export interface GitClientOptions {
   filesystem?: FilesystemService
 }
 
+/** Process-scoped authentication applied to exactly one Git transport invocation. */
+export interface GitTransportAuth {
+  prefixArgs: readonly string[]
+  env: Readonly<NodeJS.ProcessEnv>
+  sensitiveEnvKeys: readonly string[]
+}
+
 export interface GitStatusResult {
   repositoryRoot: string
+  /** Current local branch; absent for detached HEAD. */
+  branch?: string
+  /** Configured upstream ref, for example `origin/main`. */
+  upstream?: string
+  /** Tracked remote derived from the upstream ref. */
+  remote?: { name: string; url: string }
+  /** Commits in HEAD but not in the tracked upstream. */
+  ahead: number
+  /** Commits in the tracked upstream but not in HEAD. */
+  behind: number
   /** Every changed/untracked file, in git output order. */
   files: GitFileStatus[]
   /** Entries flagged as merge conflicts (`UU`/`AA`/`DD`/...). */
@@ -64,16 +82,21 @@ export interface GitPullOptions {
   branch?: string
   /** Pull strategy; defaults to git's native merge. */
   strategy?: 'merge' | 'ff-only' | 'rebase'
+  auth?: GitTransportAuth
 }
 
 export interface GitPushOptions {
   remote?: string
   branch?: string
+  /** Establish branch tracking on the first push. */
+  setUpstream?: boolean
+  auth?: GitTransportAuth
 }
 
 export interface GitCloneOptions {
   ref?: string
   depth?: number
+  auth?: GitTransportAuth
 }
 
 export interface GitMaterializeOptions {
@@ -83,6 +106,7 @@ export interface GitMaterializeOptions {
   targetDir: string
   /** Branch/tag to check out after syncing the clone. */
   ref?: string
+  auth?: GitTransportAuth
 }
 
 export interface GitMaterializeResult {
@@ -90,6 +114,10 @@ export interface GitMaterializeResult {
   cloned: boolean
   /** The checked-out revision (full object id). */
   headRev: string
+}
+
+function authOptions(auth: GitTransportAuth | undefined): { auth?: GitTransportAuth } {
+  return auth === undefined ? {} : { auth }
 }
 
 /** Default timeout for a single git subprocess (2 minutes). */
@@ -154,18 +182,24 @@ export class GitClient {
   private async runGit(
     repositoryRoot: string,
     args: string[],
-    options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+    options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; auth?: GitTransportAuth } = {},
   ): Promise<GitExecResult> {
+    const invocationArgs = [...(options.auth?.prefixArgs ?? []), ...args]
+    const sensitiveValues = (options.auth?.sensitiveEnvKeys ?? [])
+      .map((key) => options.auth?.env[key])
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    const redact = (value: string): string =>
+      sensitiveValues.reduce((current, sensitive) => current.replaceAll(sensitive, REDACTED), value)
     let result: GitExecResult
     try {
       const spawnOptions: GitSpawnOptions = { cwd: repositoryRoot }
-      if (options.env !== undefined) {
-        spawnOptions.env = options.env
+      if (options.env !== undefined || options.auth !== undefined) {
+        spawnOptions.env = { ...options.env, ...options.auth?.env }
       }
       if (options.timeoutMs !== undefined) {
         spawnOptions.timeoutMs = options.timeoutMs
       }
-      result = await this.spawn(args, spawnOptions)
+      result = await this.spawn(invocationArgs, spawnOptions)
     } catch (error) {
       if (
         error instanceof Error &&
@@ -174,29 +208,31 @@ export class GitClient {
       ) {
         throw new SkillboxError(
           ErrorCode.GIT_NOT_FOUND,
-          `Git is not installed or not on PATH (needed for "git ${args.join(' ')}")`,
-          { context: { command: args.join(' '), repositoryRoot } },
+          `Git is not installed or not on PATH (needed for "git ${invocationArgs.join(' ')}")`,
+          { context: { command: redact(invocationArgs.join(' ')), repositoryRoot } },
         )
       }
       const errno = error as Error & { code?: unknown; stdout?: string; stderr?: string }
       result = {
         exitCode: typeof errno.code === 'number' ? errno.code : 1,
-        stdout: errno.stdout ?? '',
-        stderr: (errno.stderr ?? '') || errno.message,
+        stdout: redact(errno.stdout ?? ''),
+        stderr: redact((errno.stderr ?? '') || errno.message),
       }
     }
+
+    result = { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) }
 
     if (result.exitCode !== 0) {
       const stderr = result.stderr.trim()
       throw new SkillboxError(
         ErrorCode.GIT_COMMAND_FAILED,
-        `git ${args.join(' ')} failed (exit ${result.exitCode})${
+        `git ${redact(invocationArgs.join(' '))} failed (exit ${result.exitCode})${
           firstStderrLine(stderr) === undefined ? '' : `: ${firstStderrLine(stderr)}`
         }`,
         {
           recoverable: true,
           context: {
-            command: args.join(' '),
+            command: redact(invocationArgs.join(' ')),
             repositoryRoot,
             exitCode: result.exitCode,
             stderr,
@@ -227,6 +263,19 @@ export class GitClient {
     }
   }
 
+  /** Whether `repositoryRoot` is inside a Git working tree. */
+  async isRepository(repositoryRoot: string): Promise<boolean> {
+    try {
+      const result = await this.runGit(repositoryRoot, ['rev-parse', '--is-inside-work-tree'])
+      return result.stdout.trim() === 'true'
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_COMMAND_FAILED) {
+        return false
+      }
+      throw error
+    }
+  }
+
   /** `git init` — creates a new git repository at `repositoryRoot`. */
   async init(repositoryRoot: string): Promise<void> {
     await this.runGit(repositoryRoot, ['init'])
@@ -243,7 +292,7 @@ export class GitClient {
     // exist before spawning or the node ENOENT is misread as a missing git.
     await this.filesystem.mkdir(path.dirname(targetDir))
     const repositoryRoot = path.dirname(targetDir)
-    await this.runGit(repositoryRoot, args)
+    await this.runGit(repositoryRoot, args, authOptions(options.auth))
   }
 
   /**
@@ -259,8 +308,10 @@ export class GitClient {
     ])
     const files = parsePorcelainStatus(result.stdout)
     const conflicts = conflictsOf(files)
+    const tracking = await this.trackingStatus(repositoryRoot)
     return {
       repositoryRoot,
+      ...tracking,
       files,
       conflicts,
       hasConflicts: conflicts.length > 0,
@@ -268,6 +319,116 @@ export class GitClient {
       unstaged: files.filter((file) => file.unstaged),
       untracked: files.filter((file) => file.untracked),
       clean: files.length === 0,
+    }
+  }
+
+  /** Branch/upstream facts used by status, pull and push orchestration. */
+  private async trackingStatus(repositoryRoot: string): Promise<{
+    branch?: string
+    upstream?: string
+    remote?: { name: string; url: string }
+    ahead: number
+    behind: number
+  }> {
+    const configuredRemote = await this.configuredRemote(repositoryRoot)
+    const branch = await this.currentBranch(repositoryRoot)
+    if (branch === undefined) {
+      return {
+        ...(configuredRemote === undefined ? {} : { remote: configuredRemote }),
+        ahead: 0,
+        behind: 0,
+      }
+    }
+    const upstreamResult = await this.runGit(repositoryRoot, [
+      'for-each-ref',
+      '--format=%(upstream:short)',
+      `refs/heads/${branch}`,
+    ])
+    const upstream = upstreamResult.stdout.trim()
+    if (upstream.length === 0) {
+      return {
+        branch,
+        ...(configuredRemote === undefined ? {} : { remote: configuredRemote }),
+        ahead: 0,
+        behind: 0,
+      }
+    }
+    const separator = upstream.indexOf('/')
+    const remoteName = separator > 0 ? upstream.slice(0, separator) : undefined
+    const countsResult = await this.runGit(repositoryRoot, [
+      'rev-list',
+      '--left-right',
+      '--count',
+      `HEAD...${upstream}`,
+    ])
+    const [aheadText = '0', behindText = '0'] = countsResult.stdout.trim().split(/\s+/)
+    const tracking: {
+      branch: string
+      upstream: string
+      remote?: { name: string; url: string }
+      ahead: number
+      behind: number
+    } = {
+      branch,
+      upstream,
+      ahead: Number.parseInt(aheadText, 10) || 0,
+      behind: Number.parseInt(behindText, 10) || 0,
+    }
+    if (remoteName !== undefined) {
+      const url = (
+        await this.runGit(repositoryRoot, ['remote', 'get-url', remoteName])
+      ).stdout.trim()
+      if (url.length > 0) {
+        tracking.remote = { name: remoteName, url }
+      }
+    }
+    return tracking
+  }
+
+  /** Prefers origin, otherwise reports the sole configured remote. */
+  private async configuredRemote(
+    repositoryRoot: string,
+  ): Promise<{ name: string; url: string } | undefined> {
+    const remotes = (await this.runGit(repositoryRoot, ['remote'])).stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+    const name = remotes.includes('origin')
+      ? 'origin'
+      : remotes.length === 1
+        ? remotes[0]
+        : undefined
+    if (name === undefined) {
+      return undefined
+    }
+    const url = (await this.runGit(repositoryRoot, ['remote', 'get-url', name])).stdout.trim()
+    return url.length === 0 ? undefined : { name, url }
+  }
+
+  /** Returns a named remote when configured. */
+  async getRemote(
+    repositoryRoot: string,
+    name: string,
+  ): Promise<{ name: string; url: string } | undefined> {
+    const remotes = (await this.runGit(repositoryRoot, ['remote'])).stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+    if (!remotes.includes(name)) {
+      return undefined
+    }
+    const url = (await this.runGit(repositoryRoot, ['remote', 'get-url', name])).stdout.trim()
+    return url.length === 0 ? undefined : { name, url }
+  }
+
+  /** Adds a named remote. Callers inspect conflicts with {@link getRemote}. */
+  async addRemote(repositoryRoot: string, name: string, url: string): Promise<void> {
+    await this.runGit(repositoryRoot, ['remote', 'add', name, url])
+  }
+
+  /** Removes a named remote; an already-absent remote is a no-op. */
+  async removeRemote(repositoryRoot: string, name: string): Promise<void> {
+    if ((await this.getRemote(repositoryRoot, name)) !== undefined) {
+      await this.runGit(repositoryRoot, ['remote', 'remove', name])
     }
   }
 
@@ -293,12 +454,15 @@ export class GitClient {
     if (options.branch !== undefined) {
       args.push(options.branch)
     }
-    await this.runGit(repositoryRoot, args)
+    await this.runGit(repositoryRoot, args, authOptions(options.auth))
   }
 
   /** `git push [remote [branch]]` (defaults the remote to `origin`). */
   async push(repositoryRoot: string, options: GitPushOptions = {}): Promise<void> {
     const args = ['push']
+    if (options.setUpstream === true) {
+      args.push('--set-upstream')
+    }
     if (options.branch !== undefined && options.remote === undefined) {
       args.push('origin')
     }
@@ -308,7 +472,36 @@ export class GitClient {
     if (options.branch !== undefined) {
       args.push(options.branch)
     }
-    await this.runGit(repositoryRoot, args)
+    try {
+      await this.runGit(repositoryRoot, args, authOptions(options.auth))
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_COMMAND_FAILED) {
+        const stderr = String(error.context?.stderr ?? '').toLowerCase()
+        if (
+          stderr.includes('authentication failed') ||
+          stderr.includes('could not read username') ||
+          stderr.includes('invalid username or password')
+        ) {
+          throw new SkillboxError(ErrorCode.GIT_AUTH_FAILED, 'Git remote authentication failed', {
+            cause: error,
+            recoverable: true,
+            context: { phase: 'push', stderr: error.context?.stderr },
+          })
+        }
+        if (stderr.includes('non-fast-forward') || stderr.includes('rejected')) {
+          throw new SkillboxError(
+            ErrorCode.GIT_PUSH_REJECTED,
+            'Git push was rejected; local commits were preserved',
+            {
+              cause: error,
+              recoverable: true,
+              context: { phase: 'push', stderr: error.context?.stderr },
+            },
+          )
+        }
+      }
+      throw error
+    }
   }
 
   /**
@@ -321,6 +514,9 @@ export class GitClient {
     message: string,
     files: readonly string[] = [],
   ): Promise<GitCommitResult> {
+    if (files.length > 0) {
+      await this.runGit(repositoryRoot, ['add', '-A', '--', ...files])
+    }
     const args = ['commit', '-m', message]
     if (files.length > 0) {
       args.push('--', ...files)
@@ -347,8 +543,8 @@ export class GitClient {
   }
 
   /** `git fetch [remote]` against a specific remote (default `origin`). */
-  async fetch(repositoryRoot: string, remote = 'origin'): Promise<void> {
-    await this.runGit(repositoryRoot, ['fetch', '--prune', remote])
+  async fetch(repositoryRoot: string, remote = 'origin', auth?: GitTransportAuth): Promise<void> {
+    await this.runGit(repositoryRoot, ['fetch', '--prune', remote], authOptions(auth))
   }
 
   /** `git checkout <ref>` — switches the worktree to a branch/tag/commit. */
@@ -380,10 +576,10 @@ export class GitClient {
     let strategy: 'ff-only' | undefined
 
     if (!hasGitDir) {
-      await this.clone(input.url, input.targetDir)
+      await this.clone(input.url, input.targetDir, authOptions(input.auth))
       cloned = true
     } else {
-      await this.fetch(input.targetDir)
+      await this.fetch(input.targetDir, 'origin', input.auth)
     }
 
     const current = await this.currentBranch(input.targetDir)
@@ -398,7 +594,7 @@ export class GitClient {
     if (strategy === 'ff-only') {
       const branch = await this.currentBranch(input.targetDir)
       if (branch !== undefined) {
-        await this.pull(input.targetDir, { strategy: 'ff-only' })
+        await this.pull(input.targetDir, { strategy: 'ff-only', ...authOptions(input.auth) })
       }
     }
 

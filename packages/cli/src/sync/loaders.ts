@@ -1,4 +1,15 @@
-import { ErrorCode, SkillboxError } from '@skillbox/core'
+import * as path from 'node:path'
+import {
+  createCredentialStore,
+  ErrorCode,
+  GitHubApi,
+  GitHubConfigStore,
+  GitHubService,
+  RuntimeConfigService,
+  SkillboxError,
+  TokenStore,
+  type CredentialStore,
+} from '@skillbox/core'
 import type {
   GitHubProvider,
   GitProvider,
@@ -7,6 +18,7 @@ import type {
   GitCommitOutcome,
   GithubConnectionState,
   DeviceFlowStart,
+  DeviceFlowPollResult,
   SecretScanResult,
   SecretScanner,
 } from './providers.js'
@@ -16,9 +28,8 @@ import type {
  * implementation (`@skillbox/core`) onto the CLI contract, so the pipeline
  * logic never needs to know about git internals.
  *
- * TODO(sync): the GitHub adapter is the remaining wiring point — agent 2 has
- * not exported a `GitHubService` from `@skillbox/core` yet, so GitHub calls
- * fail with `GITHUB_UNAVAILABLE` until it lands.
+ * Default factories use the shipped Core modules. The injectable dynamic
+ * loaders remain only as compatibility seams for focused wiring tests.
  */
 
 /** Loads the core package as an opaque module map (injectable in tests). */
@@ -46,7 +57,7 @@ function isNotARepositoryError(error: unknown): boolean {
 }
 
 /* ---------------------------------------------------------------------- *
- * Git (agent 1 — @skillbox/core/git)
+ * Git — @skillbox/core/git
  *
  * `GitClient` takes options and receives `repositoryRoot` per call:
  *   status(root) -> { files, conflicts, staged, unstaged, untracked, clean }
@@ -63,6 +74,10 @@ interface GitFileShape {
 
 interface GitClientShape {
   status: (root: string) => Promise<{
+    branch?: string
+    remote?: { name: string; url: string }
+    ahead?: number
+    behind?: number
     files: GitFileShape[]
     conflicts: GitFileShape[]
     staged: GitFileShape[]
@@ -90,8 +105,6 @@ class GitClientAdapter implements GitProvider {
     if (typeof GitClient !== 'function') {
       throw unavailable('GIT_UNAVAILABLE', this.hint)
     }
-    // TODO(sync): agent 1 may add ahead/behind + remote introspection to
-    // GitClient later; wire them here when available.
     return new GitClient()
   }
 
@@ -118,21 +131,25 @@ class GitClientAdapter implements GitProvider {
     }
 
     const branch =
-      typeof client.currentBranch === 'function'
+      result.branch ??
+      (typeof client.currentBranch === 'function'
         ? await client.currentBranch(this.repositoryRoot)
-        : undefined
+        : undefined)
     const changed = result.files.filter((file) => !file.conflict)
 
     const report: GitStatusReport = {
       isRepository: true,
-      ahead: 0,
-      behind: 0,
+      ahead: result.ahead ?? 0,
+      behind: result.behind ?? 0,
       changedFiles: changed.map((file) => file.path),
       stagedFiles: result.staged.map((file) => file.path),
       conflicts: result.conflicts.map((file) => file.path),
     }
     if (branch !== undefined) {
       report.branch = branch
+    }
+    if (result.remote !== undefined) {
+      report.remote = result.remote
     }
     return report
   }
@@ -181,7 +198,7 @@ class GitClientAdapter implements GitProvider {
 export function createGitProviderFromCore(
   repositoryRoot: string,
   loadCore: CoreModuleLoader,
-  hint: string = 'Git sync is not available in this build yet (V0.2 GitClient not wired).',
+  hint: string = 'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
 ): GitProvider {
   return new GitClientAdapter(repositoryRoot, loadCore, hint)
 }
@@ -190,83 +207,80 @@ export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
   return createGitProviderFromCore(
     repositoryRoot,
     loadSkillboxCore,
-    'Git sync is not available in this build yet — the GitClient core module has not landed. ' +
-      'Run `skillbox status` to inspect Skills and Agents in the meantime.',
+    'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
   )
 }
 
-/* ---------------------------------------------------------------------- *
- * GitHub (agent 2 — @skillbox/core/github)
- *
- * Expected export (not yet shipped):
- *   class GitHubService {
- *     connectionState(); startDeviceFlow(); pollDeviceFlow(); disconnect();
- *   }
- * constructed with the Skillbox home root.
- * ---------------------------------------------------------------------- */
+export const GITHUB_CLIENT_ID_ENV = 'SKILLBOX_GITHUB_CLIENT_ID'
 
-interface GitHubServiceShape {
-  connectionState: () => unknown
-  startDeviceFlow: () => unknown
-  pollDeviceFlow: () => unknown
-  disconnect: () => Promise<void>
+export interface ProductionGitHubProviderOptions {
+  /** Public GitHub App client id; defaults to SKILLBOX_GITHUB_CLIENT_ID. */
+  clientId?: string
+  /** Test/platform seam. Production defaults to the native credential store. */
+  credentialStore?: CredentialStore
 }
 
-class GitHubAdapter implements GitHubProvider {
-  constructor(
-    private readonly homeRoot: string,
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  private async service(): Promise<GitHubServiceShape> {
-    const core = await this.loadCore()
-    const GitHubService = core.GitHubService as
-      (new (root: string) => GitHubServiceShape) | undefined
-    if (typeof GitHubService !== 'function') {
-      throw unavailable('GITHUB_UNAVAILABLE', this.hint)
-    }
-    // TODO(sync): adapt constructor/method names here if agent 2's GitHub
-    // public API differs from the shape above.
-    return new GitHubService(this.homeRoot)
-  }
+/** Typed adapter over the shipped Core GitHubService. */
+class CoreGitHubProviderAdapter implements GitHubProvider {
+  constructor(private readonly service: GitHubService) {}
 
   async connectionState(): Promise<GithubConnectionState> {
-    return (await (await this.service()).connectionState()) as GithubConnectionState
+    return (await this.service.getConnectionState()).state
   }
 
   async startDeviceFlow(): Promise<DeviceFlowStart> {
-    return (await (await this.service()).startDeviceFlow()) as DeviceFlowStart
+    const device = await this.service.startDeviceAuthorization()
+    return {
+      userCode: device.userCode,
+      verificationUri: device.verificationUri,
+      intervalMs: device.interval * 1_000,
+      expiresInMs: device.expiresIn * 1_000,
+    }
   }
 
-  async pollDeviceFlow(): Promise<GithubConnectionState> {
-    return (await (await this.service()).pollDeviceFlow()) as GithubConnectionState
+  async pollDeviceFlow(): Promise<DeviceFlowPollResult> {
+    const result = await this.service.pollDeviceAuthorization()
+    if (result.status === 'slow-down') {
+      return { status: 'slow-down', intervalMs: result.interval * 1_000 }
+    }
+    if (result.status === 'failed' && result.message !== undefined) {
+      return { status: 'failed', message: result.message }
+    }
+    return { status: result.status }
   }
 
   async disconnect(): Promise<void> {
-    await (await this.service()).disconnect()
+    await this.service.disconnect()
   }
 }
 
-export function createGitHubProviderFromCore(
+/** Constructs the production GitHub graph with machine-local persistence. */
+export function createProductionGitHubProvider(
   homeRoot: string,
-  loadCore: CoreModuleLoader,
-  hint: string = 'GitHub Connect is not available in this build yet (V0.2 Device Flow not wired).',
+  options: ProductionGitHubProviderOptions = {},
 ): GitHubProvider {
-  return new GitHubAdapter(homeRoot, loadCore, hint)
+  const clientId = options.clientId ?? process.env[GITHUB_CLIENT_ID_ENV] ?? ''
+  const api = new GitHubApi({ clientId })
+  const credentialStore =
+    options.credentialStore ??
+    createCredentialStore({ secretsDir: path.join(homeRoot, 'state', 'secrets') })
+  const tokenStore = new TokenStore({ store: credentialStore })
+  const configStore = new GitHubConfigStore(
+    new RuntimeConfigService({ configFilePath: path.join(homeRoot, 'config.json') }),
+  )
+  const service = new GitHubService({ clientId, api, tokenStore, configStore })
+  return new CoreGitHubProviderAdapter(service)
 }
 
-export function createDefaultGitHubProvider(homeRoot: string): GitHubProvider {
-  return createGitHubProviderFromCore(
-    homeRoot,
-    loadSkillboxCore,
-    'GitHub Connect is not available in this build yet — the GitHub core module has not landed. ' +
-      'Run `skillbox connect` once the Device Flow integration ships.',
-  )
+export function createDefaultGitHubProvider(
+  homeRoot: string,
+  options: ProductionGitHubProviderOptions = {},
+): GitHubProvider {
+  return createProductionGitHubProvider(homeRoot, options)
 }
 
 /* ---------------------------------------------------------------------- *
- * Secret scanner (agent 4 — @skillbox/core/secret-scan)
+ * Secret scanner — @skillbox/core/secret-scan
  *
  * Exported function `scanFiles(files, { root }) -> ScanResult`
  * with `{ findings, blocked, block }`. `block` blocks the pipeline.

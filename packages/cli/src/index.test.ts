@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { RepositorySync } from '@skillbox/core'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
 /**
@@ -58,6 +59,50 @@ describe('cli', () => {
     expect(exit).toBe(ExitCode.GENERIC)
     expect(io.err()).toContain('interactive mode')
     expect(io.out()).toBe('')
+  })
+
+  it('routes connect and disconnect through the Core RepositorySync seam', async () => {
+    const io = capture()
+    let disconnects = 0
+    const repositorySync = {
+      connect: async () => ({
+        authorization: 'existing' as const,
+        account: { login: 'octocat' },
+        repository: {
+          id: 1,
+          name: 'skillbox-skills',
+          owner: 'octocat',
+          fullName: 'octocat/skillbox-skills',
+          private: true,
+          defaultBranch: 'main',
+          htmlUrl: 'https://github.com/octocat/skillbox-skills',
+          cloneUrl: 'https://github.com/octocat/skillbox-skills.git',
+          action: 'reused' as const,
+        },
+        local: {
+          initialized: false,
+          remote: {
+            name: 'origin' as const,
+            url: 'https://github.com/octocat/skillbox-skills.git',
+            action: 'unchanged' as const,
+          },
+        },
+      }),
+      disconnect: async () => {
+        disconnects += 1
+      },
+      status: async () => {
+        throw new Error('not used')
+      },
+      pull: async () => undefined,
+      push: async () => undefined,
+      sync: async () => undefined,
+    } satisfies RepositorySync
+
+    expect(await main(['connect'], { ...io, repositorySync })).toBe(0)
+    expect(io.out()).toContain('octocat/skillbox-skills')
+    expect(await main(['disconnect'], { ...io, repositorySync })).toBe(0)
+    expect(disconnects).toBe(1)
   })
 })
 

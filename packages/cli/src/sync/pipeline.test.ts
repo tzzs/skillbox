@@ -1,19 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRegistry,
   ErrorCode,
   isSkillboxError,
+  MemoryCredentialStore,
   SkillboxError,
   type ReconcileResult,
   type SkillService,
 } from '@skillbox/core'
 import {
   SyncService,
+  createDefaultGitHubProvider,
   createDefaultSecretScanner,
-  createGitHubProviderFromCore,
   createGitProviderFromCore,
   createSecretScannerFromCore,
   type DeviceFlowStart,
+  type DeviceFlowPollResult,
   type GitHubProvider,
   type GitCommitOutcome,
   type GitProvider,
@@ -74,7 +79,7 @@ class FakeGitProvider implements GitProvider {
 
 class FakeGitHubProvider implements GitHubProvider {
   state: GithubConnectionState = 'connected'
-  pollQueue: GithubConnectionState[] = []
+  pollQueue: DeviceFlowPollResult[] = []
   started = 0
   disconnected = 0
   readonly start: DeviceFlowStart = {
@@ -91,12 +96,8 @@ class FakeGitHubProvider implements GitHubProvider {
     this.started += 1
     return this.start
   }
-  async pollDeviceFlow(): Promise<GithubConnectionState> {
-    const next = this.pollQueue.shift()
-    if (next !== undefined) {
-      this.state = next
-    }
-    return this.state
+  async pollDeviceFlow(): Promise<DeviceFlowPollResult> {
+    return this.pollQueue.shift() ?? { status: 'pending' }
   }
   async disconnect(): Promise<void> {
     this.disconnected += 1
@@ -122,6 +123,7 @@ interface Harness {
   git: FakeGitProvider
   github: FakeGitHubProvider
   secrets: FakeSecretScanner
+  sleeps: number[]
   out(): string
 }
 
@@ -130,6 +132,7 @@ function harness(): Harness {
   const git = new FakeGitProvider()
   const github = new FakeGitHubProvider()
   const secrets = new FakeSecretScanner()
+  const sleeps: number[] = []
   const skills = { install: async () => reconcileResult(REPO) } as unknown as SkillService
   const sync = new SyncService({
     repositoryRoot: REPO,
@@ -139,9 +142,11 @@ function harness(): Harness {
     secretScanner: secrets,
     skills,
     out: (chunk) => chunks.push(chunk),
-    sleep: async () => undefined,
+    sleep: async (ms) => {
+      sleeps.push(ms)
+    },
   })
-  return { sync, git, github, secrets, out: () => chunks.join('') }
+  return { sync, git, github, secrets, sleeps, out: () => chunks.join('') }
 }
 
 describe('SyncService.sync', () => {
@@ -303,7 +308,7 @@ describe('SyncService.connect / disconnect', () => {
   it('prints the device flow and polls until connected', async () => {
     const h = harness()
     h.github.state = 'not-connected'
-    h.github.pollQueue = ['authorizing', 'connected']
+    h.github.pollQueue = [{ status: 'pending' }, { status: 'authorized' }]
     const result = await h.sync.connect()
     expect(result.state).toBe('connected')
     expect(result.alreadyConnected).toBe(false)
@@ -327,6 +332,28 @@ describe('SyncService.connect / disconnect', () => {
     expect(error).toMatchObject({ code: ErrorCode.GITHUB_AUTHORIZATION_EXPIRED })
   })
 
+  it.each([
+    ['denied', ErrorCode.GITHUB_AUTHORIZATION_DENIED],
+    ['expired', ErrorCode.GITHUB_AUTHORIZATION_EXPIRED],
+    ['failed', ErrorCode.GITHUB_AUTH_FAILED],
+  ] as const)('stops immediately when device authorization is %s', async (status, code) => {
+    const h = harness()
+    h.github.state = 'not-connected'
+    h.github.pollQueue = [{ status }]
+    const error = await h.sync.connect().catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ code })
+    expect(h.github.pollQueue).toHaveLength(0)
+  })
+
+  it('uses the slower interval returned by GitHub for later polls', async () => {
+    const h = harness()
+    h.github.state = 'not-connected'
+    h.github.start.intervalMs = 1_000
+    h.github.pollQueue = [{ status: 'slow-down', intervalMs: 7_000 }, { status: 'authorized' }]
+    await h.sync.connect()
+    expect(h.sleeps).toEqual([1_000, 7_000])
+  })
+
   it('disconnect delegates to the provider', async () => {
     const h = harness()
     await h.sync.disconnect()
@@ -347,6 +374,10 @@ describe('loaders (wiring points)', () => {
     const FakeGitClient = class {
       constructor(_root: string) {}
       status = async () => ({
+        branch: 'main',
+        remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
+        ahead: 2,
+        behind: 3,
         files: [
           {
             path: 'skillbox.lock',
@@ -376,15 +407,132 @@ describe('loaders (wiring points)', () => {
     }
     const provider = createGitProviderFromCore(REPO, async () => ({ GitClient: FakeGitClient }))
     const report = await provider.status()
-    expect(report.isRepository).toBe(true)
+    expect(report).toMatchObject({
+      isRepository: true,
+      branch: 'main',
+      remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
+      ahead: 2,
+      behind: 3,
+    })
     await provider.push()
     expect(fake.pushCalls).toBe(1)
   })
 
-  it('fails with GITHUB_UNAVAILABLE until the core GitHubService exists', async () => {
-    const provider = createGitHubProviderFromCore('C:\\home', async () => ({}))
-    const error = await provider.connectionState().catch((e: unknown) => e)
-    expect(error).toMatchObject({ code: ErrorCode.GITHUB_UNAVAILABLE })
+  it('default GitHub provider reads the shipped core connection state', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-wiring-'))
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, {
+        credentialStore: new MemoryCredentialStore(),
+      })
+      await expect(provider.connectionState()).resolves.toBe('not-connected')
+    } finally {
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('default GitHub provider maps Device Flow seconds to CLI milliseconds', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-device-'))
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          device_code: 'device-code',
+          user_code: 'ABCD-EFGH',
+          verification_uri: 'https://github.com/login/device',
+          expires_in: 900,
+          interval: 7,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', request)
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, {
+        clientId: 'test-client-id',
+        credentialStore: new MemoryCredentialStore(),
+      })
+      await expect(provider.startDeviceFlow()).resolves.toEqual({
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://github.com/login/device',
+        intervalMs: 7_000,
+        expiresInMs: 900_000,
+      })
+    } finally {
+      vi.unstubAllGlobals()
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('default GitHub provider preserves slow-down and denied poll outcomes', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-poll-'))
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            device_code: 'device-code',
+            user_code: 'ABCD-EFGH',
+            verification_uri: 'https://github.com/login/device',
+            expires_in: 900,
+            interval: 5,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'slow_down', interval: 12 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'access_denied' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    vi.stubGlobal('fetch', request)
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, {
+        clientId: 'test-client-id',
+        credentialStore: new MemoryCredentialStore(),
+      })
+      await provider.startDeviceFlow()
+      await expect(provider.pollDeviceFlow()).resolves.toEqual({
+        status: 'slow-down',
+        intervalMs: 12_000,
+      })
+      await expect(provider.pollDeviceFlow()).resolves.toEqual({ status: 'denied' })
+    } finally {
+      vi.unstubAllGlobals()
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('default GitHub provider disconnect clears credentials and machine metadata', async () => {
+    const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-github-disconnect-'))
+    const store = new MemoryCredentialStore()
+    await store.set(
+      { service: 'skillbox-github', account: 'oauth-tokens' },
+      JSON.stringify({ accessToken: 'test-token', tokenType: 'bearer' }),
+    )
+    await fs.writeFile(
+      path.join(homeRoot, 'config.json'),
+      JSON.stringify({ github: { connected: true, login: 'octocat', provider: 'github-app' } }),
+    )
+    try {
+      const provider = createDefaultGitHubProvider(homeRoot, { credentialStore: store })
+      await expect(provider.connectionState()).resolves.toBe('connected')
+      await provider.disconnect()
+      await expect(provider.connectionState()).resolves.toBe('not-connected')
+      await expect(
+        store.get({ service: 'skillbox-github', account: 'oauth-tokens' }),
+      ).resolves.toBeNull()
+      await expect(fs.readFile(path.join(homeRoot, 'config.json'), 'utf8')).resolves.not.toContain(
+        'github',
+      )
+    } finally {
+      await fs.rm(homeRoot, { recursive: true, force: true })
+    }
   })
 
   it('secret scanner reports not-ready and empty scans when unwired', async () => {

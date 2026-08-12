@@ -206,6 +206,17 @@ describe('GitHubService device authorization', () => {
 })
 
 describe('GitHubService authenticated operations', () => {
+  it('builds process-scoped Git transport auth from the current token', async () => {
+    await withTempDir(async (dir) => {
+      const { service, tokenStore } = makeService(dir, apiMock().api)
+      await tokenStore.save(validRecord)
+      const auth = await service.getGitTransportAuth()
+      expect(auth.prefixArgs.join(' ')).not.toContain(validRecord.accessToken)
+      expect(auth.env.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe(validRecord.accessToken)
+      expect(auth.sensitiveEnvKeys).toEqual(['SKILLBOX_GITHUB_ACCESS_TOKEN'])
+    })
+  })
+
   it('throws GITHUB_NOT_CONNECTED when no token is stored', async () => {
     await withTempDir(async (dir) => {
       const { service } = makeService(dir, apiMock().api)
@@ -264,6 +275,23 @@ describe('GitHubService authenticated operations', () => {
 })
 
 describe('GitHubService.ensureRepository', () => {
+  it('resolves a repository without persisting its binding until explicitly bound', async () => {
+    await withTempDir(async (dir) => {
+      const { api } = apiMock()
+      ;(api.createRepository as ReturnType<typeof vi.fn>).mockResolvedValue(repository)
+      const { service, configStore, tokenStore } = makeService(dir, api)
+      await tokenStore.save(validRecord)
+      await configStore.writeConnected({ login: 'octocat', provider: 'github-app' })
+
+      const result = await service.resolveRepository()
+      expect(result).toEqual({ repository, reused: false })
+      expect((await configStore.read()).repository).toBeUndefined()
+
+      await service.bindRepository(repository)
+      expect((await configStore.read()).repository).toBe(repository.fullName)
+    })
+  })
+
   it('creates a private repository and rebinds the config', async () => {
     await withTempDir(async (dir) => {
       const { api } = apiMock()
