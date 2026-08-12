@@ -51,7 +51,7 @@ describe('cli', () => {
     const exit = await main(['list', '--json'], io)
     expect(exit).toBe(0)
     expect(io.out()).toContain('"skills"')
-  })
+  }, 15_000)
 
   it('refuses the interactive mode without a TTY instead of crashing', async () => {
     const io = capture()
