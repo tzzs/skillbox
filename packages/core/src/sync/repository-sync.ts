@@ -1,3 +1,4 @@
+import * as path from 'node:path'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import type { EnsureRepositoryOptions } from '../github/index.js'
 import type {
@@ -10,9 +11,14 @@ import type {
   SyncRequest,
   ResolveConflictsRequest,
 } from './types.js'
+import { SyncTransaction } from './sync-transaction.js'
+import { ConflictSessionStore } from './conflict-session-store.js'
+import { SnapshotService } from './snapshot-service.js'
 
 export interface RepositorySyncServiceOptions {
   repositoryRoot: string
+  /** The Skillbox home owning sync sessions, snapshots and temporary trees. */
+  homeRoot?: string
   git: RepositoryGitPort
   host: RepositoryHostPort
   onEvent?: (event: RepositorySyncEvent) => void
@@ -25,12 +31,15 @@ export class RepositorySyncService implements RepositorySync {
   private readonly repositoryRoot: string
   private readonly git: RepositoryGitPort
   private readonly host: RepositoryHostPort
+  private readonly homeRoot: string
   private readonly onEvent: (event: RepositorySyncEvent) => void
   private readonly sleep: (milliseconds: number) => Promise<void>
   private readonly now: () => number
 
   constructor(options: RepositorySyncServiceOptions) {
     this.repositoryRoot = options.repositoryRoot
+    this.homeRoot =
+      options.homeRoot ?? process.env.SKILLBOX_HOME ?? path.join(process.cwd(), '.skillbox')
     this.git = options.git
     this.host = options.host
     this.onEvent = options.onEvent ?? (() => undefined)
@@ -139,6 +148,15 @@ export class RepositorySyncService implements RepositorySync {
   }
 
   async sync(_input: SyncRequest = {}): Promise<SyncOutcome> {
+    const transaction = new SyncTransaction({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+      auth: () => this.host.getGitTransportAuth(),
+      event: (phase) => this.phase(phase),
+    })
+    const outcome = await transaction.run()
+    if (outcome.kind !== 'blocked' || outcome.reason !== 'recovery-required') return outcome
     const status = await this.status()
     if (status.hasConflicts) {
       return {
@@ -162,25 +180,80 @@ export class RepositorySyncService implements RepositorySync {
         return {
           kind: 'blocked',
           reason: 'push-retry-exhausted',
-          recovery: { retryable: true, message: 'The other device changed the repository. Sync again.' },
+          recovery: {
+            retryable: true,
+            message: 'The other device changed the repository. Sync again.',
+          },
         }
       }
       throw error
     }
   }
 
-  async resolveConflicts(_input: ResolveConflictsRequest): Promise<SyncOutcome> {
-    return {
-      kind: 'blocked',
-      reason: 'recovery-required',
-      recovery: { retryable: true, message: 'No conflict resolver is configured for this repository.' },
-    }
+  async listConflicts() {
+    return new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+    }).list()
   }
 
-  async restoreSnapshot(_snapshotId: string): Promise<void> {
-    throw new SkillboxError(ErrorCode.SYNC_SNAPSHOT_NOT_FOUND, 'The requested sync restore point was not found.', {
-      recoverable: true,
+  async getConflict(sessionId: string) {
+    return new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+    }).get(sessionId)
+  }
+
+  async resolveConflicts(input: ResolveConflictsRequest): Promise<SyncOutcome> {
+    const store = new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
     })
+    const session = await store.get(input.sessionId)
+    const expected = new Map(session.conflicts.map((conflict) => [conflict.id, conflict]))
+    for (const [id, resolution] of Object.entries(input.resolutions)) {
+      const conflict = expected.get(id)
+      if (conflict === undefined || !conflict.allowedResolutions.includes(resolution)) {
+        throw new SkillboxError(
+          ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
+          'One of the selected conflict resolutions is no longer valid. Review the conflicts and try again.',
+          { recoverable: true },
+        )
+      }
+      expected.delete(id)
+    }
+    if (expected.size > 0) {
+      throw new SkillboxError(
+        ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
+        'Choose a resolution for every pending conflict before continuing.',
+        { recoverable: true },
+      )
+    }
+
+    return new SyncTransaction({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+      auth: () => this.host.getGitTransportAuth(),
+      event: (phase) => this.phase(phase),
+    }).resolve(session, input.resolutions)
+  }
+
+  async restoreSnapshot(snapshotId: string): Promise<void> {
+    if (!hasSnapshotGit(this.git)) {
+      throw new SkillboxError(
+        ErrorCode.SYNC_SNAPSHOT_RESTORE_FAILED,
+        'This Git implementation cannot safely restore a sync restore point.',
+        {
+          recoverable: true,
+        },
+      )
+    }
+    await new SnapshotService({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+    }).restore(snapshotId)
   }
 
   private async authorize(): Promise<'existing' | 'completed'> {
@@ -241,6 +314,15 @@ export class RepositorySyncService implements RepositorySync {
   private phase(phase: Extract<RepositorySyncEvent, { type: 'phase' }>['phase']): void {
     this.onEvent({ type: 'phase', phase })
   }
+}
+
+function hasSnapshotGit(
+  git: RepositoryGitPort,
+): git is RepositoryGitPort &
+  Required<Pick<RepositoryGitPort, 'revParse' | 'createPrivateRef' | 'deletePrivateRef'>> {
+  return ['revParse', 'createPrivateRef', 'deletePrivateRef'].every(
+    (key) => typeof git[key as keyof RepositoryGitPort] === 'function',
+  )
 }
 
 function canonicalRemoteUrl(value: string): string {

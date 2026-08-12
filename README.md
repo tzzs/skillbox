@@ -98,6 +98,8 @@ skillbox connect  # First time: GitHub Device Flow authorization and origin setu
 skillbox sync     # Afterwards: scan → detect → secret scan → pull → resolve → commit → push
 ```
 
+When two devices change the same skill, use the local Web UI first (`skillbox web` → **Sync**). It groups choices by skill and offers **Use this device**, **Use other device**, or **Keep both**. A restore point is created before sync; use the Restore action if you need to return to the pre-sync state. The interactive `skillbox conflicts` command is the advanced alternative.
+
 To restore consistency when a repository has drifted:
 
 ```bash
@@ -105,7 +107,7 @@ skillbox pull
 skillbox status
 ```
 
-> `sync` commits only Skillbox-managed paths (`skillbox.yaml`, `skillbox.lock`, `skills/`, and `.skillbox/`). It does not touch other files you add manually. Before pushing, GitHub must be connected; otherwise the command explains how to run `skillbox connect`.
+> `sync` commits only Skillbox-managed paths (`skillbox.yaml`, `skillbox.lock`, `skills/`, and `.skillbox/`). It does not touch other files you add manually. Before pushing, GitHub must be connected; otherwise the command explains how to run `skillbox connect`. Never resolve a sync disagreement with raw Git conflict markers: Skillbox keeps it as a recoverable review session instead.
 
 ### A minimal first-use example
 

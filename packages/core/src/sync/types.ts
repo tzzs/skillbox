@@ -40,20 +40,9 @@ export interface SyncRecovery {
 }
 
 export type ConflictType =
-  | 'content'
-  | 'delete-modify'
-  | 'manifest-field'
-  | 'mode'
-  | 'source'
-  | 'lifecycle'
+  'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
 
-export type ConflictResolution =
-  | 'local'
-  | 'remote'
-  | 'keep-both'
-  | 'merged'
-  | 'delete'
-  | 'restore'
+export type ConflictResolution = 'local' | 'remote' | 'keep-both' | 'merged' | 'delete' | 'restore'
 
 export interface ConflictValue {
   /** Safe, bounded data suitable for a conflict preview. */
@@ -137,6 +126,9 @@ export interface RepositorySync {
   pull(): Promise<void>
   push(): Promise<void>
   sync(input?: SyncRequest): Promise<SyncOutcome>
+  /** Durable semantic conflicts awaiting a user decision for this repository. */
+  listConflicts(): Promise<ConflictSession[]>
+  getConflict(sessionId: string): Promise<ConflictSession>
   resolveConflicts(input: ResolveConflictsRequest): Promise<SyncOutcome>
   restoreSnapshot(snapshotId: string): Promise<void>
 }
@@ -154,6 +146,23 @@ export interface RepositoryGitPort {
   removeRemote(repositoryRoot: string, name: string): Promise<void>
   pull(repositoryRoot: string, options?: GitPullOptions): Promise<void>
   push(repositoryRoot: string, options?: GitPushOptions): Promise<void>
+  /** Advanced operations used by the repository-level sync transaction. */
+  fetch?(repositoryRoot: string, remote?: string, auth?: GitTransportAuth): Promise<void>
+  revParse?(repositoryRoot: string, revision: string): Promise<string>
+  mergeBase?(repositoryRoot: string, left: string, right: string): Promise<string>
+  createWorktree?(repositoryRoot: string, targetDir: string, revision: string): Promise<void>
+  removeWorktree?(repositoryRoot: string, targetDir: string): Promise<void>
+  commit?(
+    repositoryRoot: string,
+    message: string,
+    files?: readonly string[],
+  ): Promise<{ hash: string }>
+  stage?(repositoryRoot: string, files: readonly string[]): Promise<void>
+  /** Opens an index-only merge whose managed content is supplied by a semantic transaction. */
+  beginSemanticMerge?(repositoryRoot: string, otherRevision: string): Promise<void>
+  abortMerge?(repositoryRoot: string): Promise<void>
+  createPrivateRef?(repositoryRoot: string, name: string, revision: string): Promise<void>
+  deletePrivateRef?(repositoryRoot: string, name: string): Promise<void>
 }
 
 export interface RepositoryHostPort {

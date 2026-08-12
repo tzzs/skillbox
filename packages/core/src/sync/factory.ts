@@ -37,6 +37,7 @@ export function createRepositorySync(options: CreateRepositorySyncOptions): Repo
   })
   return new RepositorySyncService({
     repositoryRoot: options.repositoryRoot,
+    homeRoot: options.homeRoot,
     git: new GitClient(),
     host,
     ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),

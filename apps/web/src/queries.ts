@@ -4,6 +4,7 @@ import {
   type InstallInput,
   type RegistrySearchParams,
   type SettingsPatch,
+  type ResolveSyncConflictsInput,
   type SkillStatusEntry,
 } from './api.js'
 
@@ -27,6 +28,9 @@ export const queryKeys = {
     params.official === true ? 'official' : '',
   ],
   outdated: ['registry', 'outdated'],
+  syncStatus: ['sync', 'status'],
+  conflicts: ['sync', 'conflicts'],
+  conflict: (id: string) => ['sync', 'conflicts', id],
 } as const
 
 export function useHealth() {
@@ -194,6 +198,61 @@ export function useOutdated() {
   return useQuery({
     queryKey: queryKeys.outdated,
     queryFn: () => api.outdated(),
+  })
+}
+
+export function useSyncStatus() {
+  return useQuery({ queryKey: queryKeys.syncStatus, queryFn: () => api.syncStatus() })
+}
+
+export function useSync() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.sync(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conflicts })
+    },
+  })
+}
+
+export function useConflict(id: string | undefined) {
+  const sessionId = id ?? ''
+  return useQuery({
+    queryKey: queryKeys.conflict(sessionId),
+    queryFn: () => api.conflict(sessionId),
+    enabled: sessionId !== '',
+  })
+}
+
+export function useResolveConflicts(sessionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: ResolveSyncConflictsInput) => api.resolveConflicts(sessionId, input),
+    onSuccess: () => {
+      for (const key of [
+        queryKeys.syncStatus,
+        queryKeys.conflicts,
+        queryKeys.skills,
+        queryKeys.agents,
+        queryKeys.status,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
+  })
+}
+
+export function useRestoreSyncSnapshot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (snapshotId: string) => api.restoreSyncSnapshot(snapshotId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    },
   })
 }
 

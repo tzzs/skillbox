@@ -416,6 +416,7 @@ export function buildProgram(ctx: CliContext): Command {
     registry: ctx.registry,
   })
   const sync = buildSyncService(ctx, skills)
+  let pendingConflictSession: import('@skillbox/core').ConflictSession | undefined
 
   const program = new Command()
   program
@@ -591,11 +592,16 @@ export function buildProgram(ctx: CliContext): Command {
       if (ctx.repositorySync !== undefined) {
         const outcome = await ctx.repositorySync.sync()
         if (outcome.kind === 'completed') {
-          ctx.out(`\nSync complete · automatically merged ${outcome.summary.automaticallyMerged} change(s)\n`)
+          ctx.out(
+            `\nSync complete · automatically merged ${outcome.summary.automaticallyMerged} change(s)\n`,
+          )
           return
         }
         if (outcome.kind === 'conflicts') {
-          ctx.out(`\n${outcome.session.conflicts.length} skill(s) need a decision. Run \`skillbox conflicts\`.\n`)
+          pendingConflictSession = outcome.session
+          ctx.out(
+            `\n${outcome.session.conflicts.length} skill(s) need a decision. Run \`skillbox conflicts\`.\n`,
+          )
           process.exitCode = 3
           return
         }
@@ -613,27 +619,66 @@ export function buildProgram(ctx: CliContext): Command {
       }
     })
 
-  program
+  const conflictsCommand = program
     .command('conflicts')
-    .description('Show or resolve pending multi-device sync decisions')
-    .option('--session <id>', 'conflict session id')
-    .option('--conflict <choice>', 'advanced choice: local, remote, or keep-both')
-    .action(async (options: { session?: string; conflict?: string }) => {
+    .description('Show pending multi-device sync decisions')
+    .action(() => {
       if (ctx.repositorySync === undefined) {
-        throw new SkillboxError(ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND, 'No sync conflict session is available.', { recoverable: true })
+        throw new SkillboxError(
+          ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
+          'No sync conflict session is available.',
+          { recoverable: true },
+        )
       }
-      if (options.session === undefined || options.conflict === undefined) {
-        ctx.out('No pending conflict details are available in this command context. Run `skillbox sync` first.\n')
+      if (pendingConflictSession === undefined) {
+        ctx.out('No pending sync decisions.\n')
         return
       }
-      if (!['local', 'remote', 'keep-both'].includes(options.conflict)) {
-        throw new SkillboxError(ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION, 'Choose local, remote, or keep-both.', { recoverable: true })
+      ctx.out(`\n${pendingConflictSession.conflicts.length} decision(s) need your attention.\n`)
+      for (const conflict of pendingConflictSession.conflicts) {
+        ctx.out(
+          `  ${conflict.skillAlias ?? 'Skill'} · ${conflict.field ?? conflict.path ?? conflict.type}${conflict.recommendedResolution === undefined ? '' : ` · recommended: ${conflict.recommendedResolution}`}\n`,
+        )
       }
+      ctx.out(
+        `\nUse \`skillbox conflicts resolve ${pendingConflictSession.id} --conflict=local|remote|keep-both\` for an advanced bulk choice.\n`,
+      )
+    })
+
+  conflictsCommand
+    .command('resolve <session>')
+    .description('Apply an advanced decision to every pending item in a session')
+    .requiredOption('--conflict <choice>', 'local, remote, or keep-both')
+    .action(async (session: string, options: { conflict: string }) => {
+      if (
+        ctx.repositorySync === undefined ||
+        pendingConflictSession === undefined ||
+        pendingConflictSession.id !== session
+      ) {
+        throw new SkillboxError(
+          ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
+          'This sync decision is no longer available.',
+          { recoverable: true },
+        )
+      }
+      if (!['local', 'remote', 'keep-both'].includes(options.conflict))
+        throw new SkillboxError(
+          ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
+          'Choose local, remote, or keep-both.',
+          { recoverable: true },
+        )
       const outcome = await ctx.repositorySync.resolveConflicts({
-        sessionId: options.session,
-        resolutions: {},
+        sessionId: session,
+        resolutions: Object.fromEntries(
+          pendingConflictSession.conflicts.map((conflict) => [conflict.id, options.conflict]),
+        ) as Record<string, import('@skillbox/core').ConflictResolution>,
       })
-      ctx.out(outcome.kind === 'completed' ? 'Conflict decisions applied.\n' : 'Conflict decisions need attention.\n')
+      pendingConflictSession = outcome.kind === 'conflicts' ? outcome.session : undefined
+      ctx.out(
+        outcome.kind === 'completed'
+          ? 'Sync decisions applied.\n'
+          : 'Sync decisions need attention.\n',
+      )
     })
 
   program

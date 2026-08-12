@@ -86,16 +86,21 @@ describe('durable sync conflict API', () => {
         snapshotId: 'restore-one',
         createdAt: '2026-08-13T00:00:00.000Z',
         expiresAt: '2030-01-01T00:00:00.000Z',
-        conflicts: [{
-          id: 'demo:content',
-          type: 'content' as const,
-          skillAlias: 'demo',
-          path: 'SKILL.md',
-          allowedResolutions: ['local', 'remote', 'keep-both'],
-          destructive: false,
-        }],
+        conflicts: [
+          {
+            id: 'demo:content',
+            type: 'content' as const,
+            skillAlias: 'demo',
+            path: 'SKILL.md',
+            allowedResolutions: ['local', 'remote', 'keep-both'],
+            destructive: false,
+          },
+        ],
       }
-      await new ConflictSessionStore({ repositoryRoot: paths.repository, homeRoot: paths.home }).save(session)
+      await new ConflictSessionStore({
+        repositoryRoot: paths.repository,
+        homeRoot: paths.home,
+      }).save(session)
 
       const list = await app.request('/api/conflicts')
       expect(list.status).toBe(200)
@@ -103,11 +108,15 @@ describe('durable sync conflict API', () => {
 
       const status = await app.request('/api/sync/status')
       expect(status.status).toBe(200)
-      await expect(status.json()).resolves.toMatchObject({ sync: { kind: 'conflicts', sessionId: 'session-one' } })
+      await expect(status.json()).resolves.toMatchObject({
+        sync: { kind: 'conflicts', sessionId: 'session-one' },
+      })
 
       const detail = await app.request('/api/conflicts/session-one')
       expect(detail.status).toBe(200)
-      await expect(detail.json()).resolves.toMatchObject({ conflict: { snapshotId: 'restore-one' } })
+      await expect(detail.json()).resolves.toMatchObject({
+        conflict: { snapshotId: 'restore-one' },
+      })
     })
   })
 })

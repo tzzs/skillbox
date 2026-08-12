@@ -246,6 +246,45 @@ export interface ApiErrorBody {
   }
 }
 
+/* ---- Multi-device sync ---- */
+
+/** Presentation-only state returned by the local sync service. */
+export type SyncStatus =
+  | { kind: 'idle' }
+  | { kind: 'completed'; automaticallyMerged: number; snapshotId?: string; retriedPushes: number }
+  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
+  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+
+export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
+export type SyncConflictKind =
+  'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
+
+export interface SyncConflictView {
+  id: string
+  type: SyncConflictKind
+  skillAlias?: string
+  path?: string
+  field?: string
+  basePreview?: string
+  localPreview?: string
+  remotePreview?: string
+  allowedResolutions: ConflictChoice[]
+  recommendedResolution?: ConflictChoice
+  destructive: boolean
+}
+
+export interface ConflictSessionView {
+  id: string
+  snapshotId: string
+  createdAt: string
+  expiresAt: string
+  conflicts: SyncConflictView[]
+}
+
+export interface ResolveSyncConflictsInput {
+  resolutions: Record<string, ConflictChoice>
+}
+
 /** Error thrown when the API answers with a non-2xx status (M10.8 envelope). */
 export class ApiError extends Error {
   readonly status: number
@@ -261,7 +300,18 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * A sync conflict or a safely-paused sync is an expected workflow result, not
+ * an API failure. The server deliberately uses 409/423 for those outcomes so
+ * other clients can distinguish them from a completed sync. Allow just those
+ * status codes through for the sync calls below; all regular error envelopes
+ * still become ApiError instances.
+ */
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  acceptedStatuses: readonly number[] = [],
+): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -278,7 +328,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     body = undefined
   }
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
     const envelope = body as ApiErrorBody | undefined
     if (envelope?.error !== undefined) {
       const { code, message, recoverable } = envelope.error
@@ -319,6 +369,12 @@ export interface ApiClient {
   installRegistrySkill(input: InstallInput): Promise<InstallResult>
   /* V0.4 diff API */
   skillDiff(name: string): Promise<SkillDiff>
+  syncStatus(): Promise<SyncStatus>
+  sync(): Promise<SyncStatus>
+  conflicts(): Promise<ConflictSessionView[]>
+  conflict(id: string): Promise<ConflictSessionView>
+  resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
+  restoreSyncSnapshot(id: string): Promise<void>
 }
 
 function encodeName(name: string): string {
@@ -452,5 +508,44 @@ export const api: ApiClient = {
   async skillDiff(name) {
     const response = await request<{ diff: SkillDiff }>(`/api/skills/${encodeName(name)}/diff`)
     return response.diff
+  },
+
+  async syncStatus() {
+    const response = await request<{ sync: SyncStatus }>('/api/sync/status')
+    return response.sync
+  },
+
+  async sync() {
+    const response = await request<{ sync: SyncStatus }>(
+      '/api/sync',
+      { method: 'POST' },
+      [409, 423],
+    )
+    return response.sync
+  },
+
+  async conflicts() {
+    const response = await request<{ conflicts: ConflictSessionView[] }>('/api/conflicts')
+    return response.conflicts
+  },
+
+  async conflict(id) {
+    const response = await request<{ conflict: ConflictSessionView }>(
+      `/api/conflicts/${encodeName(id)}`,
+    )
+    return response.conflict
+  },
+
+  async resolveConflicts(id, input) {
+    const response = await request<{ sync: SyncStatus }>(
+      `/api/conflicts/${encodeName(id)}/resolve`,
+      { method: 'POST', body: JSON.stringify(input) },
+      [409, 423],
+    )
+    return response.sync
+  },
+
+  async restoreSyncSnapshot(id) {
+    await request<unknown>(`/api/sync/snapshots/${encodeName(id)}/restore`, { method: 'POST' })
   },
 }

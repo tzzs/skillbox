@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ErrorCode } from '../errors.js'
 import { withTempDir } from '../fs/test-utils.js'
+import { repositoryKey } from '../operations/lock.js'
 import { GitClient } from '../git/index.js'
 import type {
   DeviceAuthorization,
@@ -14,6 +15,7 @@ import type {
 } from '../github/index.js'
 import type { GitPushOptions, GitStatusResult, GitTransportAuth } from '../git/index.js'
 import { RepositorySyncService } from './repository-sync.js'
+import { ConflictSessionStore } from './conflict-session-store.js'
 import type { RepositoryGitPort, RepositoryHostPort } from './types.js'
 
 const repository: GitHubRepository = {
@@ -217,6 +219,48 @@ describe('RepositorySyncService transport', () => {
       setUpstream: true,
     })
     expect(git.pushOptions?.auth?.env.SKILLBOX_GITHUB_ACCESS_TOKEN).toBe('secret')
+  })
+})
+
+describe('RepositorySyncService conflict recovery wiring', () => {
+  it('loads the durable session and rejects incomplete or invalid resolutions', async () => {
+    await withTempDir(async (homeRoot) => {
+      const git = new FakeGit()
+      const service = new RepositorySyncService({
+        repositoryRoot: '/repo',
+        homeRoot,
+        git,
+        host: new FakeHost(),
+      })
+      const store = new ConflictSessionStore({ repositoryRoot: '/repo', homeRoot })
+      await store.save({
+        version: 1,
+        id: 'session-1',
+        repositoryId: repositoryKey('/repo'),
+        baseRevision: 'base',
+        localRevision: 'local',
+        remoteRevision: 'remote',
+        snapshotId: 'snapshot-1',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        conflicts: [
+          { id: 'c1', type: 'content', allowedResolutions: ['local'], destructive: false },
+        ],
+      })
+
+      await expect(
+        service.resolveConflicts({ sessionId: 'session-1', resolutions: {} }),
+      ).rejects.toMatchObject({ code: ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION })
+      await expect(
+        service.resolveConflicts({ sessionId: 'session-1', resolutions: { c1: 'remote' } }),
+      ).rejects.toMatchObject({ code: ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION })
+      await expect(
+        service.resolveConflicts({ sessionId: 'session-1', resolutions: { c1: 'local' } }),
+      ).resolves.toMatchObject({
+        kind: 'blocked',
+        recovery: { snapshotId: 'snapshot-1' },
+      })
+    })
   })
 })
 

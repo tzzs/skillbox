@@ -13,7 +13,16 @@ const session: ConflictSession = {
   snapshotId: 'snapshot-1',
   createdAt: '2026-08-13T00:00:00.000Z',
   expiresAt: '2026-08-14T00:00:00.000Z',
-  conflicts: [{ id: 'demo:enabled', type: 'manifest-field', skillAlias: 'demo', field: 'enabled', allowedResolutions: ['local', 'remote', 'merged'], destructive: false }],
+  conflicts: [
+    {
+      id: 'demo:enabled',
+      type: 'manifest-field',
+      skillAlias: 'demo',
+      field: 'enabled',
+      allowedResolutions: ['local', 'remote', 'merged'],
+      destructive: false,
+    },
+  ],
 }
 
 describe('ConflictSession serialization', () => {
@@ -23,8 +32,13 @@ describe('ConflictSession serialization', () => {
 
   it('rejects unknown versions as a recoverable session error', () => {
     expect(() => parseConflictSession({ ...session, version: 2 })).toThrowError(SkillboxError)
-    try { parseConflictSession({ ...session, version: 2 }) } catch (error) {
-      expect(error).toMatchObject({ code: ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED, recoverable: true })
+    try {
+      parseConflictSession({ ...session, version: 2 })
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
+        recoverable: true,
+      })
     }
   })
 

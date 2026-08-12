@@ -302,6 +302,18 @@ curl -X POST http://127.0.0.1:43821/api/skills/existing-skill-a/enable \
 - [ ] 9 modified：`skillbox status` 显示 `modified`
 - [ ] 10 Web：Web UI 正常打开，Assignment 可查看可修改（API + manifest 落盘一致）
 
+### 多设备同步补充验收（发布前）
+
+在两个隔离的仓库目录（A、B）与同一个 bare remote 中完成以下检查：
+
+- [ ] A/B 分别新增不同 Skill 后同步，第二次同步自动合并，Web 显示完成状态。
+- [ ] A/B 修改同一 Skill 的不同字段后同步，自动合并且两个字段都保留。
+- [ ] A/B 修改同一内容后，Web 的 **Sync** 页面进入“Review changes”；普通页面不显示 Git marker 或内部 Git 名称。
+- [ ] 对 delete/modify 选择保留修改，并确认恢复点可在页面中恢复；未受管文件不变。
+- [ ] 对一个冲突选择“Keep both”，新 Skill 名称无冲突且两个内容均存在。
+- [ ] 在 A 获取远端状态后让 B 先同步；A 能安全重试完成，且没有 force push。
+- [ ] 制造 Runtime reconcile 失败后确认：有效的仓库提交仍保留，Runtime 不出现部分变更。
+
 ---
 
 ## 4. 相关参考

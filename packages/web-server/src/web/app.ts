@@ -135,7 +135,9 @@ export function createWebApp(options: WebAppOptions): Hono {
   })
 
   app.get('/api/conflicts', async (c) =>
-    c.json<ConflictsResponse>({ conflicts: (await services.sync.listConflicts()).map(presentSession) }),
+    c.json<ConflictsResponse>({
+      conflicts: (await services.sync.listConflicts()).map(presentSession),
+    }),
   )
   app.get('/api/conflicts/:id', async (c) => {
     const session = await services.sync.getConflict(c.req.param('id'))

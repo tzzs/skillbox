@@ -104,6 +104,8 @@ skillbox connect           # 首次：GitHub Device Flow 授权并绑定 origin
 skillbox sync              # 之后：扫描 → 检测 → 秘钥扫描 → pull → resolve → commit → push
 ```
 
+如果两台设备修改了同一个 Skill，优先使用本地 Web UI（`skillbox web` → **Sync**）处理。页面会按 Skill 归组，并提供“使用这台设备”“使用另一台设备”“两个都保留”三个选项。同步前会自动创建恢复点；需要回到同步前状态时可点击“恢复”。交互式 `skillbox conflicts` 是高级入口。
+
 **在仓库停滞时恢复本地一致性：**
 
 ```bash
@@ -112,7 +114,7 @@ skillbox status            # 查看 Skills / Agents / Git 三块状态
 ```
 
 > `sync` 只自动提交 skillbox 管理的路径（`skillbox.yaml` / `skillbox.lock` / `skills/` / `.skillbox/`），
-> 不会碰你在仓库里手动添加的其他文件。推送到远端前要求 GitHub 已连接，否则命令明确报错并提示先运行 `skillbox connect`。
+> 不会碰你在仓库里手动添加的其他文件。推送到远端前要求 GitHub 已连接，否则命令明确报错并提示先运行 `skillbox connect`。出现分歧时 Skillbox 会保留可恢复的待处理会话，不要用原始 Git conflict marker 手工解决。
 
 ### 首次使用视角：一个最小例子
 

@@ -7,7 +7,10 @@ export async function createTempDir(prefix = 'skillbox-test-'): Promise<string> 
 }
 
 export async function removeTempDir(dir: string): Promise<void> {
-  await rm(dir, { recursive: true, force: true })
+  // Windows can keep a just-exited child process' cwd or stream handle open
+  // briefly. Bounded native retries avoid turning a successful E2E assertion
+  // into an unrelated ENOTEMPTY/EBUSY cleanup failure.
+  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
 export {

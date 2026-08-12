@@ -17,7 +17,16 @@ export function parseConflictSession(value: unknown): ConflictSession {
     )
   }
 
-  const required = ['id', 'repositoryId', 'baseRevision', 'localRevision', 'remoteRevision', 'snapshotId', 'createdAt', 'expiresAt']
+  const required = [
+    'id',
+    'repositoryId',
+    'baseRevision',
+    'localRevision',
+    'remoteRevision',
+    'snapshotId',
+    'createdAt',
+    'expiresAt',
+  ]
   if (required.some((key) => typeof value[key] !== 'string') || !Array.isArray(value.conflicts)) {
     throw new SkillboxError(
       ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
@@ -50,17 +59,42 @@ export function validateConflictSession(session: ConflictSession): void {
 }
 
 function parseConflict(value: unknown): SyncConflict {
-  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.type !== 'string' || !Array.isArray(value.allowedResolutions) || typeof value.destructive !== 'boolean') {
-    throw new SkillboxError(ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED, 'This conflict session is invalid. Start sync again.', { recoverable: true })
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    typeof value.type !== 'string' ||
+    !Array.isArray(value.allowedResolutions) ||
+    typeof value.destructive !== 'boolean'
+  ) {
+    throw new SkillboxError(
+      ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
+      'This conflict session is invalid. Start sync again.',
+      { recoverable: true },
+    )
   }
   const allowedResolutions = value.allowedResolutions
-  if (!allowedResolutions.every(isResolution) || (value.recommendedResolution !== undefined && !isResolution(value.recommendedResolution))) {
-    throw new SkillboxError(ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED, 'This conflict session is invalid. Start sync again.', { recoverable: true })
+  if (
+    !allowedResolutions.every(isResolution) ||
+    (value.recommendedResolution !== undefined && !isResolution(value.recommendedResolution))
+  ) {
+    throw new SkillboxError(
+      ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
+      'This conflict session is invalid. Start sync again.',
+      { recoverable: true },
+    )
   }
   for (const side of ['base', 'local', 'remote'] as const) {
     const candidate = value[side]
-    if (isRecord(candidate) && typeof candidate.preview === 'string' && candidate.preview.length > MAX_PREVIEW_LENGTH) {
-      throw new SkillboxError(ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED, 'This conflict session preview is too large. Start sync again.', { recoverable: true })
+    if (
+      isRecord(candidate) &&
+      typeof candidate.preview === 'string' &&
+      candidate.preview.length > MAX_PREVIEW_LENGTH
+    ) {
+      throw new SkillboxError(
+        ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
+        'This conflict session preview is too large. Start sync again.',
+        { recoverable: true },
+      )
     }
   }
   return {
@@ -73,13 +107,22 @@ function parseConflict(value: unknown): SyncConflict {
     ...(isRecord(value.local) ? { local: value.local } : {}),
     ...(isRecord(value.remote) ? { remote: value.remote } : {}),
     allowedResolutions: allowedResolutions as ConflictResolution[],
-    ...(isResolution(value.recommendedResolution) ? { recommendedResolution: value.recommendedResolution } : {}),
+    ...(isResolution(value.recommendedResolution)
+      ? { recommendedResolution: value.recommendedResolution }
+      : {}),
     destructive: value.destructive,
   }
 }
 
 function isResolution(value: unknown): value is ConflictResolution {
-  return value === 'local' || value === 'remote' || value === 'keep-both' || value === 'merged' || value === 'delete' || value === 'restore'
+  return (
+    value === 'local' ||
+    value === 'remote' ||
+    value === 'keep-both' ||
+    value === 'merged' ||
+    value === 'delete' ||
+    value === 'restore'
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

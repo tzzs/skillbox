@@ -100,6 +100,10 @@ describe('cli', () => {
         kind: 'completed' as const,
         summary: { automaticallyMerged: 0, retriedPushes: 0 },
       }),
+      listConflicts: async () => [],
+      getConflict: async () => {
+        throw new Error('not used')
+      },
       resolveConflicts: async () => ({
         kind: 'blocked' as const,
         reason: 'recovery-required' as const,

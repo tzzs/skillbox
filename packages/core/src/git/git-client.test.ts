@@ -268,14 +268,20 @@ describe('GitClient', () => {
       const head = await client.commit(root, 'local')
 
       expect(await client.mergeBase(root, base.hash, head.hash)).toBe(base.hash)
-      expect((await client.listFilesAtRevision(root, base.hash))).toContain('skills/example/SKILL.md')
-      expect(Buffer.from(await client.readFileAtRevision(root, base.hash, 'skills/example/SKILL.md')).toString()).toBe('# base')
+      expect(await client.listFilesAtRevision(root, base.hash)).toContain('skills/example/SKILL.md')
+      expect(
+        Buffer.from(
+          await client.readFileAtRevision(root, base.hash, 'skills/example/SKILL.md'),
+        ).toString(),
+      ).toBe('# base')
       await client.createPrivateRef(root, 'refs/skillbox/snapshots/test', base.hash)
       expect(await client.revParse(root, 'refs/skillbox/snapshots/test')).toBe(base.hash)
 
       const worktree = path.join(dir, 'isolated')
       await client.createWorktree(root, worktree, base.hash)
-      expect(await fs.readFile(path.join(worktree, 'skills/example/SKILL.md'), 'utf8')).toBe('# base')
+      expect(await fs.readFile(path.join(worktree, 'skills/example/SKILL.md'), 'utf8')).toBe(
+        '# base',
+      )
       await client.removeWorktree(root, worktree)
       await expect(fs.access(worktree)).rejects.toMatchObject({ code: 'ENOENT' })
       await client.deletePrivateRef(root, 'refs/skillbox/snapshots/test')
