@@ -1,5 +1,6 @@
 import type { FilesystemService } from '../fs/filesystem-service.js'
 import type { ManifestSkillSource } from '../manifest/schema.js'
+import type { SkillSourceResolver } from '../sources/types.js'
 
 /** Shared options for every lifecycle transaction (fork / vendor). */
 export interface LifecycleOptions {
@@ -17,7 +18,14 @@ export interface LifecycleOptions {
 export type ForkSkillOptions = LifecycleOptions
 
 /** Options for restoring a Managed runtime from its pinned cache entry. */
-export type RestoreManagedSkillOptions = LifecycleOptions
+export interface RestoreManagedSkillOptions extends LifecycleOptions {
+  /**
+   * Source resolver used only when the disposable managed cache has no entry
+   * for the revision already pinned in `skillbox.lock`. Restore never asks it
+   * for a latest revision.
+   */
+  sourceResolver?: SkillSourceResolver
+}
 
 /** Outcome of restoring a Managed runtime (M17.3). */
 export interface RestoreManagedSkillResult {

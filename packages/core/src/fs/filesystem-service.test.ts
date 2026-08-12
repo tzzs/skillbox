@@ -21,6 +21,25 @@ describe('FilesystemService', () => {
     })
   })
 
+  it('writeFileExclusive(target, data) creates once without overwriting the first data', async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, 'runtime.lock')
+      expect(await service.writeFileExclusive(file, 'first owner')).toBe(true)
+      expect(await service.writeFileExclusive(file, 'second owner')).toBe(false)
+      expect(await service.readFile(file)).toBe('first owner')
+    })
+  })
+
+  it('writeFileExclusive(target, data) succeeds after the previous target is removed', async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, 'runtime.lock')
+      await service.writeFileExclusive(file, 'first owner')
+      await service.remove(file)
+      expect(await service.writeFileExclusive(file, 'next owner')).toBe(true)
+      expect(await service.readFile(file)).toBe('next owner')
+    })
+  })
+
   it('mkdir creates nested directories recursively', async () => {
     await withTempDir(async (dir) => {
       const nested = path.join(dir, 'a', 'b', 'c')

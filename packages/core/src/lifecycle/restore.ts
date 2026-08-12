@@ -8,6 +8,7 @@ import { deriveMode, readManifest, validateSkillAlias } from '../manifest/index.
 import type { NormalizedSource } from '../registry/types.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
+import type { CanonicalSkillSource } from '../sources/types.js'
 import type { RestoreManagedSkillOptions, RestoreManagedSkillResult } from './types.js'
 
 function cacheSource(source: { type: string; [key: string]: unknown }): NormalizedSource {
@@ -35,6 +36,45 @@ async function payloadFileCount(root: string, filesystem: FilesystemService): Pr
     else if (entry.isFile) count += 1
   }
   return count
+}
+
+async function materializePinnedCacheEntry(input: {
+  alias: string
+  source: CanonicalSkillSource
+  revision: string
+  integrity: string
+  cache: ManagedCache
+  cacheSource: NormalizedSource
+  resolver: NonNullable<RestoreManagedSkillOptions['sourceResolver']>
+  filesystem: FilesystemService
+  temporaryRoot: string
+}): Promise<void> {
+  const adapter = input.resolver.adapterFor(input.source, 'materialize')
+  if (adapter.materialize === undefined) {
+    throw new SkillboxError(
+      ErrorCode.SOURCE_UNSUPPORTED,
+      `Skill source type "${input.source.type}" does not support materialize`,
+      { context: { sourceType: input.source.type, capability: 'materialize' }, recoverable: true },
+    )
+  }
+
+  await input.filesystem.remove(input.temporaryRoot)
+  try {
+    // The lockfile revision is the sole revision passed to the adapter. In
+    // particular, restore must not resolve or otherwise advance a pin.
+    await adapter.materialize(input.source, input.revision, input.temporaryRoot)
+    const integrity = await computeSkillIntegrity(input.temporaryRoot)
+    if (integrity !== input.integrity) {
+      throw new SkillboxError(
+        ErrorCode.INTEGRITY_MISMATCH,
+        `Downloaded content integrity ${integrity} does not match locked integrity for "${input.alias}"`,
+        { context: { alias: input.alias, expected: input.integrity, actual: integrity } },
+      )
+    }
+    await input.cache.put(input.cacheSource, input.revision, input.integrity, input.temporaryRoot)
+  } finally {
+    await input.filesystem.remove(input.temporaryRoot)
+  }
 }
 
 /**
@@ -77,12 +117,32 @@ export async function restoreManagedSkill(
     )
   }
 
-  const cached = await new ManagedCache(layout.cache, filesystem).requireEntry(
-    cacheSource(locked.source),
-    locked.revision,
-    locked.integrity,
-  )
   const runtimePath = library.pathFor(alias, 'managed')
+  const normalizedCacheSource = cacheSource(locked.source)
+  const cache = new ManagedCache(layout.cache, filesystem)
+  let cached = await cache.get(normalizedCacheSource, locked.revision, locked.integrity)
+  if (cached === null) {
+    if (options.sourceResolver === undefined) {
+      throw new SkillboxError(
+        ErrorCode.CACHE_MISS,
+        `No cache entry for "${alias}" at locked revision ${locked.revision}; a source resolver is required to restore it`,
+        { recoverable: true, context: { alias, revision: locked.revision } },
+      )
+    }
+    const token = `${process.pid}-${Date.now()}`
+    await materializePinnedCacheEntry({
+      alias,
+      source: options.sourceResolver.fromManifest(locked.source),
+      revision: locked.revision,
+      integrity: locked.integrity,
+      cache,
+      cacheSource: normalizedCacheSource,
+      resolver: options.sourceResolver,
+      filesystem,
+      temporaryRoot: `${runtimePath}.cache-${token}`,
+    })
+    cached = await cache.requireEntry(normalizedCacheSource, locked.revision, locked.integrity)
+  }
   if (
     (await filesystem.exists(runtimePath)) &&
     (await computeSkillIntegrity(runtimePath)) === locked.integrity

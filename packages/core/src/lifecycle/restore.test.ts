@@ -6,6 +6,7 @@ import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { ManagedCache } from '../install/cache.js'
 import { readLockfile } from '../lockfile/index.js'
 import { readManifest } from '../manifest/index.js'
+import { createSkillSourceResolver } from '../sources/index.js'
 import { detectManagedModifications } from './modification.js'
 import { modifyManagedCopy, seedManagedSkill } from './test-utils.js'
 import { restoreManagedSkill } from './restore.js'
@@ -65,6 +66,88 @@ describe('restoreManagedSkill', () => {
           homeRoot: seed.homeRoot,
         }),
       ).resolves.toMatchObject({ filesRestored: 0, integrity: seed.lockedIntegrity })
+    })
+  })
+
+  it('re-materializes the locked revision and repopulates the cache when its disposable entry is missing', async () => {
+    await withTempDir(async (dir) => {
+      const seed = await seedManagedSkill(dir)
+      await seedPinnedCache(seed)
+      const cache = new ManagedCache(seed.layout.cache)
+      await cache.invalidate(
+        { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
+        seed.revision,
+      )
+      await modifyManagedCopy(seed)
+
+      const pristine = path.join(path.dirname(seed.repositoryRoot), 'pristine')
+      const materialized: Array<{ revision: string; targetDir: string }> = []
+      const resolver = createSkillSourceResolver({
+        adapters: [
+          {
+            type: 'github',
+            capabilities: { resolve: false, download: false, latest: false, materialize: true },
+            async materialize(_source, revision, targetDir) {
+              materialized.push({ revision, targetDir })
+              await fs.cp(pristine, targetDir, { recursive: true })
+            },
+          },
+        ],
+      })
+
+      await expect(
+        restoreManagedSkill(seed.alias, {
+          repositoryRoot: seed.repositoryRoot,
+          homeRoot: seed.homeRoot,
+          sourceResolver: resolver,
+        }),
+      ).resolves.toMatchObject({ integrity: seed.lockedIntegrity, filesRestored: 2 })
+
+      expect(materialized).toHaveLength(1)
+      expect(materialized[0]?.revision).toBe(seed.revision)
+      expect(await fs.readFile(path.join(seed.managedPath, 'SKILL.md'), 'utf8')).toBe('# hello\n')
+      expect(
+        await cache.get(
+          { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
+          seed.revision,
+          seed.lockedIntegrity,
+        ),
+      ).not.toBeNull()
+    })
+  })
+
+  it('rejects a cache-miss materialization that differs from the locked integrity without replacing the runtime', async () => {
+    await withTempDir(async (dir) => {
+      const seed = await seedManagedSkill(dir)
+      const cache = new ManagedCache(seed.layout.cache)
+      await modifyManagedCopy(seed)
+      const resolver = createSkillSourceResolver({
+        adapters: [
+          {
+            type: 'github',
+            capabilities: { resolve: false, download: false, latest: false, materialize: true },
+            async materialize(_source, _revision, targetDir) {
+              await fs.mkdir(targetDir, { recursive: true })
+              await fs.writeFile(path.join(targetDir, 'SKILL.md'), '# corrupt\n', 'utf8')
+            },
+          },
+        ],
+      })
+
+      await expect(
+        restoreManagedSkill(seed.alias, {
+          repositoryRoot: seed.repositoryRoot,
+          homeRoot: seed.homeRoot,
+          sourceResolver: resolver,
+        }),
+      ).rejects.toMatchObject({ code: 'INTEGRITY_MISMATCH' })
+      expect(await fs.readFile(path.join(seed.managedPath, 'edited.md'), 'utf8')).toBe('changed\n')
+      expect(
+        await cache.get(
+          { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
+          seed.revision,
+        ),
+      ).toBeNull()
     })
   })
 

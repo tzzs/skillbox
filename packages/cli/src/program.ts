@@ -71,6 +71,11 @@ import {
   type LifecycleProvider,
   type MergeProvider,
 } from './skill-lifecycle/index.js'
+import {
+  createDefaultRollbackProvider,
+  renderRollbackSummary,
+  type RollbackProvider,
+} from './operations/index.js'
 
 /** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
 export interface MarketplaceDeps {
@@ -117,6 +122,8 @@ export interface CliDeps {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
   lifecycle?: LifecycleDeps
+  /** User-level operation rollback; default-constructed from @skillbox/core. */
+  rollbackProvider?: RollbackProvider
 }
 
 export interface CliContext {
@@ -133,6 +140,7 @@ export interface CliContext {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
   lifecycle?: LifecycleDeps
+  rollbackProvider?: RollbackProvider
   /** Prompt implementation for the interactive `add` flow. */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -169,6 +177,9 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   }
   if (deps.lifecycle !== undefined) {
     context.lifecycle = deps.lifecycle
+  }
+  if (deps.rollbackProvider !== undefined) {
+    context.rollbackProvider = deps.rollbackProvider
   }
   if (deps.prompts !== undefined) {
     context.prompts = deps.prompts
@@ -771,6 +782,20 @@ export function buildProgram(ctx: CliContext): Command {
         options.continue === true ? 'continue' : options.abort === true ? 'abort' : 'merge'
       const outcome = await lifecycle.merge({ name, action })
       ctx.out(`${renderMergeOutcome(outcome)}\n`)
+    })
+
+  program
+    .command('rollback [operationId]')
+    .description('Restore the latest eligible operation backup, or a specified operation id')
+    .action(async (operationId: string | undefined) => {
+      const result = await (
+        ctx.rollbackProvider ?? createDefaultRollbackProvider()
+      ).rollbackOperation({
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+        ...(operationId === undefined ? {} : { operationId }),
+      })
+      ctx.out(`${renderRollbackSummary(result)}\n`)
     })
 
   // M10/M11 — the `web` subcommand is registered by the web module; the

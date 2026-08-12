@@ -8,7 +8,16 @@ export const SKILLBOX_HOME_ENV = 'SKILLBOX_HOME'
 export const DEFAULT_SKILLBOX_DIR_NAME = '.skillbox'
 
 /** Top-level directories created inside the Skillbox home (M6.1). */
-export const HOME_DIRECTORY_NAMES = ['library', 'cache', 'state', 'tmp', 'logs'] as const
+export const HOME_DIRECTORY_NAMES = [
+  'library',
+  'cache',
+  'state',
+  'tmp',
+  'logs',
+  'operations',
+  'backups',
+  'runtimeLocks',
+] as const
 
 export type HomeDirectoryName = (typeof HOME_DIRECTORY_NAMES)[number]
 
@@ -33,6 +42,12 @@ export interface SkillboxHomeLayout {
   state: string
   tmp: string
   logs: string
+  /** Versioned operation journals and rollback records. */
+  operations: string
+  /** Operation snapshots and their retained backup payloads. */
+  backups: string
+  /** Repository-scoped cross-process lock files. */
+  runtimeLocks: string
   /** `config.json` inside the home root (M6.2). */
   configFile: string
   /** `state/links.json` recording Skillbox-created Agent Links (M6.4). */
@@ -49,6 +64,9 @@ export function buildSkillboxHomeLayout(root: string): SkillboxHomeLayout {
     state: path.join(resolvedRoot, 'state'),
     tmp: path.join(resolvedRoot, 'tmp'),
     logs: path.join(resolvedRoot, 'logs'),
+    operations: path.join(resolvedRoot, 'operations'),
+    backups: path.join(resolvedRoot, 'backups'),
+    runtimeLocks: path.join(resolvedRoot, 'runtimeLocks'),
     configFile: path.join(resolvedRoot, 'config.json'),
     linksFile: path.join(resolvedRoot, 'state', 'links.json'),
   }
