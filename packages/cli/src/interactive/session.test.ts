@@ -3,10 +3,10 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { AgentRegistry } from '@skillbox/core'
+import type { StartedWebServer, WebServerOptions } from '@skillbox/web-server'
 import type { CliContext } from '../program.js'
 import type { InteractivePrompt } from './prompts.js'
 import { FIRST_RUN_FILE_NAME, InteractiveSession } from './session.js'
-import type { StartedWebServer, WebServerOptions } from '../web/types.js'
 
 class FakePrompts implements InteractivePrompt {
   calls: string[] = []

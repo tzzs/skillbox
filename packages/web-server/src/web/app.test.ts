@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Hono } from 'hono'
 import {
   AgentRegistry,
+  ConflictSessionStore,
   ErrorCode,
   LocalProvider,
   SkillboxError,
@@ -15,6 +16,7 @@ import {
   emptyManifest,
   readLockfile,
   readManifest,
+  repositoryKey,
   registerProvider,
   writeLockfile,
   writeManifest,
@@ -67,6 +69,45 @@ describe('GET /api/settings', () => {
       expect(response.status).toBe(200)
       const body = (await response.json()) as { settings: { linkStrategy: string } }
       expect(body.settings.linkStrategy).toBe('copy')
+    })
+  })
+})
+
+describe('durable sync conflict API', () => {
+  it('reads a pending conflict session from the durable Core store', async () => {
+    await withApp(async (app, paths) => {
+      const session: import('@skillbox/core').ConflictSession = {
+        version: 1 as const,
+        id: 'session-one',
+        repositoryId: repositoryKey(paths.repository),
+        baseRevision: 'a'.repeat(40),
+        localRevision: 'b'.repeat(40),
+        remoteRevision: 'c'.repeat(40),
+        snapshotId: 'restore-one',
+        createdAt: '2026-08-13T00:00:00.000Z',
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        conflicts: [{
+          id: 'demo:content',
+          type: 'content' as const,
+          skillAlias: 'demo',
+          path: 'SKILL.md',
+          allowedResolutions: ['local', 'remote', 'keep-both'],
+          destructive: false,
+        }],
+      }
+      await new ConflictSessionStore({ repositoryRoot: paths.repository, homeRoot: paths.home }).save(session)
+
+      const list = await app.request('/api/conflicts')
+      expect(list.status).toBe(200)
+      await expect(list.json()).resolves.toMatchObject({ conflicts: [{ id: 'session-one' }] })
+
+      const status = await app.request('/api/sync/status')
+      expect(status.status).toBe(200)
+      await expect(status.json()).resolves.toMatchObject({ sync: { kind: 'conflicts', sessionId: 'session-one' } })
+
+      const detail = await app.request('/api/conflicts/session-one')
+      expect(detail.status).toBe(200)
+      await expect(detail.json()).resolves.toMatchObject({ conflict: { snapshotId: 'restore-one' } })
     })
   })
 })
@@ -404,6 +445,7 @@ describe('POST /api/registry/install', () => {
 interface Paths {
   configPath: string
   home: string
+  repository: string
 }
 
 interface RegistryFakes {
@@ -487,7 +529,7 @@ async function withApp(run: (app: Hono, paths: Paths) => Promise<void>): Promise
   try {
     const services = createWebServices({ repositoryRoot: repository, homeRoot: home })
     const app = createWebApp({ services })
-    await run(app, { configPath: join(home, 'config.json'), home })
+    await run(app, { configPath: join(home, 'config.json'), home, repository })
   } finally {
     await rm(repository, { recursive: true, force: true })
     await rm(home, { recursive: true, force: true })

@@ -1,5 +1,6 @@
 import {
   createDefaultAgentRegistry,
+  createRepositorySync,
   defaultRegistry,
   diffSkill,
   ErrorCode,
@@ -22,6 +23,7 @@ import {
   type SkillboxLockfile,
   type SkillboxManifest,
   type SkillDiff,
+  type RepositorySync,
 } from '@skillbox/core'
 import { SkillboxHome } from '@skillbox/core'
 import type {
@@ -67,6 +69,7 @@ export interface CreateWebServicesOptions {
    * `defaultRegistry`); tests inject fakes to override.
    */
   diff?: DiffService
+  sync?: RepositorySync
 }
 
 /**
@@ -98,6 +101,7 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     updates: options.updates ?? createUpdatesService(repositoryRoot),
     install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
     diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
+    sync: options.sync ?? createRepositorySync({ repositoryRoot, homeRoot }),
   }
 }
 

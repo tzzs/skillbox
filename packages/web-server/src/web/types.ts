@@ -4,6 +4,8 @@ import type {
   RepositoryStatus,
   RuntimeConfig,
   RuntimeConfigService,
+  RepositorySync,
+  ConflictResolution,
   SkillDiff,
   SkillService,
   StatusService,
@@ -153,10 +155,49 @@ export interface WebServices {
   install: InstallService
   /** V0.4 skill diff computation (agent 2 contract). */
   diff: DiffService
+  sync: RepositorySync
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
   homeRoot: string
+}
+
+export interface SyncConflictDto {
+  id: string
+  type: string
+  skillAlias?: string
+  path?: string
+  field?: string
+  basePreview?: string
+  localPreview?: string
+  remotePreview?: string
+  allowedResolutions: ConflictResolution[]
+  recommendedResolution?: ConflictResolution
+  destructive: boolean
+}
+export interface ConflictSessionDto {
+  id: string
+  createdAt: string
+  expiresAt: string
+  snapshotId: string
+  conflicts: SyncConflictDto[]
+}
+export type SyncOutcomeDto =
+  | { kind: 'idle' }
+  | { kind: 'completed'; automaticallyMerged: number; retriedPushes: number; snapshotId?: string }
+  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
+  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+export interface SyncStatusResponse {
+  sync: SyncOutcomeDto
+}
+export interface SyncResponse {
+  sync: SyncOutcomeDto
+}
+export interface ConflictsResponse {
+  conflicts: ConflictSessionDto[]
+}
+export interface ConflictResponse {
+  conflict: ConflictSessionDto
 }
 
 /** Unified error envelope required by M10.8. */

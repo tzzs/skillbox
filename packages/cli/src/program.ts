@@ -21,16 +21,16 @@ import {
   StatusService,
   version,
 } from '@skillbox/core'
-import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
-import { renderTable } from './table.js'
-import type { InteractivePrompt } from './interactive/prompts.js'
-import { createClackPrompts, isInteractiveTTY } from './interactive/prompts.js'
 import {
   registerWebCommand,
   startWebServer,
   webOptionsFromFlags,
   type WebCommandFlags,
-} from './web/main.js'
+} from '@skillbox/web-server'
+import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
+import { renderTable } from './table.js'
+import type { InteractivePrompt } from './interactive/prompts.js'
+import { createClackPrompts, isInteractiveTTY } from './interactive/prompts.js'
 import {
   createDefaultGitHubProvider,
   createDefaultGitProvider,

@@ -1,8 +1,10 @@
 import { Hono } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import type { RuntimeConfig } from '@skillbox/core'
+import type { ConflictSession, RuntimeConfig, SyncConflict, SyncOutcome } from '@skillbox/core'
 import type {
   AgentsResponse,
+  ConflictResponse,
+  ConflictsResponse,
   HealthResponse,
   InstallResponse,
   OutdatedResponse,
@@ -13,6 +15,8 @@ import type {
   SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
+  SyncResponse,
+  SyncStatusResponse,
   WebAppOptions,
 } from './types.js'
 import { toApiError, unknownRouteEnvelope, WebApiError } from './errors.js'
@@ -27,7 +31,6 @@ export function createWebApp(options: WebAppOptions): Hono {
   const { services } = options
   const info = options.info ?? { name: 'skillbox', version: '0.0.0' }
   const staticDir = options.staticDir
-
   const app = new Hono()
 
   app.onError((error, c) => {
@@ -105,6 +108,53 @@ export function createWebApp(options: WebAppOptions): Hono {
     const merged = mergeSettings(current, patch)
     await services.config.save(merged)
     return c.json<SettingsResponse>({ settings: merged })
+  })
+
+  app.get('/api/sync/status', async (c) => {
+    const [session] = await services.sync.listConflicts()
+    if (session !== undefined) {
+      return c.json<SyncStatusResponse>({
+        sync: {
+          kind: 'conflicts',
+          sessionId: session.id,
+          conflictCount: session.conflicts.length,
+          snapshotId: session.snapshotId,
+        },
+      })
+    }
+    await services.sync.status()
+    return c.json<SyncStatusResponse>({ sync: { kind: 'idle' } })
+  })
+
+  app.post('/api/sync', async (c) => {
+    const outcome = await services.sync.sync()
+    return c.json<SyncResponse>(
+      { sync: presentSyncOutcome(outcome) },
+      outcome.kind === 'completed' ? 200 : outcome.kind === 'conflicts' ? 409 : 423,
+    )
+  })
+
+  app.get('/api/conflicts', async (c) =>
+    c.json<ConflictsResponse>({ conflicts: (await services.sync.listConflicts()).map(presentSession) }),
+  )
+  app.get('/api/conflicts/:id', async (c) => {
+    const session = await services.sync.getConflict(c.req.param('id'))
+    return c.json<ConflictResponse>({ conflict: presentSession(session) })
+  })
+  app.post('/api/conflicts/:id/resolve', async (c) => {
+    const sessionId = c.req.param('id')
+    const outcome = await services.sync.resolveConflicts({
+      sessionId,
+      resolutions: resolutionsField(await requireJsonBody(c)),
+    })
+    return c.json<SyncResponse>(
+      { sync: presentSyncOutcome(outcome) },
+      outcome.kind === 'completed' ? 200 : outcome.kind === 'conflicts' ? 409 : 423,
+    )
+  })
+  app.post('/api/sync/snapshots/:id/restore', async (c) => {
+    await services.sync.restoreSnapshot(c.req.param('id'))
+    return c.json({ restored: true })
   })
 
   /* ---- mutating API (M10.7) ---- */
@@ -290,6 +340,77 @@ function allowPolicyField(body: Record<string, unknown>): 'safe' | 'all' {
     return value
   }
   throw new WebApiError('INVALID_REQUEST', 'Field "allowPolicy" must be either "safe" or "all"')
+}
+
+function resolutionsField(
+  body: Record<string, unknown>,
+): Record<string, 'local' | 'remote' | 'keep-both' | 'merged' | 'delete' | 'restore'> {
+  const value = body.resolutions
+  const allowed = new Set(['local', 'remote', 'keep-both', 'merged', 'delete', 'restore'])
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length === 0 ||
+    !Object.values(value).every((entry) => typeof entry === 'string' && allowed.has(entry))
+  )
+    throw new WebApiError(
+      'INVALID_REQUEST',
+      'Field "resolutions" must contain one valid decision per conflict',
+    )
+  return value as Record<string, 'local' | 'remote' | 'keep-both' | 'merged' | 'delete' | 'restore'>
+}
+
+function presentSyncOutcome(outcome: SyncOutcome): import('./types.js').SyncOutcomeDto {
+  if (outcome.kind === 'completed')
+    return {
+      kind: 'completed',
+      automaticallyMerged: outcome.summary.automaticallyMerged,
+      retriedPushes: outcome.summary.retriedPushes,
+      ...(outcome.summary.createdSnapshotId === undefined
+        ? {}
+        : { snapshotId: outcome.summary.createdSnapshotId }),
+    }
+  if (outcome.kind === 'conflicts')
+    return {
+      kind: 'conflicts',
+      sessionId: outcome.session.id,
+      conflictCount: outcome.session.conflicts.length,
+      snapshotId: outcome.session.snapshotId,
+    }
+  return {
+    kind: 'blocked',
+    reason: outcome.reason,
+    message: outcome.recovery.message,
+    retryable: outcome.recovery.retryable,
+    ...(outcome.recovery.snapshotId === undefined
+      ? {}
+      : { snapshotId: outcome.recovery.snapshotId }),
+  }
+}
+function presentSession(session: ConflictSession): import('./types.js').ConflictSessionDto {
+  return {
+    id: session.id,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    snapshotId: session.snapshotId,
+    conflicts: session.conflicts.map(presentConflict),
+  }
+}
+function presentConflict(conflict: SyncConflict): import('./types.js').SyncConflictDto {
+  return {
+    id: conflict.id,
+    type: conflict.type,
+    ...(conflict.skillAlias === undefined ? {} : { skillAlias: conflict.skillAlias }),
+    ...(conflict.path === undefined ? {} : { path: conflict.path }),
+    ...(conflict.field === undefined ? {} : { field: conflict.field }),
+    ...(conflict.base?.preview === undefined ? {} : { basePreview: conflict.base.preview }),
+    ...(conflict.local?.preview === undefined ? {} : { localPreview: conflict.local.preview }),
+    ...(conflict.remote?.preview === undefined ? {} : { remotePreview: conflict.remote.preview }),
+    allowedResolutions: conflict.allowedResolutions,
+    ...(conflict.recommendedResolution === undefined
+      ? {}
+      : { recommendedResolution: conflict.recommendedResolution }),
+    destructive: conflict.destructive,
+  }
 }
 
 function toStatusCode(status: number): ContentfulStatusCode {

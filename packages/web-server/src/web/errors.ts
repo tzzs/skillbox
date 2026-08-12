@@ -50,6 +50,13 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
      base snapshot in its current state. */
   [ErrorCode.DIFF_UPSTREAM_UNAVAILABLE]: 409,
   [ErrorCode.DIFF_BASE_UNAVAILABLE]: 409,
+  [ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND]: 404,
+  [ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED]: 409,
+  [ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION]: 400,
+  [ErrorCode.SYNC_SNAPSHOT_NOT_FOUND]: 404,
+  [ErrorCode.SYNC_SNAPSHOT_RESTORE_FAILED]: 409,
+  [ErrorCode.OPERATION_LOCKED]: 423,
+  [ErrorCode.SYNC_BLOCKED]: 423,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */
@@ -72,6 +79,9 @@ const RECOVERABLE: ReadonlySet<string> = new Set<string>([
   ErrorCode.INSTALL_SECURITY_BLOCKED,
   /* Agent link failures are resolved by Reconcile (retryable). */
   ErrorCode.INSTALL_AGENT_LINK_FAILED,
+  ErrorCode.OPERATION_LOCKED,
+  ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
+  ErrorCode.SYNC_BLOCKED,
 ])
 
 export interface ApiErrorResult {
