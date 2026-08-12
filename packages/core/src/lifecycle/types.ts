@@ -1,5 +1,6 @@
 import type { FilesystemService } from '../fs/filesystem-service.js'
 import type { ManifestSkillSource } from '../manifest/schema.js'
+import type { OperationRuntime } from '../operations/runtime.js'
 import type { SkillSourceResolver } from '../sources/types.js'
 
 /** Shared options for every lifecycle transaction (fork / vendor). */
@@ -12,6 +13,11 @@ export interface LifecycleOptions {
   /** Skillbox home root (defaults to `SKILLBOX_HOME` / `~/.skillbox`). */
   homeRoot?: string
   filesystem?: FilesystemService
+  /**
+   * Shared atomic mutation boundary. When omitted, the lifecycle operation
+   * creates one scoped to `repositoryRoot` and `homeRoot`.
+   */
+  operationRuntime?: OperationRuntime
 }
 
 /** Options for a Fork transaction (same shape as the base lifecycle options). */

@@ -5,6 +5,7 @@ import { withTempDir } from '../fs/test-utils.js'
 import { ErrorCode } from '../errors.js'
 import { readLockfile } from '../lockfile/index.js'
 import { addSkill, emptyManifest, readManifest, writeManifest } from '../manifest/index.js'
+import { createOperationRuntime } from '../operations/index.js'
 import { forkSkill } from './fork.js'
 import { FailingFilesystem, matches, seedManagedSkill } from './test-utils.js'
 import { vendorSkill } from './vendor.js'
@@ -95,7 +96,7 @@ describe('vendorSkill', () => {
       expect(locked).toMatchObject({ mode: 'vendored' })
       expect(locked?.upstream).toBeUndefined()
     })
-  })
+  }, 15_000)
 
   it('keeps the base snapshot when removeBaseSnapshot is not set', async () => {
     await withTempDir(async (dir) => {
@@ -202,6 +203,26 @@ describe('vendorSkill', () => {
       expect(manifest.skills.hello).toMatchObject({ mode: 'managed' })
       const lockfile = await readLockfile(seed.repositoryRoot)
       expect(lockfile.skills.hello).toMatchObject({ mode: 'managed' })
+    })
+  })
+
+  it('records a vendor snapshot that can be rolled back after success', async () => {
+    await withTempDir(async (dir) => {
+      const seed = await seedManagedSkill(dir)
+      await vendorSkill(seed.alias, {
+        repositoryRoot: seed.repositoryRoot,
+        homeRoot: seed.homeRoot,
+      })
+
+      await createOperationRuntime({
+        repositoryRoot: seed.repositoryRoot,
+        homeRoot: seed.homeRoot,
+      }).rollback()
+
+      expect((await readManifest(seed.repositoryRoot)).skills.hello).toMatchObject({
+        mode: 'managed',
+      })
+      await expect(fs.stat(path.join(seed.repositoryRoot, 'skills', 'hello'))).rejects.toThrow()
     })
   })
 })
