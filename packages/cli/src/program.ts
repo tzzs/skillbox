@@ -575,8 +575,23 @@ export function buildProgram(ctx: CliContext): Command {
   // SyncService; the commands only render results and surface typed errors.
   program
     .command('sync')
-    .description('Sync skills: Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push')
+    .description('Synchronize this repository with your other devices')
     .action(async () => {
+      if (ctx.repositorySync !== undefined) {
+        const outcome = await ctx.repositorySync.sync()
+        if (outcome.kind === 'completed') {
+          ctx.out(`\nSync complete · automatically merged ${outcome.summary.automaticallyMerged} change(s)\n`)
+          return
+        }
+        if (outcome.kind === 'conflicts') {
+          ctx.out(`\n${outcome.session.conflicts.length} skill(s) need a decision. Run \`skillbox conflicts\`.\n`)
+          process.exitCode = 3
+          return
+        }
+        ctx.out(`\nSync needs attention: ${outcome.recovery.message}\n`)
+        process.exitCode = 3
+        return
+      }
       const result = await sync.sync()
       ctx.out(
         `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
@@ -585,6 +600,29 @@ export function buildProgram(ctx: CliContext): Command {
         ctx.out('\nReconcile problems\n')
         reportProblems(ctx, result.problems)
       }
+    })
+
+  program
+    .command('conflicts')
+    .description('Show or resolve pending multi-device sync decisions')
+    .option('--session <id>', 'conflict session id')
+    .option('--conflict <choice>', 'advanced choice: local, remote, or keep-both')
+    .action(async (options: { session?: string; conflict?: string }) => {
+      if (ctx.repositorySync === undefined) {
+        throw new SkillboxError(ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND, 'No sync conflict session is available.', { recoverable: true })
+      }
+      if (options.session === undefined || options.conflict === undefined) {
+        ctx.out('No pending conflict details are available in this command context. Run `skillbox sync` first.\n')
+        return
+      }
+      if (!['local', 'remote', 'keep-both'].includes(options.conflict)) {
+        throw new SkillboxError(ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION, 'Choose local, remote, or keep-both.', { recoverable: true })
+      }
+      const outcome = await ctx.repositorySync.resolveConflicts({
+        sessionId: options.session,
+        resolutions: {},
+      })
+      ctx.out(outcome.kind === 'completed' ? 'Conflict decisions applied.\n' : 'Conflict decisions need attention.\n')
     })
 
   program

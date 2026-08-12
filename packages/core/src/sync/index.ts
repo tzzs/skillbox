@@ -1,3 +1,7 @@
 export * from './types.js'
+export * from './conflicts.js'
+export * from './manifest-merge.js'
+export * from './snapshot-service.js'
+export * from './conflict-session-store.js'
 export * from './repository-sync.js'
 export * from './factory.js'

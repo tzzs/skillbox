@@ -96,7 +96,16 @@ describe('cli', () => {
       },
       pull: async () => undefined,
       push: async () => undefined,
-      sync: async () => undefined,
+      sync: async () => ({
+        kind: 'completed' as const,
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      }),
+      resolveConflicts: async () => ({
+        kind: 'blocked' as const,
+        reason: 'recovery-required' as const,
+        recovery: { message: 'not used', retryable: true },
+      }),
+      restoreSnapshot: async () => undefined,
     } satisfies RepositorySync
 
     expect(await main(['connect'], { ...io, repositorySync })).toBe(0)

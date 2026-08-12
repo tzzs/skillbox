@@ -52,6 +52,14 @@ export interface SkillboxHomeLayout {
   configFile: string
   /** `state/links.json` recording Skillbox-created Agent Links (M6.4). */
   linksFile: string
+  /** Private, repository-keyed durable state for multi-device sync. */
+  syncState: string
+  /** Retained sync restore points (never part of a repository tree). */
+  syncSnapshots: string
+  /** Durable user-decision sessions for semantic sync conflicts. */
+  syncSessions: string
+  /** Short-lived isolated trees used while calculating a sync transaction. */
+  syncTrees: string
 }
 
 /** Derives every well-known runtime location from the Skillbox home root. */
@@ -69,5 +77,9 @@ export function buildSkillboxHomeLayout(root: string): SkillboxHomeLayout {
     runtimeLocks: path.join(resolvedRoot, 'runtimeLocks'),
     configFile: path.join(resolvedRoot, 'config.json'),
     linksFile: path.join(resolvedRoot, 'state', 'links.json'),
+    syncState: path.join(resolvedRoot, 'state', 'sync'),
+    syncSnapshots: path.join(resolvedRoot, 'state', 'sync', 'snapshots'),
+    syncSessions: path.join(resolvedRoot, 'state', 'sync', 'sessions'),
+    syncTrees: path.join(resolvedRoot, 'state', 'sync', 'trees'),
   }
 }

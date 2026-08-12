@@ -15,8 +15,106 @@ import type {
   GitTransportAuth,
 } from '../git/index.js'
 
+export interface SyncRequest {
+  /** A presentation-only label for the device initiating the sync. */
+  deviceLabel?: string
+}
+
+export interface SyncSummary {
+  automaticallyMerged: number
+  createdSnapshotId?: string
+  retriedPushes: number
+}
+
+export type SyncBlocker =
+  | 'git-merge-in-progress'
+  | 'operation-locked'
+  | 'validation-failed'
+  | 'push-retry-exhausted'
+  | 'recovery-required'
+
+export interface SyncRecovery {
+  message: string
+  retryable: boolean
+  snapshotId?: string
+}
+
+export type ConflictType =
+  | 'content'
+  | 'delete-modify'
+  | 'manifest-field'
+  | 'mode'
+  | 'source'
+  | 'lifecycle'
+
+export type ConflictResolution =
+  | 'local'
+  | 'remote'
+  | 'keep-both'
+  | 'merged'
+  | 'delete'
+  | 'restore'
+
+export interface ConflictValue {
+  /** Safe, bounded data suitable for a conflict preview. */
+  preview?: string
+  value?: unknown
+}
+
+export interface SyncConflict {
+  id: string
+  type: ConflictType
+  skillAlias?: string
+  path?: string
+  field?: string
+  base?: ConflictValue
+  local?: ConflictValue
+  remote?: ConflictValue
+  allowedResolutions: ConflictResolution[]
+  recommendedResolution?: ConflictResolution
+  destructive: boolean
+}
+
+export interface ConflictSession {
+  version: 1
+  id: string
+  repositoryId: string
+  baseRevision: string
+  localRevision: string
+  remoteRevision: string
+  snapshotId: string
+  createdAt: string
+  expiresAt: string
+  conflicts: SyncConflict[]
+}
+
+export interface ResolveConflictsRequest {
+  sessionId: string
+  resolutions: Record<string, ConflictResolution>
+}
+
+export type SyncOutcome =
+  | { kind: 'completed'; summary: SyncSummary }
+  | { kind: 'conflicts'; session: ConflictSession }
+  | { kind: 'blocked'; reason: SyncBlocker; recovery: SyncRecovery }
+
 export type RepositorySyncPhase =
-  'authorize' | 'repository' | 'init' | 'bind-remote' | 'persist' | 'pull' | 'push'
+  | 'authorize'
+  | 'repository'
+  | 'init'
+  | 'bind-remote'
+  | 'persist'
+  | 'pull'
+  | 'push'
+  | 'preflight'
+  | 'fetch'
+  | 'snapshot'
+  | 'merge'
+  | 'validate'
+  | 'commit'
+  | 'retry-push'
+  | 'reconcile'
+  | 'conflicts'
 
 export type RepositorySyncEvent =
   | { type: 'phase'; phase: RepositorySyncPhase }
@@ -38,7 +136,9 @@ export interface RepositorySync {
   disconnect(): Promise<void>
   pull(): Promise<void>
   push(): Promise<void>
-  sync(): Promise<void>
+  sync(input?: SyncRequest): Promise<SyncOutcome>
+  resolveConflicts(input: ResolveConflictsRequest): Promise<SyncOutcome>
+  restoreSnapshot(snapshotId: string): Promise<void>
 }
 
 export interface RepositoryGitPort {

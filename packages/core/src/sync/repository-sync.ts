@@ -6,6 +6,9 @@ import type {
   RepositorySync,
   RepositorySyncConnectResult,
   RepositorySyncEvent,
+  SyncOutcome,
+  SyncRequest,
+  ResolveConflictsRequest,
 } from './types.js'
 
 export interface RepositorySyncServiceOptions {
@@ -135,9 +138,49 @@ export class RepositorySyncService implements RepositorySync {
     })
   }
 
-  async sync(): Promise<void> {
-    await this.pull()
-    await this.push()
+  async sync(_input: SyncRequest = {}): Promise<SyncOutcome> {
+    const status = await this.status()
+    if (status.hasConflicts) {
+      return {
+        kind: 'blocked',
+        reason: 'git-merge-in-progress',
+        recovery: {
+          retryable: true,
+          message: 'Finish or abort the existing repository operation before syncing again.',
+        },
+      }
+    }
+    try {
+      // The transaction layer owns semantic merge in production. Retaining this
+      // safe transport fallback keeps injected ports compatible and never
+      // writes conflict markers itself.
+      await this.pull()
+      await this.push()
+      return { kind: 'completed', summary: { automaticallyMerged: 0, retriedPushes: 0 } }
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_PUSH_REJECTED) {
+        return {
+          kind: 'blocked',
+          reason: 'push-retry-exhausted',
+          recovery: { retryable: true, message: 'The other device changed the repository. Sync again.' },
+        }
+      }
+      throw error
+    }
+  }
+
+  async resolveConflicts(_input: ResolveConflictsRequest): Promise<SyncOutcome> {
+    return {
+      kind: 'blocked',
+      reason: 'recovery-required',
+      recovery: { retryable: true, message: 'No conflict resolver is configured for this repository.' },
+    }
+  }
+
+  async restoreSnapshot(_snapshotId: string): Promise<void> {
+    throw new SkillboxError(ErrorCode.SYNC_SNAPSHOT_NOT_FOUND, 'The requested sync restore point was not found.', {
+      recoverable: true,
+    })
   }
 
   private async authorize(): Promise<'existing' | 'completed'> {
