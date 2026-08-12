@@ -16,6 +16,7 @@ import { ErrorCode, isSkillboxError } from '../errors.js'
 import { mergeSkill, continueMerge, abortMerge } from './merge-skill.js'
 import { mergeStatePaths, hasPendingMerge } from './state.js'
 import { containsConflictMarkers } from './merge.js'
+import { createSkillSourceResolver, type SkillSourceAdapter } from '../sources/index.js'
 
 /** Serves per-revision fixture directories over the github provider id. */
 class FakeGithubProvider implements RegistryProvider {
@@ -139,6 +140,29 @@ async function mergedLocked(repoRoot: string) {
 }
 
 describe('mergeSkill — clean merge', () => {
+  it('materializes base and latest revisions through an injected canonical source resolver', async () => {
+    await withTempDir(async (dir) => {
+      const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir)
+      const adapter: SkillSourceAdapter = {
+        type: 'github',
+        capabilities: { resolve: false, download: false, latest: true, materialize: true },
+        latest: async () => 'rev2',
+        materialize: async (_source, revision, targetDir) => {
+          await provider.download({ type: 'github', repo: 'acme/foo' }, revision, targetDir)
+        },
+      }
+
+      const result = await mergeSkill('foo', {
+        repositoryRoot: repoRoot,
+        homeRoot,
+        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
+      })
+
+      expect(result.conflicts).toEqual([])
+      expect(await readFileText(localDir, 'README.md')).toBe('upstream readme\n')
+    })
+  })
+
   it('merges disjoint changes and advances the lockfile metadata', async () => {
     await withTempDir(async (dir) => {
       const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir)

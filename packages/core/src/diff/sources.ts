@@ -31,6 +31,7 @@ import {
   type RegistryProvider,
 } from '../registry/index.js'
 import { isBinaryContent as looksBinary } from './binary.js'
+import type { CanonicalSkillSource, SkillSourceResolver } from '../sources/index.js'
 
 /** A resolved content directory plus optional cleanup of temporary storage. */
 export interface ResolvedContent {
@@ -49,6 +50,12 @@ export interface ContentResolverOptions {
   registry?: ProviderRegistry | undefined
   remoteRoot?: string | undefined
   filesystem?: FilesystemService | undefined
+  /**
+   * Canonical source boundary for remote content. When present, diff/merge
+   * resolve pinned and latest revisions through its adapters rather than the
+   * legacy registry and git clients.
+   */
+  sourceResolver?: SkillSourceResolver | undefined
 }
 
 /**
@@ -61,6 +68,7 @@ export class SkillContentResolver {
   private readonly registry: ProviderRegistry
   private readonly remoteRoot: string
   private readonly tmpRoot: string
+  private readonly sourceResolver: SkillSourceResolver | undefined
 
   constructor(private readonly options: ContentResolverOptions) {
     this.filesystem = options.filesystem ?? new FilesystemService()
@@ -68,6 +76,7 @@ export class SkillContentResolver {
     this.registry = options.registry ?? new ProviderRegistry()
     this.remoteRoot = options.remoteRoot ?? path.join(options.homeRoot, 'cache', 'git')
     this.tmpRoot = path.join(options.homeRoot, 'tmp')
+    this.sourceResolver = options.sourceResolver
   }
 
   /** Absolute directory holding the manifest's local content for `skill`. */
@@ -94,6 +103,19 @@ export class SkillContentResolver {
     const revision = locked?.revision
     if (revision !== undefined) {
       return this.atRevision(skill.source, revision)
+    }
+    if (this.sourceResolver !== undefined) {
+      const source = this.canonical(skill.source)
+      const adapter = this.sourceResolver.adapterFor(source, 'resolve')
+      if (adapter.resolve === undefined) {
+        throw new SkillboxError(
+          ErrorCode.DIFF_UPSTREAM_UNAVAILABLE,
+          `Source type "${source.type}" cannot resolve a current revision`,
+          { context: { source } },
+        )
+      }
+      const resolved = await adapter.resolve(source)
+      return this.atCanonicalRevision(resolved.source, resolved.revision)
     }
     if (skill.source.type === 'git') {
       return this.gitMirror(skill.source)
@@ -127,6 +149,18 @@ export class SkillContentResolver {
    */
   async upstream(skill: ManifestSkill, locked: LockedSkill | undefined): Promise<ResolvedContent> {
     const source = this.upstreamSource(skill)
+    if (this.sourceResolver !== undefined) {
+      const canonical = this.canonical(source)
+      const adapter = this.sourceResolver.adapterFor(canonical, 'latest')
+      if (adapter.latest === undefined) {
+        throw new SkillboxError(
+          ErrorCode.DIFF_UPSTREAM_UNAVAILABLE,
+          `Source type "${canonical.type}" cannot determine its latest revision`,
+          { context: { source: canonical } },
+        )
+      }
+      return this.atCanonicalRevision(canonical, await adapter.latest(canonical))
+    }
     if (source.type === 'git') {
       return this.gitMirror(source)
     }
@@ -173,6 +207,9 @@ export class SkillContentResolver {
     source: ManifestSkillSource,
     revision: string,
   ): Promise<ResolvedContent> {
+    if (this.sourceResolver !== undefined && source.type !== 'local') {
+      return this.atCanonicalRevision(this.canonical(source), revision)
+    }
     if (source.type === 'git') {
       const dir = await this.tempDir('skillbox-git-')
       try {
@@ -194,6 +231,40 @@ export class SkillContentResolver {
     }
     const provider = this.providerFor(source)
     return this.downloadToTemp(provider, this.normalized(source), revision)
+  }
+
+  private async atCanonicalRevision(
+    source: CanonicalSkillSource,
+    revision: string,
+  ): Promise<ResolvedContent> {
+    if (source.type === 'local') {
+      return { dir: path.resolve(source.path), revision }
+    }
+    const adapter = this.sourceResolver?.adapterFor(source, 'materialize')
+    if (adapter?.materialize === undefined) {
+      throw new SkillboxError(
+        ErrorCode.DIFF_UPSTREAM_UNAVAILABLE,
+        `Source type "${source.type}" cannot materialize revision "${revision}"`,
+        { context: { source, revision } },
+      )
+    }
+    const dir = await this.tempDir('skillbox-source-')
+    try {
+      await adapter.materialize(source, revision, dir)
+      const sourcePath = 'path' in source ? source.path : undefined
+      const contentDir = sourcePath === undefined ? dir : resolveInsideRoot(dir, sourcePath)
+      return { dir: contentDir, revision, cleanup: () => this.filesystem.remove(dir) }
+    } catch (error) {
+      await this.filesystem.remove(dir)
+      throw error
+    }
+  }
+
+  private canonical(source: ManifestSkillSource): CanonicalSkillSource {
+    if (this.sourceResolver === undefined) {
+      throw new Error('canonical source resolver is unavailable')
+    }
+    return this.sourceResolver.fromManifest(source)
   }
 
   /**

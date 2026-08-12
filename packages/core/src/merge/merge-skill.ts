@@ -37,6 +37,7 @@ import type { GitClient } from '../git/index.js'
 import type { ProviderRegistry } from '../registry/index.js'
 import { SkillContentResolver, scanSkillTree, type TreeEntry } from '../diff/sources.js'
 import { containsConflictMarkers } from './merge.js'
+import type { SkillSourceResolver } from '../sources/index.js'
 import { mergeTrees, type BinaryMergePolicy } from './tree.js'
 import {
   createBackup,
@@ -97,6 +98,8 @@ export interface MergeSkillOptions {
   registry?: ProviderRegistry
   remoteRoot?: string
   filesystem?: FilesystemService
+  /** Canonical remote-source resolution for base and latest content views. */
+  sourceResolver?: SkillSourceResolver
 }
 
 interface MergeContext {
@@ -323,6 +326,7 @@ async function openContext(options: MergeSkillOptions): Promise<MergeContext> {
     registry: options.registry,
     remoteRoot: options.remoteRoot,
     filesystem: options.filesystem,
+    sourceResolver: options.sourceResolver,
   })
   // Read sequentially so a failure cannot leave filesystem work running after
   // mergeSkill has rejected, which can race with cleanup on Windows.

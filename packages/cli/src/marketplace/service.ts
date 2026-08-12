@@ -11,6 +11,7 @@ import {
   type ManifestSkillSource,
   type SkillboxErrorCode,
   type SkillboxLockfile,
+  type SkillSourceResolver,
 } from '@skillbox/core'
 import { isCancelResult, type InteractivePrompt } from '../interactive/prompts.js'
 import { formatSource, progressStepLabel, renderSecurityReview, shortRevision } from './format.js'
@@ -54,6 +55,8 @@ export interface MarketplaceServiceOptions {
   /** True when the process is attached to a real interactive terminal. */
   isInteractive: boolean
   out: (chunk: string) => void
+  /** Canonical source boundary for source types beyond legacy registry providers. */
+  sourceResolver?: SkillSourceResolver
 }
 
 /** Wraps non-Skillbox failures with a typed code while passing errors through. */
@@ -236,17 +239,16 @@ export class MarketplaceService {
         continue
       }
       entry.installed = locked.revision
-      const normalized = normalizeLockedSource(locked.source)
-      if (normalized === undefined) {
-        entry.status = 'unsupported'
-        entries.push(entry)
-        continue
-      }
       try {
-        const latest = await this.options.registryClient.getLatestRevision(normalized)
+        const latest = await this.latestRevision(locked.source)
         entry.latest = latest
         entry.status = latest === locked.revision ? 'up-to-date' : 'outdated'
-      } catch {
+      } catch (error) {
+        if (isSkillboxError(error) && error.code === ErrorCode.SOURCE_UNSUPPORTED) {
+          entry.status = 'unsupported'
+          entries.push(entry)
+          continue
+        }
         // A per-skill failure only degrades that row (registry hiccup on one
         // repo must not abort the whole listing).
         entry.status = 'unknown'
@@ -512,5 +514,33 @@ export class MarketplaceService {
     } catch {
       return []
     }
+  }
+
+  /**
+   * Uses canonical source adapters when supplied; otherwise retains the
+   * existing registry-only compatibility path.
+   */
+  private async latestRevision(source: ManifestSkillSource): Promise<string> {
+    if (this.options.sourceResolver !== undefined) {
+      const canonical = this.options.sourceResolver.fromManifest(source)
+      const adapter = this.options.sourceResolver.adapterFor(canonical, 'latest')
+      if (adapter.latest === undefined) {
+        throw new SkillboxError(
+          ErrorCode.SOURCE_UNSUPPORTED,
+          `Skill source type "${canonical.type}" cannot determine its latest revision.`,
+          { context: { source: canonical } },
+        )
+      }
+      return adapter.latest(canonical)
+    }
+    const normalized = normalizeLockedSource(source)
+    if (normalized === undefined) {
+      throw new SkillboxError(
+        ErrorCode.SOURCE_UNSUPPORTED,
+        `Skill source type "${source.type}" has no legacy registry representation.`,
+        { context: { source } },
+      )
+    }
+    return this.options.registryClient.getLatestRevision(normalized)
   }
 }
