@@ -62,3 +62,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Packed install smoke test
+        run: pnpm release:smoke
