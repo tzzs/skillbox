@@ -17,6 +17,8 @@ export type { CliContext, CliDeps } from './program.js'
 export { runInteractive, isInteractiveTTY } from './interactive/index.js'
 export { InteractiveSession } from './interactive/session.js'
 export type { InteractivePrompt } from './interactive/prompts.js'
+export { runFullscreenTui, NativeTuiTerminal, TuiSession } from './tui/index.js'
+export type { TuiService, TuiTerminal } from './tui/index.js'
 
 /**
  * Splits `--verbose` / `--debug` (and their `=true` forms) out of the argv.

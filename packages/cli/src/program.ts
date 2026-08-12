@@ -81,6 +81,13 @@ import {
   renderDiagnostics,
   type DiagnosticsProvider,
 } from './diagnostics/index.js'
+import {
+  createDefaultMigrationProvider,
+  renderMigrationResult,
+  type MigrationProvider,
+} from './migrations/index.js'
+import { createDefaultDebugBundleProvider, type DebugBundleProvider } from './debug/index.js'
+import { runFullscreenTui } from './tui/index.js'
 
 /** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
 export interface MarketplaceDeps {
@@ -131,6 +138,10 @@ export interface CliDeps {
   rollbackProvider?: RollbackProvider
   /** Environment diagnostics; default-constructed from @skillbox/core. */
   diagnosticsProvider?: DiagnosticsProvider
+  /** Durable schema upgrades; default-constructed from @skillbox/core. */
+  migrationProvider?: MigrationProvider
+  /** Redacted local support artifact; default-constructed from @skillbox/core. */
+  debugBundleProvider?: DebugBundleProvider
 }
 
 export interface CliContext {
@@ -149,6 +160,8 @@ export interface CliContext {
   lifecycle?: LifecycleDeps
   rollbackProvider?: RollbackProvider
   diagnosticsProvider?: DiagnosticsProvider
+  migrationProvider?: MigrationProvider
+  debugBundleProvider?: DebugBundleProvider
   /** Prompt implementation for the interactive `add` flow. */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -650,11 +663,7 @@ export function buildProgram(ctx: CliContext): Command {
     .description('Apply an advanced decision to every pending item in a session')
     .requiredOption('--conflict <choice>', 'local, remote, or keep-both')
     .action(async (session: string, options: { conflict: string }) => {
-      if (
-        ctx.repositorySync === undefined ||
-        pendingConflictSession === undefined ||
-        pendingConflictSession.id !== session
-      ) {
+      if (ctx.repositorySync === undefined) {
         throw new SkillboxError(
           ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
           'This sync decision is no longer available.',
@@ -667,10 +676,14 @@ export function buildProgram(ctx: CliContext): Command {
           'Choose local, remote, or keep-both.',
           { recoverable: true },
         )
+      const activeSession =
+        pendingConflictSession?.id === session
+          ? pendingConflictSession
+          : await ctx.repositorySync.getConflict(session)
       const outcome = await ctx.repositorySync.resolveConflicts({
         sessionId: session,
         resolutions: Object.fromEntries(
-          pendingConflictSession.conflicts.map((conflict) => [conflict.id, options.conflict]),
+          activeSession.conflicts.map((conflict) => [conflict.id, options.conflict]),
         ) as Record<string, import('@skillbox/core').ConflictResolution>,
       })
       pendingConflictSession = outcome.kind === 'conflicts' ? outcome.session : undefined
@@ -905,6 +918,40 @@ export function buildProgram(ctx: CliContext): Command {
         return
       }
       ctx.out(`${renderDiagnostics(report)}\n`)
+    })
+
+  program
+    .command('migrate')
+    .description('Apply pending, versioned Skillbox schema migrations')
+    .option('--json', 'emit the Core migration result as JSON')
+    .action(async (options: { json?: boolean }) => {
+      const result = await (ctx.migrationProvider ?? createDefaultMigrationProvider()).migrate({
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+      })
+      if (options.json === true) {
+        printJson(ctx.out, result)
+        return
+      }
+      ctx.out(`${renderMigrationResult(result)}\n`)
+    })
+
+  program
+    .command('debug-bundle')
+    .description('Write a safe, redacted support bundle outside the repository')
+    .action(async () => {
+      const result = await (ctx.debugBundleProvider ?? createDefaultDebugBundleProvider()).create({
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+      })
+      ctx.out(`Debug bundle created: ${result.outputFile}\n`)
+    })
+
+  program
+    .command('tui')
+    .description('Open the keyboard-first full-screen terminal UI')
+    .action(async () => {
+      await runFullscreenTui(ctx)
     })
 
   // M10/M11 — the `web` subcommand is registered by the web module; the
