@@ -80,7 +80,7 @@ async function removeFixture(root: string): Promise<void> {
   }
 }
 
-describe('SyncTransaction real Git integration', () => {
+describe('SyncTransaction real Git integration', { timeout: 60_000 }, () => {
   it('recognizes an already synchronized repository without creating a snapshot', async () => {
     const { local, home } = await fixture()
 
