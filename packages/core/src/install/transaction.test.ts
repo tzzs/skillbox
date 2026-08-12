@@ -20,6 +20,8 @@ import type {
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { installSkill, defaultAliasFor } from './transaction.js'
 import { ManagedCache } from './cache.js'
+import { createSkillSourceResolver } from '../sources/index.js'
+import type { CanonicalSkillSource, SkillSourceAdapter } from '../sources/types.js'
 
 const GITHUB_SOURCE: NormalizedSource = {
   type: 'github',
@@ -132,6 +134,52 @@ class FakeAgentAdapter implements AgentAdapter {
 }
 
 describe('installSkill', () => {
+  it('uses the injected canonical source resolver for resolve and materialize', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      const seed = path.join(dir, 'seed')
+      await fs.mkdir(repoRoot, { recursive: true })
+      await seedRepo(seed)
+
+      const calls: Array<{ operation: string; source: CanonicalSkillSource }> = []
+      const adapter: SkillSourceAdapter = {
+        type: 'github',
+        capabilities: { resolve: true, download: false, latest: true, materialize: true },
+        async resolve(source) {
+          calls.push({ operation: 'resolve', source })
+          return { source, revision: 'resolver-sha' }
+        },
+        async latest(source) {
+          calls.push({ operation: 'latest', source })
+          return 'resolver-sha'
+        },
+        async materialize(source, _revision, targetDir) {
+          calls.push({ operation: 'materialize', source })
+          await fs.cp(seed, targetDir, { recursive: true })
+        },
+      }
+
+      const result = await installSkill(GITHUB_SOURCE, {
+        repositoryRoot: repoRoot,
+        homeRoot,
+        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
+      })
+
+      expect(result.revision).toBe('resolver-sha')
+      expect(calls).toEqual([
+        {
+          operation: 'resolve',
+          source: { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
+        },
+        {
+          operation: 'materialize',
+          source: { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
+        },
+      ])
+    })
+  })
+
   it('installs a managed skill end to end (resolve → download → validate → materialize → manifest → lock → agents)', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')

@@ -27,13 +27,19 @@ import {
   type SkillboxLockfile,
 } from '../lockfile/index.js'
 import { resolveProvider } from '../registry/registry.js'
-import type { NormalizedSource } from '../registry/types.js'
+import type { NormalizedSource, RegistryProvider } from '../registry/types.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
 import { scanSkillForSecurity } from '../security/index.js'
+import { createSkillSourceResolver } from '../sources/resolver.js'
+import type {
+  CanonicalSkillSource,
+  SkillSourceAdapter,
+  SkillSourceResolver,
+} from '../sources/types.js'
 import { ManagedCache, type CacheEntry } from './cache.js'
 import type { InstallResult, InstallSkillOptions, UpdateSkillOptions } from './types.js'
 
@@ -113,6 +119,93 @@ export function normalizedSourceToManifestSource(source: NormalizedSource): Mani
     }
     case 'local':
       return { type: 'local', path: source.path }
+  }
+}
+
+/**
+ * Temporary compatibility adapter for callers which still pass a legacy
+ * RegistryProvider. Install/update themselves only dispatch through the
+ * canonical SkillSourceResolver boundary.
+ */
+function legacyProviderAdapter(
+  source: NormalizedSource,
+  provider: RegistryProvider,
+): SkillSourceAdapter {
+  const canonicalType = normalizedSourceToManifestSource(source).type
+  return {
+    type: canonicalType,
+    capabilities: { resolve: true, download: true, latest: true, materialize: false },
+    async resolve(canonical) {
+      const resolved = await provider.resolve(toLegacyNormalizedSource(canonical))
+      return {
+        source: canonical,
+        revision: resolved.revision,
+        ...(resolved.integrity === undefined ? {} : { integrity: resolved.integrity }),
+      }
+    },
+    async download(canonical, revision, targetDir) {
+      await provider.download(toLegacyNormalizedSource(canonical), revision, targetDir)
+    },
+    async latest(canonical) {
+      return provider.getLatestRevision(toLegacyNormalizedSource(canonical))
+    },
+  }
+}
+
+function toLegacyNormalizedSource(source: CanonicalSkillSource): NormalizedSource {
+  switch (source.type) {
+    case 'github':
+      return {
+        type: 'github',
+        repo: source.repo,
+        ...(source.path === undefined ? {} : { path: source.path }),
+        ...(source.ref === undefined ? {} : { ref: source.ref }),
+      }
+    case 'registry':
+      if (source.registry === 'skills.sh') {
+        return {
+          type: 'skills-sh',
+          package: source.package,
+          ...(source.version === undefined ? {} : { version: source.version }),
+        }
+      }
+      break
+    case 'local':
+      return { type: 'local', path: source.path }
+    case 'git':
+      break
+  }
+  throw new SkillboxError(
+    ErrorCode.SOURCE_UNSUPPORTED,
+    `Legacy registry providers cannot handle ${source.type} sources`,
+    { context: { source } },
+  )
+}
+
+function resolverForInstall(
+  source: NormalizedSource,
+  options: Pick<InstallSkillOptions, 'provider' | 'sourceResolver'>,
+): { resolver: SkillSourceResolver; canonicalSource: CanonicalSkillSource } {
+  const resolver = options.sourceResolver
+  if (resolver !== undefined) {
+    return {
+      resolver,
+      canonicalSource: resolver.fromManifest(normalizedSourceToManifestSource(source)),
+    }
+  }
+  if (options.provider === undefined) {
+    throw new SkillboxError(
+      ErrorCode.INSTALL_SOURCE_UNRESOLVED,
+      `No SkillSourceResolver or registry provider is wired for "${source.type}" sources`,
+      { context: { source } },
+    )
+  }
+  const canonicalSource = normalizedSourceToManifestSource(source)
+  return {
+    resolver: createSkillSourceResolver({
+      adapters: [legacyProviderAdapter(source, options.provider)],
+    }),
+    canonicalSource,
   }
 }
 
@@ -222,7 +315,7 @@ async function validateSkillStructure(
 /**
  * M15.1 Remote Install transaction.
  *
- * Ten steps — Resolve → Download (with the M15.3 managed cache) → Path
+ * Ten steps — Resolve → Materialize source (with the M15.3 managed cache) → Path
  * Validate → Structure Validate → Integrity → Security → Materialize →
  * Manifest → Lock → Agents. Any failure triggers a rollback that removes the
  * temporary download, the materialized library copy, any agent links created
@@ -235,7 +328,7 @@ async function validateSkillStructure(
  *
  * Throws on failure:
  * - `SOURCE_UNSUPPORTED` for local sources (use the import flow instead)
- * - `INSTALL_SOURCE_UNRESOLVED` when no provider is wired / resolution fails
+ * - `INSTALL_SOURCE_UNRESOLVED` when no source resolver is wired / resolution fails
  * - `INSTALL_DOWNLOAD_FAILED`, `INSTALL_INVALID_PATH`,
  *   `INSTALL_INVALID_STRUCTURE`, `INTEGRITY_MISMATCH` (M15.5),
  *   `INSTALL_SECURITY_BLOCKED`, `INSTALL_MATERIALIZE_FAILED`,
@@ -279,6 +372,7 @@ async function runInstallTransaction(
     options.alias !== undefined ? validateSkillAlias(options.alias) : defaultAliasFor(source)
   const targetAgents = options.targetAgents ?? []
   const allowHighRisk = options.allowPolicy?.allowHighRisk ?? false
+  const { resolver, canonicalSource } = resolverForInstall(source, options)
 
   const linkState = new RuntimeLinkState({ filePath: layout.linksFile, filesystem })
   const ownership = new RuntimeOwnershipResolver({ managedRoot: layout.library, links: linkState })
@@ -340,17 +434,16 @@ async function runInstallTransaction(
   let revision: string | undefined
   try {
     /* Step 1 — Resolve: pin the source to a concrete revision. */
-    if (options.provider === undefined) {
-      // TODO(agent-1): resolve the provider through the registry framework
-      // (`packages/core/src/registry/`) once it lands; callers currently
-      // inject a provider instance.
+    const resolved = await resolver
+      .adapterFor(canonicalSource, 'resolve')
+      .resolve?.(canonicalSource)
+    if (resolved === undefined) {
       throw new SkillboxError(
         ErrorCode.INSTALL_SOURCE_UNRESOLVED,
-        `No registry provider is wired for "${source.type}" sources`,
+        `Source resolver could not resolve ${describeSource(source)}`,
         { context: { source } },
       )
     }
-    const resolved = await options.provider.resolve(source)
     revision = resolved.revision
     if (revision === '') {
       throw new SkillboxError(
@@ -387,7 +480,21 @@ async function runInstallTransaction(
       await filesystem.mkdir(downloadDir)
       tmpDirs.push(tmpRoot)
       try {
-        await options.provider.download(source, revision, downloadDir)
+        const capability = resolver.capabilitiesFor(canonicalSource).materialize
+          ? 'materialize'
+          : 'download'
+        const adapter = resolver.adapterFor(canonicalSource, capability)
+        if (adapter.materialize !== undefined) {
+          await adapter.materialize(canonicalSource, revision, downloadDir)
+        } else if (adapter.download !== undefined) {
+          await adapter.download(canonicalSource, revision, downloadDir)
+        } else {
+          throw new SkillboxError(
+            ErrorCode.INSTALL_DOWNLOAD_FAILED,
+            `Source resolver could not materialize ${describeSource(source)}@${revision}`,
+            { context: { source, revision } },
+          )
+        }
       } catch (error) {
         throw rethrowOrWrap(
           error,
@@ -462,7 +569,7 @@ async function runInstallTransaction(
 
     /* Step 8 — Manifest: the repository gains only a Manifest entry (M15.3);
        the update flow replaces the existing entry instead (M16.2). */
-    const manifestSource = normalizedSourceToManifestSource(source)
+    const manifestSource = resolver.toManifest(canonicalSource)
     const manifest = await readManifestOrEmpty(repositoryRoot)
     if (manifest.skills[alias] !== undefined && !replacing) {
       throw new SkillboxError(
@@ -596,9 +703,9 @@ async function runInstallTransaction(
  * links recorded in the manifest. When the locked revision is already the
  * latest, the call is a no-op that returns the current state.
  *
- * The provider comes from `options.provider` or, when omitted, from the
- * default registry (`resolveProvider(source.type)`); callers that never
- * registered providers surface `SOURCE_UNSUPPORTED`.
+ * The canonical source resolver comes from `options.sourceResolver`. Existing
+ * `provider` callers are supported through a temporary adapter; when omitted,
+ * update resolves the legacy provider from the default registry.
  *
  * Throws on failure:
  * - `SKILL_NOT_FOUND` when the alias has no lockfile entry (or no lockfile)
@@ -645,10 +752,23 @@ export async function updateSkill(
     )
   }
 
-  const provider = options.provider ?? resolveProvider(source.type)
+  const sourceResolver =
+    options.sourceResolver ??
+    createSkillSourceResolver({
+      adapters: [legacyProviderAdapter(source, options.provider ?? resolveProvider(source.type))],
+    })
+  const canonicalSource = sourceResolver.fromManifest(normalizedSourceToManifestSource(source))
 
   /* Latest vs locked (M16.2): equal → no-op, return the current state. */
-  const latest = await provider.getLatestRevision(source)
+  const latestAdapter = sourceResolver.adapterFor(canonicalSource, 'latest')
+  const latest = await latestAdapter.latest?.(canonicalSource)
+  if (latest === undefined) {
+    throw new SkillboxError(
+      ErrorCode.INSTALL_SOURCE_UNRESOLVED,
+      `Source resolver could not determine the latest revision for ${describeSource(source)}`,
+      { context: { source } },
+    )
+  }
   if (latest === locked.revision) {
     const filesystem = options.filesystem ?? new FilesystemService()
     const layout = buildSkillboxHomeLayout(options.homeRoot ?? resolveSkillboxHome())
@@ -673,9 +793,9 @@ export async function updateSkill(
   const targetAgents = manifest.skills[alias]?.agents ?? []
   const transactionOptions: InstallSkillOptions = {
     repositoryRoot,
-    provider,
     alias,
     targetAgents,
+    sourceResolver,
   }
   if (options.allowPolicy !== undefined) {
     transactionOptions.allowPolicy = options.allowPolicy

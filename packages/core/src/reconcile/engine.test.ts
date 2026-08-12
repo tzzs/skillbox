@@ -12,6 +12,7 @@ import { reconcile } from './engine.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { ClaudeAdapter } from '../agent/adapters/claude.js'
 import { GitClient } from '../git/index.js'
+import { createSkillSourceResolver, type SkillSourceAdapter } from '../sources/index.js'
 
 function makeFixture(homeRoot: string) {
   const layout = buildSkillboxHomeLayout(homeRoot)
@@ -317,6 +318,46 @@ describe('reconcile', () => {
       expect(thirdLock.skills.hello?.revision).toBe(thirdHello?.revision)
     })
   }, 30000)
+
+  it('uses an injected source resolver to resolve and materialize a git skill', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const upstream = path.join(dir, 'upstream')
+      await fs.mkdir(repoRoot)
+      await writeRepoSkill(upstream, 'hello', '# resolved by adapter')
+      await writeManifest(
+        repoRoot,
+        addSkill(emptyManifest(), 'hello', {
+          source: { type: 'git', url: 'https://example.test/hello.git', path: 'skills/hello' },
+        }),
+      )
+
+      const adapter: SkillSourceAdapter = {
+        type: 'git',
+        capabilities: { resolve: true, download: false, latest: false, materialize: true },
+        async resolve(source) {
+          return { source, revision: 'resolver-pinned-revision' }
+        },
+        async materialize(_source, revision, targetDir) {
+          expect(revision).toBe('resolver-pinned-revision')
+          await fs.cp(upstream, targetDir, { recursive: true })
+        },
+      }
+      const { library, linkState } = makeFixture(path.join(dir, 'home'))
+      const result = await reconcile({
+        repositoryRoot: repoRoot,
+        library,
+        linkState,
+        remoteRoot: path.join(dir, 'remotes'),
+        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
+      })
+
+      const hello = result.skills.find((skill) => skill.alias === 'hello')
+      expect(hello?.status).toBe('ok')
+      expect(hello?.revision).toBe('resolver-pinned-revision')
+      expect((await readLockfile(repoRoot)).skills.hello?.revision).toBe('resolver-pinned-revision')
+    })
+  })
 
   it('keeps a registry source out of the git path as skipped', async () => {
     await withTempDir(async (dir) => {

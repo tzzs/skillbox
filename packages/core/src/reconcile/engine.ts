@@ -1,4 +1,5 @@
 import * as path from 'node:path'
+import { createHash } from 'node:crypto'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { resolveInsideRoot } from '../fs/paths.js'
 import { resolveLinkStrategy, type LinkStrategy, type ResolvedLinkStrategy } from '../fs/links.js'
@@ -23,13 +24,14 @@ import { RuntimeLibraryService, type MaterializeSkillStatus } from '../runtime/l
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent, removeStaleSkillLink, type LinkAction } from '../runtime/linker.js'
+import { GitClient, planRemoteSource, remoteMaterializeRoot } from '../git/index.js'
 import {
-  GitClient,
-  planRemoteSource,
-  remoteMaterializeRoot,
-  type GitMaterializeOptions,
-  type GitMaterializeResult,
-} from '../git/index.js'
+  createSkillSourceResolver,
+  type CanonicalSkillSource,
+  type ResolvedSkillSource,
+  type SkillSourceAdapter,
+  type SkillSourceResolver,
+} from '../sources/index.js'
 
 export type ReconcileSkillStatus = 'ok' | 'missing' | 'broken' | 'skipped'
 
@@ -106,6 +108,12 @@ export interface ReconcileOptions {
   git?: GitClient
   /** Local root where remote clones are cached (defaults to the home cache). */
   remoteRoot?: string
+  /**
+   * Canonical source boundary used to resolve and materialize every source.
+   * When omitted, the legacy Git/local behavior is exposed through adapters so
+   * existing Core callers retain their current semantics during migration.
+   */
+  sourceResolver?: SkillSourceResolver
 }
 
 export async function reconcile(options: ReconcileOptions): Promise<ReconcileResult> {
@@ -129,6 +137,8 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
 
   const git = options.git ?? new GitClient()
   const remoteRoot = options.remoteRoot ?? remoteMaterializeRoot(options.library.libraryRoot)
+  const usingCompatibilityResolver = options.sourceResolver === undefined
+  const sourceResolver = options.sourceResolver ?? createReconcileCompatibilityResolver(git)
 
   for (const [alias, skill] of Object.entries(manifest.skills)) {
     const mode = deriveMode(skill)
@@ -138,20 +148,22 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
     let sourcePath: string
     let revision: string | undefined
 
-    if (skill.source.type === 'local') {
+    const source = sourceResolver.fromManifest(skill.source)
+    if (source.type === 'local') {
+      const localPath = source.path
       try {
-        sourcePath = resolveInsideRoot(options.repositoryRoot, skill.source.path)
+        sourcePath = resolveInsideRoot(options.repositoryRoot, localPath)
       } catch (error) {
         problems.push({
           code: ErrorCode.INVALID_MANIFEST,
           alias,
-          message: `Unresolvable local path "${skill.source.path}": ${String(error)}`,
+          message: `Unresolvable local path "${source.path}": ${String(error)}`,
         })
         skills.push({
           alias,
           mode,
           status: 'broken',
-          message: `path "${skill.source.path}" is not a valid local path`,
+          message: `path "${source.path}" is not a valid local path`,
         })
         continue
       }
@@ -168,11 +180,13 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
     } else {
       const outcome = await resolveRemoteSource({
         alias,
-        skill,
+        source,
         mode,
         filesystem: fs,
         git,
         remoteRoot,
+        resolver: sourceResolver,
+        usingCompatibilityResolver,
       })
       if (!outcome.ok) {
         if (outcome.problem !== undefined) {
@@ -208,7 +222,7 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
     changed = changed || materialized.status !== 'unchanged'
     nextLockedSkills[alias] = createLockedSkill({
       mode,
-      source: skill.source,
+      source: sourceResolver.toManifest(source),
       integrity,
       ...(revision !== undefined ? { revision } : {}),
     })
@@ -310,30 +324,42 @@ type RemoteResolveOutcome =
  */
 async function resolveRemoteSource(input: {
   alias: string
-  skill: ManifestSkill
+  source: CanonicalSkillSource
   mode: SkillMode
   filesystem: FilesystemService
   git: GitClient
   remoteRoot: string
+  resolver: SkillSourceResolver
+  /** Compatibility adapters use GitClient to recover the immutable checkout SHA. */
+  usingCompatibilityResolver: boolean
 }): Promise<RemoteResolveOutcome> {
-  const source = input.skill.source
+  const { source } = input
+  // Preserve the established Git cache directory while allowing every other
+  // source adapter to choose how it materializes content into a stable cache.
   const plan = planRemoteSource(source)
-  if (plan === undefined) {
-    const message = `${source.type} source "${input.alias}" is not clone-able by the git engine yet (registry provider lands in V0.3)`
-    return {
-      ok: false,
-      report: { alias: input.alias, mode: input.mode, status: 'skipped', message },
-    }
-  }
-
-  const targetDir = path.join(input.remoteRoot, plan.key)
-  let materialized: GitMaterializeResult
+  const targetKey =
+    plan?.key ?? createHash('sha256').update(input.resolver.serialize(source)).digest('hex')
+  const targetDir = path.join(input.remoteRoot, targetKey)
+  let resolved: ResolvedSkillSource
   try {
-    const materializeOptions: GitMaterializeOptions = { url: plan.url, targetDir }
-    if (plan.ref !== undefined) {
-      materializeOptions.ref = plan.ref
+    const resolveAdapter = input.resolver.adapterFor(source, 'resolve')
+    if (resolveAdapter.resolve === undefined) {
+      throw new SkillboxError(
+        ErrorCode.SOURCE_UNSUPPORTED,
+        `Skill source type "${source.type}" does not provide resolve`,
+        { recoverable: true },
+      )
     }
-    materialized = await input.git.materialize(materializeOptions)
+    resolved = await resolveAdapter.resolve(source)
+    const materializeAdapter = input.resolver.adapterFor(source, 'materialize')
+    if (materializeAdapter.materialize === undefined) {
+      throw new SkillboxError(
+        ErrorCode.SOURCE_UNSUPPORTED,
+        `Skill source type "${source.type}" does not provide materialize`,
+        { recoverable: true },
+      )
+    }
+    await materializeAdapter.materialize(source, resolved.revision, targetDir)
   } catch (error) {
     if (error instanceof SkillboxError && error.code === ErrorCode.GIT_NOT_FOUND) {
       const message = 'git is not installed; remote sources cannot be materialized'
@@ -343,7 +369,7 @@ async function resolveRemoteSource(input: {
         problem: {
           code: ErrorCode.GIT_NOT_FOUND,
           alias: input.alias,
-          message: `${message} (needed for ${plan.url})`,
+          message: `${message} (needed for ${plan?.url ?? input.resolver.serialize(source)})`,
         },
       }
     }
@@ -355,8 +381,15 @@ async function resolveRemoteSource(input: {
         problem: {
           code: ErrorCode.GIT_COMMAND_FAILED,
           alias: input.alias,
-          message: `Failed to materialize ${plan.url} (${error.message})`,
+          message: `Failed to materialize ${plan?.url ?? input.resolver.serialize(source)} (${error.message})`,
         },
+      }
+    }
+    if (error instanceof SkillboxError && error.code === ErrorCode.SOURCE_UNSUPPORTED) {
+      return {
+        ok: false,
+        report: { alias: input.alias, mode: input.mode, status: 'skipped', message: error.message },
+        problem: { code: error.code, alias: input.alias, message: error.message },
       }
     }
     throw error
@@ -368,7 +401,7 @@ async function resolveRemoteSource(input: {
     try {
       sourcePath = resolveInsideRoot(targetDir, subPath)
     } catch {
-      const message = `unresolvable source path "${subPath}" in ${plan.url}`
+      const message = `unresolvable source path "${subPath}" in ${plan?.url ?? input.resolver.serialize(source)}`
       return {
         ok: false,
         report: {
@@ -396,7 +429,52 @@ async function resolveRemoteSource(input: {
     }
   }
 
-  return { ok: true, sourcePath, revision: materialized.headRev }
+  // The compatibility Git adapter intentionally keeps the old clone/pull
+  // behavior. Its resolve result is a requested ref (often `main`), so read
+  // the checkout SHA after materialization to preserve immutable lock pins.
+  const revision = input.usingCompatibilityResolver
+    ? await input.git.revParse(targetDir, 'HEAD')
+    : resolved.revision
+  return { ok: true, sourcePath, revision }
+}
+
+/**
+ * Temporary bridge for existing Reconcile callers. It deliberately lives at
+ * the Reconcile boundary rather than teaching callers about Git/source kinds:
+ * all remote resolution now goes through SkillSourceResolver adapters.
+ */
+function createReconcileCompatibilityResolver(git: GitClient): SkillSourceResolver {
+  const remoteAdapter = (type: 'git' | 'github'): SkillSourceAdapter => ({
+    type,
+    capabilities: { resolve: true, download: false, latest: false, materialize: true },
+    async resolve(source) {
+      const plan = planRemoteSource(source)
+      if (plan === undefined) {
+        throw new SkillboxError(
+          ErrorCode.SOURCE_UNSUPPORTED,
+          `Skill source type "${source.type}" cannot be materialized by Git`,
+          { recoverable: true },
+        )
+      }
+      return { source, revision: plan.ref ?? 'HEAD' }
+    },
+    async materialize(source, _revision, targetDir) {
+      const plan = planRemoteSource(source)
+      if (plan === undefined) {
+        throw new SkillboxError(
+          ErrorCode.SOURCE_UNSUPPORTED,
+          `Skill source type "${source.type}" cannot be materialized by Git`,
+          { recoverable: true },
+        )
+      }
+      await git.materialize({
+        url: plan.url,
+        targetDir,
+        ...(plan.ref === undefined ? {} : { ref: plan.ref }),
+      })
+    },
+  })
+  return createSkillSourceResolver({ adapters: [remoteAdapter('git'), remoteAdapter('github')] })
 }
 
 async function isDirectory(target: string, fs: FilesystemService): Promise<boolean> {

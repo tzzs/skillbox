@@ -2,6 +2,7 @@ import type { AgentRegistry } from '../agent/index.js'
 import type { FilesystemService } from '../fs/filesystem-service.js'
 import type { NormalizedSource, RegistryProvider } from '../registry/types.js'
 import type { SecurityMetadata } from '../security/types.js'
+import type { SkillSourceResolver } from '../sources/types.js'
 
 /**
  * Install-time security policy overrides (M15.1 Security step). A skill whose
@@ -21,14 +22,15 @@ export interface InstallSkillOptions {
    */
   repositoryRoot: string
   /**
-   * Registry provider that resolves and downloads the source. Required for
-   * remote sources (`github` / `skills-sh`).
-   *
-   * TODO(agent-1): once the registry provider framework
-   * (`packages/core/src/registry/`) lands, wire the provider lookup here
-   * instead of requiring callers to pass an instance.
+   * @deprecated Compatibility input for existing callers. New integrations
+   * should pass `sourceResolver`; this provider is wrapped as an adapter.
    */
   provider?: RegistryProvider
+  /**
+   * Canonical source boundary for resolution and materialization. When omitted,
+   * the legacy `provider` is wrapped as a source adapter for compatibility.
+   */
+  sourceResolver?: SkillSourceResolver
   /**
    * Skill alias used in the manifest, library and agent links. Derived from
    * the source when omitted (`repo` / last path segment).
@@ -57,11 +59,12 @@ export interface UpdateSkillOptions {
    */
   repositoryRoot: string
   /**
-   * Registry provider that resolves and downloads the source. Resolved
-   * through the default registry (`resolveProvider(source.type)`) when
-   * omitted.
+   * @deprecated Compatibility input for existing callers. New integrations
+   * should pass `sourceResolver`; this provider is wrapped as an adapter.
    */
   provider?: RegistryProvider
+  /** Canonical source boundary; see {@link InstallSkillOptions.sourceResolver}. */
+  sourceResolver?: SkillSourceResolver
   /**
    * Skill alias recorded in the manifest/lockfile. Derived from the source
    * when omitted (`repo` / last path segment).
