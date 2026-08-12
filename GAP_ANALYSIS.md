@@ -75,7 +75,20 @@ web
 - 私仓 Git transport：Credential Bridge 无落盘凭据注入 + 禁止 hook 读取传输凭据
 - 默认 production wiring 集成测试（GitHub / Git / repository sync 错误码覆盖）
 
-### 1.6 Managed Restore（工作区变更，2026-08-13）
+### 1.6 多设备同步与语义冲突恢复（2026-08-13）
+
+- Repository 级 `SyncTransaction`：隔离 worktree 三方语义合并、验证、受管路径提交、
+  non-force push 与最多三次的 fetch/recompute retry；Repository 发布前 Runtime 保持不变。
+- 版本化 snapshot / conflict session 持久化：仅保留受管路径与 private ref，拒绝跨仓库、过期、
+  损坏记录和 credential/绝对路径泄漏。
+- Manifest 字段、agents 集合、metadata、delete/modify、mode/source/lifecycle 与二进制/内容冲突
+  均映射为用户可恢复的语义 conflict；lockfile 从合并后的状态重新生成，不做文本合并。
+- CLI 与本地 Web API/UI 已提供同步状态、持久冲突列表、local/remote/keep-both 决策和恢复点；
+  普通文案不展示 Git marker 或内部术语。
+- 真实 bare remote + 双 clone E2E 已覆盖完成态、持久冲突、非重叠自动合并、拒推重试和 resolution 发布；
+  Runtime reconcile 仅在 Repository 成功发布后执行，失败保留有效 Repository commit 并返回可重试状态。
+
+### 1.7 Managed Restore（工作区变更，2026-08-13）
 
 - Core `restoreManagedSkill()` 只接受 Managed skill，读取其锁定 revision 与 integrity，且不改写
   Manifest / Lockfile

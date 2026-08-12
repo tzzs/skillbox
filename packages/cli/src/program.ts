@@ -205,6 +205,12 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   if (deps.diagnosticsProvider !== undefined) {
     context.diagnosticsProvider = deps.diagnosticsProvider
   }
+  if (deps.migrationProvider !== undefined) {
+    context.migrationProvider = deps.migrationProvider
+  }
+  if (deps.debugBundleProvider !== undefined) {
+    context.debugBundleProvider = deps.debugBundleProvider
+  }
   if (deps.prompts !== undefined) {
     context.prompts = deps.prompts
   }
@@ -635,7 +641,7 @@ export function buildProgram(ctx: CliContext): Command {
   const conflictsCommand = program
     .command('conflicts')
     .description('Show pending multi-device sync decisions')
-    .action(() => {
+    .action(async () => {
       if (ctx.repositorySync === undefined) {
         throw new SkillboxError(
           ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
@@ -643,18 +649,20 @@ export function buildProgram(ctx: CliContext): Command {
           { recoverable: true },
         )
       }
-      if (pendingConflictSession === undefined) {
+      const sessions = await ctx.repositorySync.listConflicts()
+      const activeSession = pendingConflictSession ?? sessions[0]
+      if (activeSession === undefined) {
         ctx.out('No pending sync decisions.\n')
         return
       }
-      ctx.out(`\n${pendingConflictSession.conflicts.length} decision(s) need your attention.\n`)
-      for (const conflict of pendingConflictSession.conflicts) {
+      ctx.out(`\n${activeSession.conflicts.length} decision(s) need your attention.\n`)
+      for (const conflict of activeSession.conflicts) {
         ctx.out(
           `  ${conflict.skillAlias ?? 'Skill'} · ${conflict.field ?? conflict.path ?? conflict.type}${conflict.recommendedResolution === undefined ? '' : ` · recommended: ${conflict.recommendedResolution}`}\n`,
         )
       }
       ctx.out(
-        `\nUse \`skillbox conflicts resolve ${pendingConflictSession.id} --conflict=local|remote|keep-both\` for an advanced bulk choice.\n`,
+        `\nUse \`skillbox conflicts resolve ${activeSession.id} --conflict=local|remote|keep-both\` for an advanced bulk choice.\n`,
       )
     })
 

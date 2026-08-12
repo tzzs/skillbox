@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { RepositorySync } from '@skillbox/core'
+import type { ConflictSession, RepositorySync } from '@skillbox/core'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
 /**
@@ -116,6 +116,71 @@ describe('cli', () => {
     expect(io.out()).toContain('octocat/skillbox-skills')
     expect(await main(['disconnect'], { ...io, repositorySync })).toBe(0)
     expect(disconnects).toBe(1)
+  })
+
+  it('lists and resolves a durable conflict session across CLI invocations', async () => {
+    const io = capture()
+    const session: ConflictSession = {
+      version: 1,
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      baseRevision: 'base',
+      localRevision: 'local',
+      remoteRevision: 'remote',
+      snapshotId: 'snapshot-1',
+      createdAt: '2026-08-13T00:00:00.000Z',
+      expiresAt: '2026-08-14T00:00:00.000Z',
+      conflicts: [
+        {
+          id: 'conflict-1',
+          type: 'content',
+          skillAlias: 'example',
+          path: 'SKILL.md',
+          allowedResolutions: ['local', 'remote', 'keep-both'],
+          destructive: false,
+        },
+      ],
+    }
+    let resolutions: Record<string, string> | undefined
+    const repositorySync = {
+      connect: async () => {
+        throw new Error('not used')
+      },
+      disconnect: async () => undefined,
+      status: async () => {
+        throw new Error('not used')
+      },
+      pull: async () => undefined,
+      push: async () => undefined,
+      sync: async () => ({
+        kind: 'completed' as const,
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      }),
+      listConflicts: async () => [session],
+      getConflict: async (id: string) => {
+        expect(id).toBe(session.id)
+        return session
+      },
+      resolveConflicts: async (input: { resolutions: Record<string, string> }) => {
+        resolutions = input.resolutions
+        return {
+          kind: 'completed' as const,
+          summary: { automaticallyMerged: 0, retriedPushes: 0 },
+        }
+      },
+      restoreSnapshot: async () => undefined,
+    } as unknown as RepositorySync
+
+    expect(await main(['conflicts'], { ...io, repositorySync })).toBe(0)
+    expect(io.out()).toContain('example')
+    expect(io.out()).toContain('conflicts resolve session-1')
+    expect(
+      await main(['conflicts', 'resolve', session.id, '--conflict=local'], {
+        ...io,
+        repositorySync,
+      }),
+    ).toBe(0)
+    expect(resolutions).toEqual({ 'conflict-1': 'local' })
   })
 })
 
