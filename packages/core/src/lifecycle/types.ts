@@ -16,6 +16,20 @@ export interface LifecycleOptions {
 /** Options for a Fork transaction (same shape as the base lifecycle options). */
 export type ForkSkillOptions = LifecycleOptions
 
+/** Options for restoring a Managed runtime from its pinned cache entry. */
+export type RestoreManagedSkillOptions = LifecycleOptions
+
+/** Outcome of restoring a Managed runtime (M17.3). */
+export interface RestoreManagedSkillResult {
+  alias: string
+  /** Number of payload files replaced; zero when it was already pristine. */
+  filesRestored: number
+  /** The locked canonical integrity verified after activation. */
+  integrity: string
+  /** Absolute managed-library path that was restored. */
+  materializedPath: string
+}
+
 /** Outcome of a completed Fork transaction (M17.1). */
 export interface ForkSkillResult {
   alias: string

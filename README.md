@@ -156,7 +156,7 @@ For system requirements, building from source, and local package-install verific
   - Already present at the CLI layer: `sync/pull/push/connect/disconnect/status`, secret-scan integration, `install --frozen-lockfile/--ci`, and multi-device restore documentation.
   - Default GitHub wiring is complete (2026-08-12): the production factory and CLI adapter, actual `ahead/behind/remote` reporting, full `connect` orchestration (authorize → create/select repository → initialize → bind origin → persist → pull → push), and private-repository credential injection without persisting credentials. See [GAP_ANALYSIS.md §1.5](./GAP_ANALYSIS.md).
 - **0.3 — Marketplace / Registry**: `skillbox search`, `add <source>`, managed cache, and updates.
-- **0.4 — Skill Lifecycle**: `fork`, `vendor`, `diff`, three-way merge, and rollback.
+- **0.4 — Skill Lifecycle**: `fork`, `vendor`, managed-edit Restore, `diff`, and three-way merge are available. General user-facing rollback and Web lifecycle parity remain planned; see [GAP_ANALYSIS.md](./GAP_ANALYSIS.md).
 - **Security (P1)**: pre-install security scanning and risk display in the Web UI.
 
 See [GAP_ANALYSIS.md](./GAP_ANALYSIS.md) for the detailed code-versus-documentation gap analysis.

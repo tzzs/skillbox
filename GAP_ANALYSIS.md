@@ -3,7 +3,12 @@
 > 对照 `PRD.md`、`SKILLBOX_SPEC.md`、`ARCHITECTURE.md`、`MVP_TASKS.md`、
 > `docs/superpowers/specs/2026-08-09-github-integration-design.md` 与当前代码。
 >
-> 当前代码基线：`375411d`（2026-08-12）。
+> 当前代码基线：`03a48f5`（2026-08-12，PR #2 合并后）加本工作区的 Managed Restore
+> 变更（2026-08-13，尚未提交）。
+>
+> 本次更新（2026-08-13）基于一次完整的 install / lint / typecheck / test / build 验证
+> （见 §10），已将 PR #2 落地的 GitHub 默认接线与仓库同步能力从 P0 清单移入
+> “已落地基线”，并核对了 Web / CLI 剩余缺口。
 >
 > 本文只把当前代码中仍未闭环的能力列为缺口。旧版清单中已经实现的项目已移至“已落地基线”，
 > 避免将过时 TODO、历史注释或仅有测试替身的能力误判为当前状态。
@@ -57,90 +62,37 @@ fork / vendor / edit / diff / merge
 web
 ```
 
+### 1.5 GitHub 默认接线与仓库同步闭环（PR #2，2026-08-12）
+
+- 默认 GitHub production factory：Client ID、GitHubApi、CredentialStore、TokenStore、
+  RuntimeConfigService 组装，`SKILLBOX_GITHUB_CLIENT_ID` 环境变量可覆盖 Client ID
+- CLI GitHub adapter 与 Core result shape 的映射（含 Device Flow 秒/毫秒换算、
+  slow-down / failed 状态透传）
+- GitClient remote introspection：`status()` 返回真实 `ahead` / `behind` / `remote`，
+  覆盖无 remote、detached HEAD、分支无 upstream 等边界
+- `RepositorySyncService`（Core）：authorize → repository → init → bind-remote →
+  persist → pull → push 全阶段编排；CLI `connect` / `disconnect` 已路由到 Core
+- 私仓 Git transport：Credential Bridge 无落盘凭据注入 + 禁止 hook 读取传输凭据
+- 默认 production wiring 集成测试（GitHub / Git / repository sync 错误码覆盖）
+
+### 1.6 Managed Restore（工作区变更，2026-08-13）
+
+- Core `restoreManagedSkill()` 只接受 Managed skill，读取其锁定 revision 与 integrity，且不改写
+  Manifest / Lockfile
+- 从已验证的 managed cache 复制到同级 staging 目录，验证 canonical integrity 后替换 runtime；失败时
+  保留或恢复原 runtime，并返回稳定的 rollback 错误
+- CLI Lifecycle adapter 传递 `homeRoot`，交互式 `skillbox edit` 的已修改 Managed Skill 可以选择
+  **Restore**；恢复后回到 pristine managed 状态
+- 已有 Core Restore、CLI adapter 和 interactive service 的定向测试；当前实现暂只支持已缓存的
+  GitHub source，尚未成为统一 Source/下载恢复能力
+
 ---
 
-## 2. P0 — 主流程阻断项
+## 2. P0 — 当前无已确认的主流程阻断项
 
-### 2.1 GitHub Service 已实现，但默认 CLI adapter 接口不匹配
-
-这是当前最重要的缺口。
-
-CLI 的 `packages/cli/src/sync/loaders.ts` 仍按旧的预期接口工作：
-
-```ts
-new GitHubService(homeRoot)
-service.connectionState()
-service.startDeviceFlow()
-service.pollDeviceFlow()
-```
-
-Core 的实际接口位于 `packages/core/src/github/github-service.ts`：
-
-```ts
-new GitHubService({ clientId, api, tokenStore, configStore, ... })
-service.getConnectionState()
-service.startDeviceAuthorization()
-service.pollDeviceAuthorization()
-```
-
-因此 Core 单元能力虽已存在，默认的以下用户流程仍未真正可用：
-
-- `skillbox connect`
-- `skillbox disconnect`
-- `skillbox sync` 的 GitHub connected gate
-- `skillbox push` 的 GitHub connected gate
-
-待实现：
-
-- GitHub production factory：Client ID、GitHubApi、CredentialStore、TokenStore、RuntimeConfigService
-- CLI contract 与 Core result shape 的转换
-- Device Flow 秒/毫秒与状态对象的明确映射
-- 默认构建的集成测试，不能只使用 fake `GitHubProvider`
-
-### 2.2 Git remote、ahead/behind 与仓库绑定未闭环
-
-当前 `GitClientAdapter.status()`：
-
-- `ahead` 固定为 `0`
-- `behind` 固定为 `0`
-- 不返回 `remote`
-
-而 `SyncService.pull()` / `push()` 依赖 `status.remote` 判断远端是否存在。这会导致真实仓库的
-status 不准确，并可能让 pull/push 错误报告 `GIT_REMOTE_NOT_FOUND`。
-
-`skillbox connect` 当前也只负责授权，没有完成：
-
-- 创建或选择 `skillbox-skills` 私有仓库
-- 将选择结果写入 GitHub machine config
-- 初始化本地 Git repository（需要时）
-- 添加或更新 `origin`
-- 将 Credential Bridge 注入 Git fetch/pull/push
-- 验证 private repository 的 clone/pull/push
-
-待实现：
-
-- GitClient remote introspection 和 ahead/behind 计算
-- GitProvider status shape 的真实映射
-- connect 后的 repository orchestration
-- 私仓 Git transport 的无落盘凭据注入
-- 从零开始的 connect → sync → clone → install 端到端测试
-
-### 2.3 Managed Restore 未实现
-
-`skillbox edit` 已能检测 Managed Skill 的本地修改，并支持 Convert to Fork；但 Restore Upstream
-分支依赖的 `restoreManagedSkill()` 没有 Core 实现。
-
-当前 CLI adapter 会返回 `LIFECYCLE_UNAVAILABLE`，建议用户改为 fork 或重新 install，尚未满足
-SPEC 中 `[Convert to Fork] / [Restore Upstream]` 的完整交互。
-
-待实现：
-
-- `restoreManagedSkill(alias, options)` Core transaction
-- Restore 前备份
-- 重新 materialize pinned upstream
-- integrity、lockfile、Agent link 一致性恢复
-- 中途失败 rollback
-- CLI 与 Interactive CLI 集成测试
+此前唯一 P0（Managed Restore）已在当前工作区实现并通过定向验证，见 §1.6。该结论仅覆盖
+**已缓存的 GitHub Managed skill**：首次下载、其他 source 以及跨平台端到端验收仍属于后续 P1
+工作，不能据此宣称发布就绪。
 
 ---
 
@@ -247,7 +199,7 @@ Runtime Config 的后续字段变化也应纳入迁移或兼容读取策略。
 
 - Remove modified skill
 - Vendor
-- Restore Managed
+- Restore Managed（已有同级 backup，但尚未纳入统一 backup service）
 - 通用 Rollback
 - destructive migration
 
@@ -317,7 +269,8 @@ Root、CLI、Core 等 package 仍设置 `"private": true`。正式发布前至�
 ### 6.2 README / Release Metadata
 
 - README CI badge 仍使用 `OWNER/REPO` 占位
-- README 对 GitHub Sync 的描述需在默认接线完成后才能标记“完整可用”
+- README 的 GitHub Sync 描述与代码已一致（connect 全链路已闭环，见 §1.5），
+  可将 README Roadmap 0.2 中的“依赖 GitHub Device Flow 后端落定”说明移除
 - `GAP_ANALYSIS.md` 更新后，README Roadmap 应同步使用相同状态口径
 
 ### 6.3 E2E 验收与自动化
@@ -357,14 +310,15 @@ Merge、GitClient、GitHubService、Registry 与 Security Scanner。
 
 ### 7.2 重复 Adapter 与动态导入
 
-CLI Sync、Marketplace、Lifecycle 使用大量动态导入和结构类型转换。它帮助并行开发阶段解耦，
-但现在已经产生接口漂移，例如 GitHub Service。
+CLI Sync 已随 §2.1/§2.2 落地改为显式 typed factory，并补上默认 production wiring 测试；
+但 Marketplace 与 Lifecycle 仍使用动态导入和结构类型转换，Sync 中 Git / SecretScanner 的
+`loadCore` 兼容缝也仍保留。
 
 建议在各模块稳定后：
 
-- 改为显式 typed factory
+- 将 Marketplace / Lifecycle 改为显式 typed factory
 - 删除 runtime arity check 和宽泛 `Record<string, unknown>` 转换
-- 增加“默认 production wiring”测试
+- 补齐 Marketplace / Lifecycle 的“默认 production wiring”测试
 - 保留依赖注入接口供测试使用
 
 ---
@@ -388,18 +342,14 @@ CLI Sync、Marketplace、Lifecycle 使用大量动态导入和结构类型转换
 
 ### Wave 1 — 恢复真实主流程
 
-1. 修复 GitHub production factory 与 CLI adapter
-2. 实现 Git remote/ahead/behind introspection
-3. connect 时创建/选择仓库并绑定 origin
-4. Credential Bridge 接入 Git transport
-5. 实现 Managed Restore
+> 本波已完成：PR #2 的 GitHub/Git 主流程（§1.5）以及当前工作区的 Managed Restore（§1.6）。
+> Restore 仍需纳入统一事务与多 source 支持，见 Wave 3。
 
 ### Wave 2 — 建立可信验收
 
-1. 默认 production wiring integration tests
-2. Hermetic CLI E2E
-3. 三平台 manual acceptance
-4. 更新 README 的功能状态
+1. Hermetic CLI E2E
+2. 三平台 manual acceptance
+3. 更新 README 的功能状态
 
 ### Wave 3 — 产品能力闭环
 
@@ -417,25 +367,33 @@ CLI Sync、Marketplace、Lifecycle 使用大量动态导入和结构类型转换
 
 ---
 
-## 10. 本次验证说明
+## 10. 本次验证说明（2026-08-13）
 
-本次审查完成了代码、配置、命令、Web route、TODO 与测试文件的静态核对。
-
-尝试执行：
+本次更新完成了完整验证链：
 
 ```text
-pnpm typecheck
+pnpm install --frozen-lockfile   ✅ 227 packages
+pnpm lint                        ✅ eslint + prettier 全部通过
+pnpm typecheck                   ✅ tsc -b + web typecheck 通过
+pnpm test                        ✅ 947 tests（core 662 / cli 275 / web 8 / shared 1 / testing 1）
+pnpm build                       ✅ tsc + vite web bundle + web assets 打包
 ```
 
-当前 checkout 没有安装 `node_modules`，命令因找不到 `tsc` 退出，因此本次没有获得可确认的
-typecheck/test/build 结果。该失败表示依赖未安装，不表示已经发现 TypeScript 编译错误。
+已知注意点：
 
-下一次形成发布结论前应执行：
+- `reconcile > reconciles a git source idempotently and refreshes when the remote
+advances`（`packages/core/src/reconcile/engine.test.ts:281`）在整仓并行跑测试时偶发
+  30s 超时；单独运行 3.4s 通过。原因是该用例串行执行 3 次真实 git clone/pull，在并行负载高
+  的环境（Windows）下容易超预算，属于环境抖动而非逻辑失败，复跑整仓测试全部通过。若 CI 仍
+  偶发，可考虑提高该用例 timeout 或将 git 类用例串行化。
+
+当前工作区的 Managed Restore 追加定向验证：
 
 ```text
-pnpm install --frozen-lockfile
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm --filter @skillbox/core test -- restore.test.ts                         ✅ 3 tests
+pnpm --filter @skillbox/cli test -- skill-lifecycle/loaders.test.ts \
+  skill-lifecycle/service.test.ts                                            ✅ 38 tests
+pnpm typecheck                                                               ✅
 ```
+
+这些结果不替代首次下载、非 GitHub source、真实 Agent link 或三平台 E2E 验收。

@@ -173,7 +173,7 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
   - 已落地：`skillbox sync/pull/push/connect/disconnect/status`（CLI 层）、secret scan 集成、`install --frozen-lockfile/--ci`、多设备恢复文档见上
   - GitHub 默认接线已闭环（2026-08-12）：production factory + CLI adapter、真实 `ahead/behind/remote` 报告、connect 全阶段编排（authorize → 建仓/选仓 → init → bind origin → persist → pull → push）、私仓无落盘凭据注入。见 [GAP_ANALYSIS.md §1.5](./GAP_ANALYSIS.md)
 - **0.3 — Marketplace / Registry**：`skillbox search`、`add <source>`、managed cache、updates
-- **0.4 — Skill Lifecycle**：`fork` / `vendor` / `diff` / 3-way merge、rollback
+- **0.4 — Skill Lifecycle**：已支持 `fork` / `vendor` / Managed 编辑后的 Restore / `diff` / 3-way merge；通用用户级 rollback 与 Web 生命周期对等仍在规划中，见 [GAP_ANALYSIS.md](./GAP_ANALYSIS.md)。
 - **安全层（P1）**：安装前 Security Scan、Web 风险展示
 
 详见 **[GAP_ANALYSIS.md](./GAP_ANALYSIS.md)**。

@@ -195,14 +195,18 @@ Green：
 
 ### 2.2 Managed Restore
 
-- [ ] 验证目标为 Managed 且存在 pinned upstream
-- [ ] Restore 前创建 recovery snapshot
-- [ ] 重新下载 pinned revision
-- [ ] 验证 structure 与 integrity
-- [ ] 原子替换 library 内容
-- [ ] 恢复 Agent links
-- [ ] 清除 modified 状态
-- [ ] 接入 `skillbox edit` Restore 分支
+- [x] 验证目标为 Managed 且存在 pinned revision / integrity
+- [x] Restore 前保留同级 runtime backup，并在失败时尝试恢复
+- [ ] 重新下载 pinned revision（当前仅从已验证的 managed cache 恢复）
+- [x] 验证缓存与激活后的 canonical integrity
+- [x] 以同级 staging / move 替换 library 内容
+- [ ] 显式校验或恢复 Agent links
+- [x] 清除 modified 状态
+- [x] 接入交互式 `skillbox edit` 的 Restore 分支
+
+当前实现位于 `packages/core/src/lifecycle/restore.ts`，并已覆盖成功、幂等和损坏缓存不改写
+runtime 的定向测试。它尚未使用本节规划的公共 transaction/snapshot primitives，也尚未覆盖
+非 GitHub source、远程 cache miss 或逐阶段 fault injection。
 
 ### 2.3 迁移现有 Lifecycle 写操作
 
@@ -221,7 +225,7 @@ Green：
 
 ### 阶段 2 退出门禁
 
-- [ ] Convert to Fork / Restore Upstream 均可用
+- [x] Convert to Fork / Restore Upstream 均可用（Restore 当前限于已缓存 GitHub Managed skill）
 - [ ] 每个写阶段 fault injection 后状态完全恢复
 - [ ] backup/rollback 不跨越 repository seam
 

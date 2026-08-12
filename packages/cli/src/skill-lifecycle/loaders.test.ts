@@ -130,6 +130,24 @@ describe('createDefaultLifecycleProvider', () => {
     const clean = await cleanProvider.detectManagedModifications(INPUT)
     expect(clean).toEqual({ name: 'react-best-practices', modified: false })
   })
+
+  it('forwards Restore homeRoot to the landed Core transaction', async () => {
+    let seenOptions: { repositoryRoot: string; homeRoot?: string } | undefined
+    const provider = createDefaultLifecycleProvider(
+      landedCore({
+        restoreManagedSkill: async (
+          name: string,
+          options: { repositoryRoot: string; homeRoot?: string },
+        ) => {
+          seenOptions = options
+          return { alias: name, filesRestored: 2 }
+        },
+      }),
+    )
+    const result = await provider.restoreManagedSkill({ ...INPUT, homeRoot: '/home' })
+    expect(result).toEqual({ name: INPUT.name, filesRestored: 2 })
+    expect(seenOptions).toEqual({ repositoryRoot: '/repo', homeRoot: '/home' })
+  })
 })
 
 describe('createDefaultDiffProvider', () => {

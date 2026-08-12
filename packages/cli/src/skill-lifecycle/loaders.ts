@@ -29,7 +29,7 @@ import type {
  * - `vendorSkill(alias, options)`                (lifecycle/vendor.js)
  * - `detectManagedModifications(alias, options)` (lifecycle/modification.js;
  *   returns `boolean`, the CLI contract's `{ modified, files? }` is derived)
- * - `restoreManagedSkill`                        — not implemented
+ * - `restoreManagedSkill`                        (lifecycle/restore.js)
  * - `diffSkill` / `mergeSkill` / `continueMerge` / `abortMerge`
  *                                                (diff/ and merge/)
  */
@@ -174,6 +174,14 @@ function mapModifications(raw: unknown, name: string): ManagedModifications {
   }
 }
 
+function mapRestoreResult(raw: unknown, name: string): RestoreResult {
+  const record = asRecord(raw)
+  return {
+    name: readString(record, 'name') ?? readString(record, 'alias') ?? name,
+    filesRestored: typeof record?.filesRestored === 'number' ? record.filesRestored : 0,
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Lifecycle provider — @skillbox/core/lifecycle
  * ------------------------------------------------------------------ */
@@ -229,6 +237,7 @@ class LifecycleProviderAdapter implements LifecycleProvider {
   async restoreManagedSkill(input: {
     name: string
     repositoryRoot: string
+    homeRoot?: string
   }): Promise<RestoreResult> {
     const core = await this.core()
     const restore = core.restoreManagedSkill as
@@ -242,7 +251,7 @@ class LifecycleProviderAdapter implements LifecycleProvider {
           '`skillbox install`.',
       )
     }
-    return (await restore(input.name, { repositoryRoot: input.repositoryRoot })) as RestoreResult
+    return mapRestoreResult(await restore(input.name, coreOptions(input)), input.name)
   }
 }
 

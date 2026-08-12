@@ -89,8 +89,7 @@ export interface ManagedModifications {
 /**
  * Restore of a modified managed runtime from the lockfile integrity
  * (M17.3 "[Restore]"). Satisfied at runtime by agent 1's
- * `restoreManagedSkill` — TODO(lifecycle, agent 1): until it lands, the
- * loader adapter surfaces a "not available in this build yet" error.
+ * `restoreManagedSkill` — restores the pinned, verified managed cache entry.
  */
 export interface RestoreResult {
   name: string
@@ -111,7 +110,11 @@ export interface LifecycleProvider {
     repositoryRoot: string
     homeRoot?: string
   }): Promise<ManagedModifications>
-  restoreManagedSkill(input: { name: string; repositoryRoot: string }): Promise<RestoreResult>
+  restoreManagedSkill(input: {
+    name: string
+    repositoryRoot: string
+    homeRoot?: string
+  }): Promise<RestoreResult>
 }
 
 /* ------------------------------------------------------------------ *
