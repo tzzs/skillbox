@@ -203,10 +203,32 @@ export class SkillService {
       )
     }
 
+    const operationRuntime =
+      this.operationRuntime ??
+      createOperationRuntime({ repositoryRoot: this.repositoryRoot, homeRoot: this.homeRoot })
+    const operation = await operationRuntime.runExclusive({
+      kind: 'add',
+      targets: [
+        skillDir,
+        path.join(this.repositoryRoot, 'skillbox.yaml'),
+        path.join(this.repositoryRoot, 'skillbox.lock'),
+        this.library().pathFor(alias, 'local'),
+      ],
+      execute: () => this.createSkillUnsafe(alias, skillDir, input.description),
+    })
+    return operation.result
+  }
+
+  private async createSkillUnsafe(
+    alias: string,
+    skillDir: string,
+    description: string | undefined,
+  ): Promise<CreateSkillResult> {
+    const manifest = await this.readManifestOrEmpty()
     await this.filesystem.mkdir(skillDir)
     await this.filesystem.writeFile(
       path.join(skillDir, 'SKILL.md'),
-      DEFAULT_SKILL_MARKDOWN(alias, input.description),
+      DEFAULT_SKILL_MARKDOWN(alias, description),
     )
 
     const integrity = await computeSkillIntegrity(skillDir)
