@@ -3,12 +3,16 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCliHarness, type CliHarness } from './cli-harness.js'
 
+// Packaged Node subprocesses and recursive temp cleanup exceed Vitest's
+// default 5s budget on Windows CI runners.
+const E2E_TIMEOUT_MS = 30_000
+
 describe('CLI E2E harness', () => {
   const fixtures: CliHarness[] = []
 
   afterEach(async () => {
     await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()))
-  })
+  }, E2E_TIMEOUT_MS)
 
   it('runs a subprocess with an isolated home and repository', async () => {
     const bootstrap = await createCliHarness()
@@ -62,5 +66,5 @@ describe('CLI E2E harness', () => {
     await expect(
       access(join(fixture.home, '.skillbox', 'library', 'local', 'focus-mode', 'SKILL.md')),
     ).resolves.toBeUndefined()
-  })
+  }, E2E_TIMEOUT_MS)
 })
