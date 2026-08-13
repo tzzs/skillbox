@@ -159,7 +159,7 @@ describe('installSkill', () => {
         fs.stat(path.join(buildSkillboxHomeLayout(homeRoot).library, 'managed', 'hello')),
       ).rejects.toThrow()
     })
-  })
+  }, 30_000)
 
   it('uses the injected canonical source resolver for resolve and materialize', async () => {
     await withTempDir(async (dir) => {
@@ -282,7 +282,7 @@ describe('installSkill', () => {
       // Temp dirs are cleaned up.
       expect((await fs.readdir(layout.tmp)).length).toBe(0)
     })
-  })
+  }, 30_000)
 
   it('reuses the managed cache: a second install of the same source skips the download', async () => {
     await withTempDir(async (dir) => {

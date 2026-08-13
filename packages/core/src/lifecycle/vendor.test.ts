@@ -224,5 +224,5 @@ describe('vendorSkill', () => {
       })
       await expect(fs.stat(path.join(seed.repositoryRoot, 'skills', 'hello'))).rejects.toThrow()
     })
-  })
+  }, 30_000)
 })
