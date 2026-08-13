@@ -3,15 +3,16 @@
 > 对照 `PRD.md`、`SKILLBOX_SPEC.md`、`ARCHITECTURE.md`、`MVP_TASKS.md`、
 > `docs/superpowers/specs/2026-08-09-github-integration-design.md` 与当前代码。
 >
-> 当前代码基线：`petrel`（2026-08-13）。本文件的历史分段保留了当时的差距判断；下列状态
+> 当前代码基线：`petrel`（2026-08-14）。本文件的历史分段保留了当时的差距判断；下列状态
 > 摘要是当前实现的权威口径。
 >
 > 本次更新（2026-08-13）基于一次完整的 install / lint / typecheck / test / build 验证
 > （见 §10），已将 PR #2 落地的 GitHub 默认接线与仓库同步能力从 P0 清单移入
 > “已落地基线”，并核对了 Web / CLI 剩余缺口。
 >
-> 本文只把当前代码中仍未闭环的能力列为缺口。旧版清单中已经实现的项目已移至“已落地基线”，
-> 避免将过时 TODO、历史注释或仅有测试替身的能力误判为当前状态。
+> §3–§5 与 §7、§9 是 2026-08-13 的历史审计快照，保留以便追溯，不应用作当前待办。
+> 当前结论以 §0、§1.8 和 §6 为准，避免将过时 TODO、历史注释或仅有测试替身的能力
+> 误判为当前状态。
 
 ## 0. 2026-08-13 交付状态
 
@@ -113,9 +114,23 @@ web
 - 已有 Core Restore、CLI adapter 和 interactive service 的定向测试；当前实现暂只支持已缓存的
   GitHub source，尚未成为统一 Source/下载恢复能力
 
+### 1.8 P1/P2 实施完成（2026-08-14）
+
+- `OperationRuntime` 现覆盖 install、update、create、local edit、fork、vendor、restore、remove、
+  merge / continue / abort 与 sync；每项均声明精确快照目标，提供同仓库、未过期记录的用户级
+  rollback。Sync 只使用 runtime 的锁与 journal，保持其 Git-aware restore point 为唯一的 Git 状态恢复机制。
+- `SkillSourceResolver` 已成为 GitHub、Git、Registry、Local 的默认生产边界。Install、Update、
+  Reconcile、Diff、Merge、Restore、Web lifecycle 以及 CLI Marketplace 都接入该边界；Restore cache miss
+  重新 materialize 锁定 revision 并验证 integrity，不会以 latest 替代 pin。
+- Web lifecycle/rollback API 与 UI、独立 `@skillbox/web-server`、fullscreen `skillbox tui`、
+  `doctor`、`migrate`、脱敏 `debug-bundle`、Event Bus、迁移 checkpoint store、release smoke 与
+  Gemini/OpenCode/Windsurf/Copilot conformance adapter 均已落地并有定向测试。
+- 当前自动化门禁已覆盖 lint、typecheck、单元/集成测试、build 与 packed-install smoke。实际 npm
+  发布与三平台人工验收仍需仓库所有者执行和记录，见 §6。
+
 ---
 
-## 2. P0 — 当前无已确认的主流程阻断项
+## 2. 历史 P0 结论（2026-08-13，已由 §1.8 取代）
 
 此前唯一 P0（Managed Restore）已在当前工作区实现并通过定向验证，见 §1.6。该结论仅覆盖
 **已缓存的 GitHub Managed skill**：首次下载、其他 source 以及跨平台端到端验收仍属于后续 P1
@@ -123,7 +138,7 @@ web
 
 ---
 
-## 3. P1 — 产品能力未闭环
+## 3. 历史 P1 — 产品能力未闭环（2026-08-13，已由 §1.8 取代）
 
 ### 3.1 Marketplace 与 Manifest Source 模型不一致
 
@@ -200,7 +215,7 @@ Logger、verbosity level、脱敏与 CLI flags 已落地，但多数 Core/CLI �
 
 ---
 
-## 4. P1 — 可靠性与架构基础设施
+## 4. 历史 P1 — 可靠性与架构基础设施（2026-08-13，已由 §1.8 取代）
 
 ### 4.1 `runtime.lock` 并发保护
 
@@ -254,7 +269,7 @@ Runtime Config 的后续字段变化也应纳入迁移或兼容读取策略。
 
 ---
 
-## 5. P2 — Agent、交互与分发扩展
+## 5. 历史 P2 — Agent、交互与分发扩展（2026-08-13，已由 §1.8 取代）
 
 ### 5.1 Agent 覆盖面
 
@@ -280,7 +295,7 @@ fallback 测试。
 
 ---
 
-## 6. 发布与验收缺口
+## 6. 当前发布与验收外部前置条件
 
 ### 6.1 npm 发布配置
 
@@ -322,7 +337,7 @@ managed edit → fork/restore → diff → merge/continue/abort
 
 ---
 
-## 7. 文档与代码债务
+## 7. 历史文档与代码债务（2026-08-13，待后续维护窗口处理）
 
 ### 7.1 过时注释
 
@@ -365,7 +380,7 @@ CLI Sync 已随 §2.1/§2.2 落地改为显式 typed factory，并补上默认 p
 
 ---
 
-## 9. 建议实施顺序
+## 9. 历史建议实施顺序（2026-08-13，已完成的实现项见 §1.8）
 
 ### Wave 1 — 恢复真实主流程
 
