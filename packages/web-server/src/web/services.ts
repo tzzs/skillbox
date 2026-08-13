@@ -2,6 +2,7 @@ import {
   createDefaultAgentRegistry,
   createRepositorySync,
   continueMerge,
+  createDefaultSkillSourceResolver,
   defaultRegistry,
   diffSkill,
   ErrorCode,
@@ -93,6 +94,7 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
   ensureDefaultProviders()
   const registry = options.registry ?? createDefaultAgentRegistry()
   const { repositoryRoot, homeRoot } = options
+  const sourceResolver = createDefaultSkillSourceResolver({ registry: defaultRegistry })
   const config = new RuntimeConfigService({
     configFilePath: new SkillboxHome({ root: homeRoot }).configFilePath(),
   })
@@ -112,24 +114,30 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     }),
     search: options.search ?? createSearchService(),
     updates: options.updates ?? createUpdatesService(repositoryRoot),
-    install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
-    diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
-    lifecycle: options.lifecycle ?? createLifecycleService(repositoryRoot, homeRoot),
+    install:
+      options.install ?? createInstallService(repositoryRoot, homeRoot, registry, sourceResolver),
+    diff: options.diff ?? createDiffService(repositoryRoot, homeRoot, sourceResolver),
+    lifecycle:
+      options.lifecycle ?? createLifecycleService(repositoryRoot, homeRoot, sourceResolver),
     operations: options.operations ?? createOperationService(repositoryRoot, homeRoot),
     sync: options.sync ?? createRepositorySync({ repositoryRoot, homeRoot }),
   }
 }
 
 /** The HTTP layer delegates every lifecycle mutation to the public Core API. */
-function createLifecycleService(repositoryRoot: string, homeRoot: string): LifecycleService {
+function createLifecycleService(
+  repositoryRoot: string,
+  homeRoot: string,
+  sourceResolver: ReturnType<typeof createDefaultSkillSourceResolver>,
+): LifecycleService {
   const scoped = { repositoryRoot, homeRoot }
   return {
     fork: (name) => forkSkill(name, scoped),
     vendor: (name, input) => vendorSkill(name, { ...scoped, ...input }),
-    restore: (name) => restoreManagedSkill(name, scoped),
-    merge: (name) => mergeSkill(name, { ...scoped, registry: defaultRegistry }),
-    continueMerge: (name) => continueMerge(name, scoped),
-    abortMerge: (name) => abortMerge(name, scoped),
+    restore: (name) => restoreManagedSkill(name, { ...scoped, sourceResolver }),
+    merge: (name) => mergeSkill(name, { ...scoped, sourceResolver }),
+    continueMerge: (name) => continueMerge(name, { ...scoped, sourceResolver }),
+    abortMerge: (name) => abortMerge(name, { ...scoped, sourceResolver }),
   }
 }
 
@@ -150,13 +158,17 @@ function createOperationService(repositoryRoot: string, homeRoot: string): Opera
  * never writes back. Errors keep their Skillbox code (SKILL_NOT_FOUND,
  * DIFF_UPSTREAM_UNAVAILABLE, …) so the M10.8 envelope maps them correctly.
  */
-function createDiffService(repositoryRoot: string, homeRoot: string): DiffService {
+function createDiffService(
+  repositoryRoot: string,
+  homeRoot: string,
+  sourceResolver: ReturnType<typeof createDefaultSkillSourceResolver>,
+): DiffService {
   return {
     async diffSkill(name: string): Promise<SkillDiff> {
       return diffSkill(name, {
         repositoryRoot,
         homeRoot,
-        registry: defaultRegistry,
+        sourceResolver,
       })
     },
   }
@@ -342,6 +354,7 @@ function createInstallService(
   repositoryRoot: string,
   homeRoot: string,
   registry: AgentRegistry,
+  sourceResolver: ReturnType<typeof createDefaultSkillSourceResolver>,
 ): InstallService {
   return {
     async install(input: InstallInput): Promise<InstallResult> {
@@ -351,6 +364,7 @@ function createInstallService(
         repositoryRoot,
         homeRoot,
         provider,
+        sourceResolver,
         targetAgents: input.targetAgents,
         allowPolicy: { allowHighRisk: input.allowPolicy === 'all' },
         agentRegistry: registry,

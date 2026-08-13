@@ -1,8 +1,12 @@
 import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import { ErrorCode } from '../errors.js'
+import { withTempDir } from '../fs/test-utils.js'
+import { ProviderRegistry } from '../registry/index.js'
 import {
   createSkillSourceResolver,
+  createDefaultSkillSourceResolver,
   fromManifest,
   parse,
   serialize,
@@ -70,5 +74,45 @@ describe('canonical skill sources', () => {
         context: { sourceType: 'git', capability: 'resolve' },
       }),
     )
+  })
+
+  it('materializes a git source path as the selected skill root', async () => {
+    await withTempDir(async (dir) => {
+      const fixture = path.join(dir, 'fixture')
+      await fs.mkdir(path.join(fixture, 'skills', 'foo'), { recursive: true })
+      await fs.writeFile(path.join(fixture, 'skills', 'foo', 'SKILL.md'), '# Foo\n')
+      const git = {
+        materialize: async ({ targetDir }: { targetDir: string }) => {
+          await fs.cp(fixture, targetDir, { recursive: true })
+          return { cloned: true, headRev: 'sha' }
+        },
+        revParse: async () => 'sha',
+      }
+      const resolver = createDefaultSkillSourceResolver({
+        registry: new ProviderRegistry(),
+        git: git as never,
+        temporaryRoot: path.join(dir, 'tmp'),
+      })
+      const target = path.join(dir, 'target')
+      const source = {
+        type: 'git' as const,
+        url: 'https://git.example.test/skills.git',
+        path: 'skills/foo',
+      }
+      await resolver.adapterFor(source, 'materialize').materialize?.(source, 'sha', target)
+      await expect(fs.readFile(path.join(target, 'SKILL.md'), 'utf8')).resolves.toBe('# Foo\n')
+      await expect(fs.stat(path.join(target, 'skills', 'foo'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    })
+  })
+
+  it('keeps unknown registry names on the unified SOURCE_UNSUPPORTED contract', async () => {
+    const resolver = createDefaultSkillSourceResolver({ registry: new ProviderRegistry() })
+    const source = { type: 'registry' as const, registry: 'unknown.example', package: 'foo' }
+    await expect(resolver.adapterFor(source, 'latest').latest?.(source)).rejects.toMatchObject({
+      code: ErrorCode.SOURCE_UNSUPPORTED,
+      context: { sourceType: 'registry', capability: 'provider dispatch' },
+    })
   })
 })

@@ -251,9 +251,11 @@ export class SkillContentResolver {
     const dir = await this.tempDir('skillbox-source-')
     try {
       await adapter.materialize(source, revision, dir)
-      const sourcePath = 'path' in source ? source.path : undefined
-      const contentDir = sourcePath === undefined ? dir : resolveInsideRoot(dir, sourcePath)
-      return { dir: contentDir, revision, cleanup: () => this.filesystem.remove(dir) }
+      // Source adapters materialize the selected skill root.  This matters
+      // for provider-backed `github` / `registry` sources (whose provider
+      // already strips `source.path`) and keeps every canonical adapter on
+      // the same contract as install and restore.
+      return { dir, revision, cleanup: () => this.filesystem.remove(dir) }
     } catch (error) {
       await this.filesystem.remove(dir)
       throw error

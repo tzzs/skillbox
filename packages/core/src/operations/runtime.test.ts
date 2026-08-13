@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { withTempDir } from '../fs/test-utils.js'
 import { createOperationRuntime } from './runtime.js'
+import { ErrorCode } from '../errors.js'
 
 describe('OperationRuntime.runExclusive', () => {
   it('restores every declared target when a mutation fails', async () => {
@@ -48,6 +49,26 @@ describe('OperationRuntime.runExclusive', () => {
         restoredTargets: [manifest],
       })
       await expect(fs.readFile(manifest, 'utf8')).resolves.toBe('before\n')
+    })
+  })
+
+  it('can serialize a Git-aware operation without exposing a misleading file rollback record', async () => {
+    await withTempDir(async (root) => {
+      const repositoryRoot = path.join(root, 'repository')
+      const homeRoot = path.join(root, 'home')
+      await fs.mkdir(repositoryRoot, { recursive: true })
+      const runtime = createOperationRuntime({ repositoryRoot, homeRoot })
+
+      await runtime.runExclusive({
+        kind: 'sync',
+        targets: [],
+        retainForRollback: false,
+        execute: async () => undefined,
+      })
+
+      await expect(runtime.rollback()).rejects.toMatchObject({
+        code: ErrorCode.OPERATION_BACKUP_NOT_FOUND,
+      })
     })
   })
 })

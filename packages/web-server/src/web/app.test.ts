@@ -167,6 +167,39 @@ describe('PUT /api/settings', () => {
     })
   })
 
+  it('persists web host and multi-directory agent overrides without losing the legacy path', async () => {
+    await withApp(async (app, { home }) => {
+      const response = await putSettings(app, {
+        web: { host: ' 127.0.0.1 ' },
+        agents: {
+          claude: {
+            path: '/mnt/claude',
+            skillDirectories: [' /mnt/claude/skills ', '/mnt/claude/project-skills'],
+          },
+        },
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        settings: {
+          web: { host: string }
+          agents: { claude: { path: string; skillDirectories: string[] } }
+        }
+      }
+      expect(body.settings.web.host).toBe('127.0.0.1')
+      expect(body.settings.agents.claude).toEqual({
+        path: '/mnt/claude',
+        skillDirectories: ['/mnt/claude/skills', '/mnt/claude/project-skills'],
+      })
+
+      await putSettings(app, { agents: { claude: { skillDirectories: [] } } })
+      const afterClear = (await (await app.request('/api/settings')).json()) as {
+        settings: { agents: { claude: { path: string; skillDirectories?: string[] } } }
+      }
+      expect(afterClear.settings.agents.claude).toEqual({ path: '/mnt/claude' })
+      await rm(home, { recursive: true, force: true })
+    })
+  })
+
   it('replaces a prior executable-only override when a path is set', async () => {
     await withApp(async (app, { configPath, home }) => {
       await writeFile(configPath, JSON.stringify({ agents: { codex: { executable: '/x/cx' } } }))
@@ -209,6 +242,17 @@ describe('PUT /api/settings', () => {
       expect(response.status).toBe(400)
       const body = (await response.json()) as { error: { code: string } }
       expect(body.error.code).toBe('INVALID_REQUEST')
+    })
+  })
+
+  it('rejects an empty web host and invalid skill directory overrides', async () => {
+    await withApp(async (app) => {
+      const host = await putSettings(app, { web: { host: '   ' } })
+      expect(host.status).toBe(400)
+      const directories = await putSettings(app, {
+        agents: { claude: { skillDirectories: ['/ok', ''] } },
+      })
+      expect(directories.status).toBe(400)
     })
   })
 

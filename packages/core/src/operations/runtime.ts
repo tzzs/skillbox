@@ -29,6 +29,12 @@ export interface OperationRunOptions<T> {
   targets: readonly string[]
   execute: () => Promise<T>
   verify?: (result: T) => Promise<void>
+  /**
+   * Whether the completed operation is exposed through user-level rollback.
+   * Git-aware operations can retain their own restore point while still using
+   * this runtime for exclusive locking and crash journaling.
+   */
+  retainForRollback?: boolean
 }
 
 export interface OperationRunResult<T> {
@@ -86,10 +92,15 @@ export class OperationRuntime {
         owner: this.owner,
         stage: 'prepare',
       })
-      const snapshots = await this.capture(operationId, options.targets)
-      await this.writeSnapshotManifest(operationId, snapshots)
-      const index = new BackupIndexStore(path.join(this.layout.backups, 'index.json'))
-      await index.add(this.backupEntry(operationId, key, snapshots))
+      const retainForRollback = options.retainForRollback ?? true
+      const snapshots = retainForRollback ? await this.capture(operationId, options.targets) : []
+      const index = retainForRollback
+        ? new BackupIndexStore(path.join(this.layout.backups, 'index.json'))
+        : undefined
+      if (retainForRollback) {
+        await this.writeSnapshotManifest(operationId, snapshots)
+        await index!.add(this.backupEntry(operationId, key, snapshots))
+      }
       await journal.write({ ...record, stage: 'mutate', status: 'running' })
       try {
         const result = await options.execute()
@@ -101,8 +112,10 @@ export class OperationRuntime {
             'Operation journal disappeared',
           )
         await journal.write({ ...completed, stage: 'complete', status: 'completed' })
-        await index.markCompleted(operationId, new Date(this.clock.now()).toISOString())
-        await index.prune({ maxCompleted: this.maxBackups })
+        if (index !== undefined) {
+          await index.markCompleted(operationId, new Date(this.clock.now()).toISOString())
+          await index.prune({ maxCompleted: this.maxBackups })
+        }
         return { operationId, result }
       } catch (error) {
         const current = await journal.read(operationId)

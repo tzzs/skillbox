@@ -5,7 +5,12 @@ import { stat } from 'node:fs/promises'
 import { createAdaptorServer } from '@hono/node-server'
 import type { Server } from 'node:http'
 import type { Command } from 'commander'
-import { version } from '@skillbox/core'
+import {
+  createDefaultAgentRegistry,
+  RuntimeConfigService,
+  SkillboxHome,
+  version,
+} from '@skillbox/core'
 import { createWebApp } from './app.js'
 import { createWebServices } from './services.js'
 import type { StartedWebServer, WebServerOptions } from './types.js'
@@ -39,13 +44,22 @@ export async function defaultStaticDir(): Promise<string | undefined> {
 export async function startWebServer(options: WebServerOptions): Promise<StartedWebServer> {
   const out = options.out ?? ((chunk: string) => process.stdout.write(chunk))
   const err = options.err ?? ((chunk: string) => process.stderr.write(chunk))
-  const host = options.host ?? DEFAULT_HOST
-  const requestedPort = options.port ?? DEFAULT_PORT
+  const config = new RuntimeConfigService({
+    configFilePath: new SkillboxHome({ root: options.homeRoot }).configFilePath(),
+  })
+  const persisted = await config.load()
+  const host = options.host ?? persisted.web?.host ?? DEFAULT_HOST
+  const requestedPort = options.port ?? persisted.web?.port ?? DEFAULT_PORT
+  const open = options.open ?? persisted.web?.open
 
   const services = createWebServices({
     repositoryRoot: options.repositoryRoot,
     homeRoot: options.homeRoot,
-    ...(options.registry === undefined ? {} : { registry: options.registry }),
+    registry:
+      options.registry ??
+      createDefaultAgentRegistry(
+        persisted.agents === undefined ? {} : { overrides: persisted.agents },
+      ),
   })
   if (host === '0.0.0.0') {
     err('Skillbox UI will be exposed to the local network.\n')
@@ -63,7 +77,7 @@ export async function startWebServer(options: WebServerOptions): Promise<Started
   const attempt = async (port: number) => {
     const { server, port: boundPort } = await listen(app, host, port)
     const url = formatUrl(host, boundPort)
-    printStart(out, options.open, url, services.homeRoot)
+    printStart(out, open, url, services.homeRoot)
     return { server, port: boundPort, url, close: () => close(server) }
   }
 

@@ -110,19 +110,19 @@ export type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
 /** Machine config persisted at `~/.skillbox/config.json` (GAP 1.2). */
 export interface RuntimeSettingsInput {
   linkStrategy?: LinkStrategy
-  web?: { port?: number; open?: boolean }
-  agents?: Record<string, { path?: string; executable?: string }>
+  web?: { host?: string; port?: number; open?: boolean }
+  agents?: Record<string, { path?: string; skillDirectories?: string[]; executable?: string }>
 }
 
 /**
  * The editable subset of the Machine Config accepted by `PUT /api/settings`.
- * Agent overrides carry a `path` (a non-empty string sets it; an empty string
- * removes the override).
+ * A `path` remains supported for existing configuration. `skillDirectories`
+ * controls one or more explicit locations; an empty array clears it.
  */
 export interface SettingsPatch {
   linkStrategy?: LinkStrategy
-  web?: { port?: number; open?: boolean }
-  agents?: Record<string, { path: string }>
+  web?: { host?: string; port?: number; open?: boolean }
+  agents?: Record<string, { path?: string; skillDirectories?: string[] }>
 }
 
 /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */

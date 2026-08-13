@@ -49,6 +49,16 @@ describe('AgentRegistry', () => {
     ).toEqual(['claude', 'codex', 'copilot', 'cursor', 'gemini', 'opencode', 'windsurf'])
   })
 
+  it('applies multi-directory runtime overrides to a default adapter', async () => {
+    const registry = createDefaultAgentRegistry({
+      overrides: { claude: { skillDirectories: ['/tmp/one', '/tmp/two'] } },
+    })
+    await expect(registry.get('claude')?.getSkillDirectories()).resolves.toEqual([
+      path.resolve('/tmp/one'),
+      path.resolve('/tmp/two'),
+    ])
+  })
+
   it('reports undetected agents with a zero skill count', async () => {
     const home = await tempHome()
     try {

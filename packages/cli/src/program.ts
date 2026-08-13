@@ -148,6 +148,8 @@ export interface CliContext {
   repositoryRoot: string
   homeRoot: string
   registry: AgentRegistry
+  /** True only when the caller injected a registry instead of the built-in set. */
+  registryProvided?: boolean
   out: (chunk: string) => void
   err: (chunk: string) => void
   gitProvider: GitProvider
@@ -183,6 +185,9 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     gitProvider: deps.gitProvider ?? createDefaultGitProvider(repositoryRoot),
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
     secretScanner: deps.secretScanner ?? createDefaultSecretScanner(repositoryRoot),
+  }
+  if (deps.registry !== undefined) {
+    context.registryProvided = true
   }
   if (deps.repositorySync !== undefined) {
     context.repositorySync = deps.repositorySync
@@ -971,7 +976,7 @@ export function buildProgram(ctx: CliContext): Command {
     const started = await startWebServer({
       repositoryRoot: options.repositoryRoot ?? ctx.repositoryRoot,
       homeRoot: ctx.homeRoot,
-      registry: ctx.registry,
+      ...(ctx.registryProvided === true ? { registry: ctx.registry } : {}),
       ...(options.port === undefined ? {} : { port: options.port }),
       ...(options.host === undefined ? {} : { host: options.host }),
       ...(options.open === undefined ? {} : { open: options.open }),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -98,6 +98,33 @@ describe('startWebServer', () => {
         expect(response.status).toBe(503)
         const body = (await response.json()) as { error: { code: string } }
         expect(body.error.code).toBe('WEB_ASSETS_MISSING')
+      } finally {
+        await started.close()
+      }
+    } finally {
+      await rm(repository, { recursive: true, force: true })
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the persisted host when the host flag is absent', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-repo-'))
+    const home = await mkdtemp(join(tmpdir(), 'skillbox-web-home-'))
+    try {
+      await writeFile(
+        join(home, 'config.json'),
+        JSON.stringify({ web: { host: 'localhost', open: false } }),
+      )
+      const started = await startWebServer({
+        repositoryRoot: repository,
+        homeRoot: home,
+        port: 0,
+        out: () => undefined,
+        err: () => undefined,
+      })
+      try {
+        expect(started.port).toBeGreaterThan(0)
+        expect(started.url).toMatch(/^http:\/\/localhost:/)
       } finally {
         await started.close()
       }

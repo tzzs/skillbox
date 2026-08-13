@@ -12,6 +12,8 @@ export const runtimeConfigSchema = z.object({
   linkStrategy: linkStrategySchema.optional(),
   web: z
     .object({
+      /** Interface to bind when a caller elects to read this setting. */
+      host: z.string().trim().min(1).optional(),
       port: z.number().int().positive().optional(),
       open: z.boolean().optional(),
     })
@@ -21,7 +23,10 @@ export const runtimeConfigSchema = z.object({
     .record(
       z.string().min(1),
       z.object({
+        /** Legacy single-directory override retained for older config files. */
         path: z.string().min(1).optional(),
+        /** Explicit skill directories, for agents that support more than one location. */
+        skillDirectories: z.array(z.string().trim().min(1)).min(1).optional(),
         executable: z.string().min(1).optional(),
       }),
     )

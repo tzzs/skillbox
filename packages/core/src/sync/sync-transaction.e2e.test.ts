@@ -81,14 +81,16 @@ async function removeFixture(root: string): Promise<void> {
 }
 
 describe('SyncTransaction real Git integration', { timeout: 60_000 }, () => {
-  it('recognizes an already synchronized repository without creating a snapshot', async () => {
+  it('recognizes an already synchronized repository without creating a sync restore point', async () => {
     const { local, home } = await fixture()
 
     await expect(transaction(local, home).run()).resolves.toEqual({
       kind: 'completed',
       summary: { automaticallyMerged: 0, retriedPushes: 0 },
     })
-    await expect(fs.readdir(home)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.readdir(path.join(home, 'state', 'sync', 'snapshots'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 
   it('creates a persisted semantic conflict session from divergent device commits', async () => {

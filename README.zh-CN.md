@@ -222,9 +222,7 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
 
 Linux / macOS / Windows 三平台矩阵 CI（lint + typecheck + test + build）：
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-
-> 占位：仓库公开并配置 GitHub Actions 后替换 `OWNER/REPO` 为实际值。
+[![CI](https://github.com/tzzs/skillbox/actions/workflows/ci.yml/badge.svg)](https://github.com/tzzs/skillbox/actions/workflows/ci.yml)
 
 ## Contributing
 

@@ -80,7 +80,7 @@ describe('diffSkill', () => {
         addSkill(emptyManifest(), 'foo', {
           source,
           mode: 'forked',
-          upstream: { type: 'github', repo: 'acme/foo' },
+          upstream: { type: 'github', repo: 'acme/foo', path: 'skills/foo' },
         }),
       )
       const lockfile = emptyLockfile()
@@ -90,7 +90,7 @@ describe('diffSkill', () => {
         integrity: await computeSkillIntegrity(localDir),
       })
       locked.upstream = {
-        source: { type: 'github', repo: 'acme/foo' },
+        source: { type: 'github', repo: 'acme/foo', path: 'skills/foo' },
         baseRevision: 'rev1',
         latestRevision: 'rev2',
       }
@@ -105,7 +105,11 @@ describe('diffSkill', () => {
         type: 'github',
         capabilities: { resolve: false, download: false, latest: true, materialize: true },
         latest: async () => 'rev2',
-        materialize: async (_source, revision, targetDir) => {
+        materialize: async (upstream, revision, targetDir) => {
+          // Adapters receive a full canonical source but materialize the
+          // selected skill root, not a repository root that consumers trim a
+          // second time.
+          expect(upstream).toMatchObject({ type: 'github', path: 'skills/foo' })
           const fixture = fixtures.get(revision)
           if (fixture === undefined) throw new Error(`unknown revision ${revision}`)
           await fs.cp(fixture, targetDir, { recursive: true })

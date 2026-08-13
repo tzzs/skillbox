@@ -205,9 +205,7 @@ For the full design, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 The Linux/macOS/Windows CI matrix runs lint, typecheck, test, and build:
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-
-> Placeholder: replace `OWNER/REPO` after the repository is public and GitHub Actions is configured.
+[![CI](https://github.com/tzzs/skillbox/actions/workflows/ci.yml/badge.svg)](https://github.com/tzzs/skillbox/actions/workflows/ci.yml)
 
 ## Contributing
 

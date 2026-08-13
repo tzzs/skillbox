@@ -15,13 +15,14 @@
 
 ## 0. 2026-08-13 交付状态
 
-| 领域                | 当前状态                                                                                                                                                                                                          |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source 与 Lifecycle | Canonical `SkillSourceResolver` 已覆盖 install/update/reconcile/diff/merge/restore/Marketplace；Web 与 CLI 都调用 Core lifecycle。                                                                                |
-| Recoverability      | `OperationRuntime` 已为 install/update/fork/vendor/restore/remove/merge/continue/abort 建立仓库级锁、journal、精确快照与保留的用户级 rollback；CLI 与 Web 都可执行 rollback。                                     |
-| Sync 与验收         | 多设备语义合并、可恢复 conflict session、真实 bare-remote E2E fixture、打包 CLI journey 与 pack/install smoke 已在 CI 路径验证。                                                                                  |
-| 入口与扩展          | Hono 已抽至 `@skillbox/web-server`；Web 已提供 lifecycle 与 rollback 确认入口；CLI 提供 fullscreen TUI、doctor、migrate、debug-bundle；Gemini、OpenCode、Windsurf、Copilot adapter 已通过共享 conformance suite。 |
-| 仍需人工/外部授权   | npm scope ownership、发布版本与实际 publish、以及 Windows/macOS/Linux 的真实设备/Agent/credential-store 验收，不能由仓库测试替代。详见 `docs/release-readiness.md` 与 `docs/e2e-acceptance.md`。                  |
+| 领域                | 当前状态                                                                                                                                                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source 与 Lifecycle | 默认 Canonical `SkillSourceResolver` 已覆盖 GitHub、Git、skills.sh registry 与 Local，并接入 install/update/reconcile/diff/merge/restore/Marketplace；Web 与 CLI 都调用 Core lifecycle。                                                |
+| Recoverability      | `OperationRuntime` 已为 install/update/fork/vendor/restore/remove/merge/continue/abort 建立仓库级锁、journal、精确快照与保留的用户级 rollback；Sync 也通过运行时锁串行化，并保留 Git-aware restore point 用于 `HEAD`/merge-state 恢复。 |
+| Runtime config      | `web.host` / `port` / `open` 已被 Web 启动消费；Agent 既支持兼容的单一路径，也支持有序 `skillDirectories` 覆盖，并由默认 adapter registry 实际用于检测和扫描。                                                                          |
+| Sync 与验收         | 多设备语义合并、可恢复 conflict session、真实 bare-remote E2E fixture、打包 CLI journey 与 pack/install smoke 已在 CI 路径验证。                                                                                                        |
+| 入口与扩展          | Hono 已抽至 `@skillbox/web-server`；Web 已提供 lifecycle 与 rollback 确认入口；CLI 提供 fullscreen TUI、doctor、migrate、debug-bundle；Gemini、OpenCode、Windsurf、Copilot adapter 已通过共享 conformance suite。                       |
+| 仍需人工/外部授权   | npm scope ownership、发布版本与实际 publish、以及 Windows/macOS/Linux 的真实设备/Agent/credential-store 验收，不能由仓库测试替代。详见 `docs/release-readiness.md` 与 `docs/e2e-acceptance.md`。                                        |
 
 已验证的自动门禁：`pnpm lint`、`pnpm typecheck`、各包测试、`pnpm build`、`pnpm release:smoke`。
 平台人工证据仍应在完成后写入 `docs/e2e-evidence/`；在此之前不应宣称已完成跨平台发布验收。
@@ -47,7 +48,7 @@
 - Agent detect / scan / link / unlink 与 capability model
 - Basic CLI、Interactive CLI、Web UI 三种入口
 - 交互菜单的 “Open Web UI” 已接入真实 Web server，不再是占位项
-- Web Settings 已支持 link strategy、Web port、自动打开浏览器、Agent path override
+- Web Settings 已支持 link strategy、Web host/port、自动打开浏览器、兼容 Agent path 与多目录覆盖
 - Agents 页面可跳转到按 Agent 过滤的 Library
 - Create Skill 页面支持创建时分配多个已检测 Agent
 - CLI `--verbose` / `--debug` 与日志脱敏基础设施

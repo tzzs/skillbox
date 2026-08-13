@@ -4,6 +4,7 @@ import { ErrorCode, SkillboxError } from '../errors.js'
 import { writeLockfile } from '../lockfile/index.js'
 import { writeManifest } from '../manifest/index.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
+import { createOperationRuntime, type OperationRuntime } from '../operations/runtime.js'
 import { ConflictSessionStore } from './conflict-session-store.js'
 import { ManifestMergeService } from './manifest-merge.js'
 import { LockResolver } from './lock-resolver.js'
@@ -26,10 +27,23 @@ export class SyncTransaction {
       git: RepositoryGitPort
       auth: () => Promise<import('../git/index.js').GitTransportAuth>
       event: (phase: import('./types.js').RepositorySyncPhase) => void
+      /** Optional shared operation boundary for composing a larger workflow. */
+      operationRuntime?: OperationRuntime
     },
   ) {}
 
-  async run(attempt = 0): Promise<SyncOutcome> {
+  /** Serializes a sync while the Git-aware SnapshotService owns repository recovery. */
+  async run(): Promise<SyncOutcome> {
+    const operation = await this.operationRuntime().runExclusive({
+      kind: 'sync',
+      targets: [],
+      retainForRollback: false,
+      execute: () => this.runUnsafe(),
+    })
+    return operation.result
+  }
+
+  private async runUnsafe(attempt = 0): Promise<SyncOutcome> {
     const { repositoryRoot, git } = this.input
     if (!hasTransactionGit(git))
       return {
@@ -197,7 +211,7 @@ export class SyncTransaction {
               },
             }
           }
-          const retried = await this.run(attempt + 1)
+          const retried = await this.runUnsafe(attempt + 1)
           if (retried.kind === 'completed') {
             return {
               ...retried,
@@ -236,6 +250,19 @@ export class SyncTransaction {
 
   /** Materializes confirmed user choices only in a disposable worktree. */
   async resolve(
+    session: ConflictSession,
+    resolutions: Record<string, ConflictResolution>,
+  ): Promise<SyncOutcome> {
+    const operation = await this.operationRuntime().runExclusive({
+      kind: 'sync',
+      targets: [],
+      retainForRollback: false,
+      execute: () => this.resolveUnsafe(session, resolutions),
+    })
+    return operation.result
+  }
+
+  private async resolveUnsafe(
     session: ConflictSession,
     resolutions: Record<string, ConflictResolution>,
   ): Promise<SyncOutcome> {
@@ -381,6 +408,16 @@ export class SyncTransaction {
       ])
       await fs.rm(treeRoot, { recursive: true, force: true }).catch(() => undefined)
     }
+  }
+
+  private operationRuntime(): OperationRuntime {
+    return (
+      this.input.operationRuntime ??
+      createOperationRuntime({
+        repositoryRoot: this.input.repositoryRoot,
+        homeRoot: this.input.homeRoot,
+      })
+    )
   }
 }
 

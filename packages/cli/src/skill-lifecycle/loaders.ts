@@ -63,13 +63,21 @@ function unavailable(code: SkillboxErrorCode, hint: string): SkillboxError {
 }
 
 /** Options passed to every core lifecycle call; built once per input. */
-function coreOptions(input: {
-  repositoryRoot: string
-  homeRoot?: string
-}): Record<string, unknown> {
+function coreOptions(
+  input: {
+    repositoryRoot: string
+    homeRoot?: string
+  },
+  core?: Record<string, unknown>,
+): Record<string, unknown> {
   const options: Record<string, unknown> = { repositoryRoot: input.repositoryRoot }
   if (input.homeRoot !== undefined) {
     options.homeRoot = input.homeRoot
+  }
+  const createResolver = core?.createDefaultSkillSourceResolver as
+    ((options?: { registry?: unknown }) => unknown) | undefined
+  if (typeof createResolver === 'function') {
+    options.sourceResolver = createResolver({ registry: core?.defaultRegistry })
   }
   return options
 }
@@ -251,7 +259,7 @@ class LifecycleProviderAdapter implements LifecycleProvider {
           '`skillbox install`.',
       )
     }
-    return mapRestoreResult(await restore(input.name, coreOptions(input)), input.name)
+    return mapRestoreResult(await restore(input.name, coreOptions(input, core)), input.name)
   }
 }
 
@@ -294,7 +302,7 @@ class DiffProviderAdapter implements DiffProvider {
     // Adapt the CLI shape onto Core's diffSkill signature.
     // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
     // `{ name, mode, views: [{ label, files: [{ path, status, patch }] }] }`).
-    return (await diffSkill(input.name, coreOptions(input))) as SkillDiff
+    return (await diffSkill(input.name, coreOptions(input, core))) as SkillDiff
   }
 }
 
@@ -337,7 +345,7 @@ class MergeProviderAdapter implements MergeProvider {
     // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
     // `{ name, conflicts: [{ path, hunks, reason? }], filesMerged, changes,
     //   baseRevision? }`).
-    return (await mergeSkill(input.name, coreOptions(input))) as MergeResult
+    return (await mergeSkill(input.name, coreOptions(input, core))) as MergeResult
   }
 
   async continueMerge(input: {
@@ -351,7 +359,7 @@ class MergeProviderAdapter implements MergeProvider {
     if (typeof continueMerge !== 'function') {
       throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
     }
-    return (await continueMerge(input.name, coreOptions(input))) as ContinueMergeResult
+    return (await continueMerge(input.name, coreOptions(input, core))) as ContinueMergeResult
   }
 
   async abortMerge(input: {
@@ -364,7 +372,7 @@ class MergeProviderAdapter implements MergeProvider {
     if (typeof abortMerge !== 'function') {
       throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
     }
-    return (await abortMerge(input.name, coreOptions(input))) as AbortMergeResult
+    return (await abortMerge(input.name, coreOptions(input, core))) as AbortMergeResult
   }
 }
 
