@@ -505,7 +505,29 @@ export class SkillService {
   }> {
     const alias = validateSkillAlias(input.name)
     const sourcePath = await this.resolveLocalSkillDirectory(alias)
-    await this.filesystem.writeFile(path.join(sourcePath, 'SKILL.md'), input.content)
+    const operationRuntime =
+      this.operationRuntime ??
+      createOperationRuntime({ repositoryRoot: this.repositoryRoot, homeRoot: this.homeRoot })
+    const operation = await operationRuntime.runExclusive({
+      kind: 'custom',
+      targets: [sourcePath],
+      execute: () => this.writeSkillMarkdownUnsafe(alias, sourcePath, input.content),
+    })
+    return operation.result
+  }
+
+  private async writeSkillMarkdownUnsafe(
+    alias: string,
+    sourcePath: string,
+    content: string,
+  ): Promise<{
+    name: string
+    path: string
+    integrity: string
+    lockIntegrity?: string
+    status: 'ready' | 'modified'
+  }> {
+    await this.filesystem.writeFile(path.join(sourcePath, 'SKILL.md'), content)
 
     const integrity = await computeSkillIntegrity(sourcePath)
     const lockfile = await this.readLockfileOrEmpty()

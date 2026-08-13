@@ -34,4 +34,23 @@ describe('SkillService.createSkill', () => {
       })
     })
   })
+
+  it('records a local markdown edit so the previous content can be restored', async () => {
+    await withTempDir(async (root) => {
+      const repositoryRoot = path.join(root, 'repository')
+      const homeRoot = path.join(root, 'home')
+      await fs.mkdir(repositoryRoot, { recursive: true })
+      const runtime = createOperationRuntime({ repositoryRoot, homeRoot })
+      const service = new SkillService({ repositoryRoot, homeRoot, operationRuntime: runtime })
+      await service.createSkill({ name: 'hello', description: 'Before.' })
+
+      await service.writeSkillMarkdown({ name: 'hello', content: '# hello\n\nAfter.\n' })
+      await expect(runtime.rollback()).resolves.toMatchObject({
+        restoredTargets: [path.join(repositoryRoot, 'skills', 'hello')],
+      })
+      await expect(
+        fs.readFile(path.join(repositoryRoot, 'skills', 'hello', 'SKILL.md'), 'utf8'),
+      ).resolves.toContain('Before.')
+    })
+  })
 })
