@@ -73,10 +73,9 @@ function asSkillboxError(error: unknown, code: SkillboxErrorCode, fallback: stri
  * onto the registry framework's `NormalizedSource` so `outdated` / `update`
  * can ask the providers for the latest revision.
  *
- * TODO(marketplace, agent 1): `git` and `registry` sources are not
- * representable in `NormalizedSource` yet — agent 1's `fromManifestSource`
- * (`packages/core/src/registry/source.ts`) can replace this mapping once it
- * covers those source types.
+ * Newer production entry points provide a canonical `SkillSourceResolver`,
+ * which handles Git and registry sources directly. This mapping remains for
+ * compatibility with older injected registry clients.
  */
 export function normalizeLockedSource(source: ManifestSkillSource): NormalizedSource | undefined {
   switch (source.type) {

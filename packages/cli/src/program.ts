@@ -3,6 +3,7 @@ import {
   compareManifestToLockfile,
   createRepositorySync,
   createDefaultAgentRegistry,
+  createDefaultSkillSourceResolver,
   ErrorCode,
   isSkillboxError,
   readLockfile,
@@ -17,6 +18,7 @@ import {
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
+  type SkillSourceResolver,
   SkillService,
   StatusService,
   version,
@@ -95,6 +97,8 @@ export interface MarketplaceDeps {
   registryClient?: RegistryClient
   installer?: InstallService
   scanner?: SecurityScanner
+  /** Canonical source resolver; defaults to Core's production adapters. */
+  sourceResolver?: SkillSourceResolver
 }
 
 /** V0.4 skill-lifecycle provider overrides (fork/vendor/edit/diff/merge). */
@@ -239,6 +243,12 @@ function renderRepositorySyncEvent(out: (chunk: string) => void, event: Reposito
 /** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
 function buildMarketplace(ctx: CliContext): MarketplaceService {
   const overrides = ctx.marketplace ?? {}
+  // An injected legacy RegistryClient deliberately retains its compatibility
+  // path. Production construction supplies the canonical resolver so Git
+  // and registry manifest sources can determine their latest revision.
+  const sourceResolver =
+    overrides.sourceResolver ??
+    (overrides.registryClient === undefined ? createDefaultSkillSourceResolver() : undefined)
   return new MarketplaceService({
     repositoryRoot: ctx.repositoryRoot,
     homeRoot: ctx.homeRoot,
@@ -252,6 +262,7 @@ function buildMarketplace(ctx: CliContext): MarketplaceService {
         homeRoot: ctx.homeRoot,
       }),
     scanner: overrides.scanner ?? createDefaultSecurityScanner(),
+    ...(sourceResolver === undefined ? {} : { sourceResolver }),
     prompts: ctx.prompts ?? createClackPrompts(),
     isInteractive: ctx.isInteractive ?? isInteractiveTTY(),
     out: ctx.out,
