@@ -8,6 +8,10 @@ import { buildGitAuthEnvironment } from '../github/credential-bridge.js'
 import { tempDir, withTempDir } from '../fs/test-utils.js'
 import type { GitExecResult, GitSpawn, GitTransportAuth } from './git-client.js'
 
+// This journey creates and removes a real linked worktree; Windows filesystem
+// operations can exceed Vitest's default timeout under parallel workspace load.
+const GIT_E2E_TIMEOUT_MS = 30_000
+
 interface GitConfig {
   client: GitClient
   root: string
@@ -256,40 +260,46 @@ describe('GitClient', () => {
     })
   })
 
-  it('reads immutable trees, retains private refs, and removes isolated worktrees', async () => {
-    await withTempDir(async (dir) => {
-      const { client, root } = await seedRepo(path.join(dir, 'repo'))
-      await fs.mkdir(path.join(root, 'skills', 'example'), { recursive: true })
-      await writeFile(root, 'skills/example/SKILL.md', '# base')
-      await rawGit(root, ['add', '.'])
-      const base = await client.commit(root, 'base')
-      await writeFile(root, 'skills/example/SKILL.md', '# local')
-      await rawGit(root, ['add', '.'])
-      const head = await client.commit(root, 'local')
+  it(
+    'reads immutable trees, retains private refs, and removes isolated worktrees',
+    async () => {
+      await withTempDir(async (dir) => {
+        const { client, root } = await seedRepo(path.join(dir, 'repo'))
+        await fs.mkdir(path.join(root, 'skills', 'example'), { recursive: true })
+        await writeFile(root, 'skills/example/SKILL.md', '# base')
+        await rawGit(root, ['add', '.'])
+        const base = await client.commit(root, 'base')
+        await writeFile(root, 'skills/example/SKILL.md', '# local')
+        await rawGit(root, ['add', '.'])
+        const head = await client.commit(root, 'local')
 
-      expect(await client.mergeBase(root, base.hash, head.hash)).toBe(base.hash)
-      expect(await client.listFilesAtRevision(root, base.hash)).toContain('skills/example/SKILL.md')
-      expect(
-        Buffer.from(
-          await client.readFileAtRevision(root, base.hash, 'skills/example/SKILL.md'),
-        ).toString(),
-      ).toBe('# base')
-      await client.createPrivateRef(root, 'refs/skillbox/snapshots/test', base.hash)
-      expect(await client.revParse(root, 'refs/skillbox/snapshots/test')).toBe(base.hash)
+        expect(await client.mergeBase(root, base.hash, head.hash)).toBe(base.hash)
+        expect(await client.listFilesAtRevision(root, base.hash)).toContain(
+          'skills/example/SKILL.md',
+        )
+        expect(
+          Buffer.from(
+            await client.readFileAtRevision(root, base.hash, 'skills/example/SKILL.md'),
+          ).toString(),
+        ).toBe('# base')
+        await client.createPrivateRef(root, 'refs/skillbox/snapshots/test', base.hash)
+        expect(await client.revParse(root, 'refs/skillbox/snapshots/test')).toBe(base.hash)
 
-      const worktree = path.join(dir, 'isolated')
-      await client.createWorktree(root, worktree, base.hash)
-      expect(await fs.readFile(path.join(worktree, 'skills/example/SKILL.md'), 'utf8')).toBe(
-        '# base',
-      )
-      await client.removeWorktree(root, worktree)
-      await expect(fs.access(worktree)).rejects.toMatchObject({ code: 'ENOENT' })
-      await client.deletePrivateRef(root, 'refs/skillbox/snapshots/test')
-      await expect(client.revParse(root, 'refs/skillbox/snapshots/test')).rejects.toMatchObject({
-        code: ErrorCode.GIT_COMMAND_FAILED,
+        const worktree = path.join(dir, 'isolated')
+        await client.createWorktree(root, worktree, base.hash)
+        expect(await fs.readFile(path.join(worktree, 'skills/example/SKILL.md'), 'utf8')).toBe(
+          '# base',
+        )
+        await client.removeWorktree(root, worktree)
+        await expect(fs.access(worktree)).rejects.toMatchObject({ code: 'ENOENT' })
+        await client.deletePrivateRef(root, 'refs/skillbox/snapshots/test')
+        await expect(client.revParse(root, 'refs/skillbox/snapshots/test')).rejects.toMatchObject({
+          code: ErrorCode.GIT_COMMAND_FAILED,
+        })
       })
-    })
-  })
+    },
+    GIT_E2E_TIMEOUT_MS,
+  )
 
   it('clone, push and pull sync between a bare remote and working clones', async () => {
     await withTempDir(async (dir) => {
