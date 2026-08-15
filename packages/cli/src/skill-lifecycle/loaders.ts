@@ -29,7 +29,7 @@ import type {
  * - `vendorSkill(alias, options)`                (lifecycle/vendor.js)
  * - `detectManagedModifications(alias, options)` (lifecycle/modification.js;
  *   returns `boolean`, the CLI contract's `{ modified, files? }` is derived)
- * - `restoreManagedSkill`                        — not implemented
+ * - `restoreManagedSkill(alias, options)`        (lifecycle/restore.js)
  * - `diffSkill` / `mergeSkill` / `continueMerge` / `abortMerge`
  *                                                (diff/ and merge/)
  */
@@ -242,7 +242,14 @@ class LifecycleProviderAdapter implements LifecycleProvider {
           '`skillbox install`.',
       )
     }
-    return (await restore(input.name, { repositoryRoot: input.repositoryRoot })) as RestoreResult
+    // Core returns `{ alias, filesRestored, ... }`; the CLI contract only
+    // carries `{ name, filesRestored }` (the outcome name comes from the input).
+    const raw = await restore(input.name, { repositoryRoot: input.repositoryRoot })
+    const record = asRecord(raw)
+    return {
+      name: input.name,
+      filesRestored: typeof record?.filesRestored === 'number' ? record.filesRestored : 0,
+    }
   }
 }
 

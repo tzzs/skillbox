@@ -89,8 +89,7 @@ export interface ManagedModifications {
 /**
  * Restore of a modified managed runtime from the lockfile integrity
  * (M17.3 "[Restore]"). Satisfied at runtime by agent 1's
- * `restoreManagedSkill` — TODO(lifecycle, agent 1): until it lands, the
- * loader adapter surfaces a "not available in this build yet" error.
+ * `restoreManagedSkill` (`@skillbox/core/lifecycle/restore`).
  */
 export interface RestoreResult {
   name: string
