@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw, Search } from 'lucide-react'
 import type { SkillStatusEntry } from '../api.js'
 import { errorMessage } from '../format.js'
-import { useAgents, useReconcile, useSkills } from '../queries.js'
+import { useAgents, useEventStream, useReconcile, useSkills } from '../queries.js'
 import { AgentTags, ModePill, StatusPill } from '../components/Pills.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 
@@ -21,6 +21,7 @@ export function LibraryPage() {
   const skillsQuery = useSkills()
   const reconcile = useReconcile()
   const agentsQuery = useAgents()
+  const { latest } = useEventStream()
   const [searchParams, setSearchParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -67,6 +68,7 @@ export function LibraryPage() {
                 ? 'Skills declared in this repository will show up here.'
                 : `${skills.length} skill${skills.length === 1 ? '' : 's'} in this repository`}
           </p>
+          {latest !== null && <p className="page-description path-muted">live: {latest}</p>}
         </div>
         <div className="page-actions">
           <button

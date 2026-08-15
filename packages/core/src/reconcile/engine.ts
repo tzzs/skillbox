@@ -24,6 +24,7 @@ import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent, removeStaleSkillLink, type LinkAction } from '../runtime/linker.js'
 import { fromManifestSource } from '../registry/source.js'
+import { emitSkillboxEvent } from '../events/index.js'
 import type { ProviderRegistry } from '../registry/registry.js'
 import {
   GitClient,
@@ -120,6 +121,7 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
   const fs = options.filesystem ?? new FilesystemService()
   const strategy = options.linkStrategy ?? 'auto'
   const resolvedStrategy = resolveLinkStrategy(strategy)
+  emitSkillboxEvent({ type: 'reconcile:started' })
 
   const manifest = await readManifest(options.repositoryRoot)
   const lockfile = await readLockfileOrEmpty(options.repositoryRoot)
@@ -295,6 +297,12 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
 
   const agents = await buildAgentReports(options, fs)
 
+  emitSkillboxEvent({
+    type: 'reconcile:completed',
+    changed,
+    skills: skills.length,
+    problems: problems.length,
+  })
   return {
     changed,
     repository: options.repositoryRoot,

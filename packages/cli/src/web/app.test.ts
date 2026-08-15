@@ -3,8 +3,10 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Hono } from 'hono'
+import { createAdaptorServer } from '@hono/node-server'
 import {
   AgentRegistry,
+  emitSkillboxEvent,
   ErrorCode,
   LocalProvider,
   SkillboxError,
@@ -1398,6 +1400,31 @@ describe('V0.4.2 rollback API', () => {
       await expect(
         readFile(join(home, 'library', 'local', 'hello', 'SKILL.md'), 'utf8'),
       ).resolves.toContain('# hello')
+    })
+  })
+})
+
+describe('V0.5 live event stream', () => {
+  it('streams core events over SSE', async () => {
+    await withApp(async (app) => {
+      const server = createAdaptorServer({ fetch: app.fetch })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+      const address = server.address() as { port: number }
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/events`)
+        expect(response.status).toBe(200)
+        const reader = response.body?.getReader()
+        expect(reader).toBeDefined()
+        const decoder = new TextDecoder()
+        emitSkillboxEvent({ type: 'install:phase', phase: 'resolve', alias: 'hello' })
+        const { value, done } = (await reader?.read()) ?? { value: undefined, done: true }
+        expect(done).toBe(false)
+        const text = decoder.decode(value)
+        expect(text).toContain('install:phase')
+        await reader?.cancel()
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
     })
   })
 })

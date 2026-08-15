@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import {
   BackupService,
+  defaultEventBus,
   withRuntimeLock,
   type RuntimeConfig,
   type RollbackResult,
@@ -230,6 +232,31 @@ export function createWebApp(options: WebAppOptions): Hono {
         body['action'] === 'continue' || body['action'] === 'abort' ? body['action'] : 'merge'
       const result = await services.lifecycle.merge(id, action)
       return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+    })
+  })
+
+  /* ---- live event stream (roadmap 5.1 / GAP §4.4) ---- */
+
+  /**
+   * Server-Sent Events: streams every Core event (`install:phase`, ...
+   * `reconcile:completed`) from the process-wide defaultEventBus to the UI.
+   * The stream stays open until the client disconnects.
+   */
+  app.get('/api/events', (c) => {
+    return streamSSE(c, async (stream) => {
+      await new Promise<void>((resolve) => {
+        const subscription = defaultEventBus.on((event) => {
+          try {
+            void stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
+          } catch {
+            // A client that vanished mid-write must not break the bus.
+          }
+        })
+        stream.onAbort(() => {
+          subscription.unsubscribe()
+          resolve()
+        })
+      })
     })
   })
 

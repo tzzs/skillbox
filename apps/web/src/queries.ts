@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -215,6 +216,32 @@ export function useInstallRegistrySkill() {
       void queryClient.invalidateQueries({ queryKey: ['registry', 'search'] })
     },
   })
+}
+
+/**
+ * Live event stream (GAP §4.4): subscribes to the web server's SSE endpoint
+ * and reports the latest core event (install/reconcile progress) for a
+ * lightweight activity indicator.
+ */
+export function useEventStream(): { latest: string | null } {
+  const [latest, setLatest] = useState<string | null>(null)
+  useEffect(() => {
+    const source = new EventSource('/api/events')
+    const show = (event: MessageEvent): void => {
+      setLatest(`${event.type}: ${event.data}`)
+    }
+    for (const type of [
+      'install:phase',
+      'install:completed',
+      'install:failed',
+      'reconcile:started',
+      'reconcile:completed',
+    ]) {
+      source.addEventListener(type, show)
+    }
+    return () => source.close()
+  }, [])
+  return { latest }
 }
 
 export function skillsForAgent(agentId: string, skills: SkillStatusEntry[]): SkillStatusEntry[] {
