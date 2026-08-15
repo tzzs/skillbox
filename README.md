@@ -163,18 +163,24 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
 
 完整安装说明（系统要求、从源码构建、本地打包安装验证）见 **[INSTALLATION.md](./INSTALLATION.md)**。
 
-系统要求一句话版：Node.js ≥ 20、pnpm。
+系统要求一句话版：Node.js ≥ 20、pnpm、系统 Git（`sync/pull/push/connect` 与 Reconcile 依赖）。
 
 ## Roadmap
 
-- **0.2 — Git Sync**：Git client、GitHub App device flow、私仓、`skillbox sync/pull/push`、secret scan、multi-device
-  - 已落地：`skillbox sync/pull/push/connect/disconnect/status`（CLI 层）、secret scan 集成、`install --frozen-lockfile/--ci`、多设备恢复文档见上
-  - 依赖：GitHub Device Flow 后端（`@skillbox/core/github`）落定后 `connect/push` 完整可用
-- **0.3 — Marketplace / Registry**：`skillbox search`、`add <source>`、managed cache、updates
-- **0.4 — Skill Lifecycle**：`fork` / `vendor` / `diff` / 3-way merge、rollback
-- **安全层（P1）**：安装前 Security Scan、Web 风险展示
+- **0.2 — Git Sync** ✅ 已落地：Git client、GitHub App device flow、私仓 transport（Credential Bridge 注入
+  `sync/pull/push`）、`skillbox sync/pull/push/connect/disconnect/status`、secret scan、multi-device。
+  连接状态、remote/ahead/behind 与 connect 的仓库编排（建/选私仓、`git init`、绑定 origin）由
+  `@skillbox/core/sync`（RepositorySync）提供。
+- **0.3 — Marketplace / Registry** ✅ 已落地：`skillbox search`、`add <source>`、managed cache、
+  `outdated` / `update`、Web Explore/Install/Updates。已知限制：`git:` / SSH / GitLab / Bitbucket source
+  暂不支持（见 GAP_ANALYSIS §3.1）。
+- **0.4 — Skill Lifecycle** 🚧 部分落地：`fork` / `vendor` / `diff` / 3-way merge（含 `--continue` / `--abort`）
+  已实现；`edit` 的 [Restore] 分支与通用 rollback 待实现（见 GAP_ANALYSIS §2.1 / §3.3）。
+- **安全层（P1）** ✅ 已落地：安装前 Security Scan、Web 风险展示、`.skillboxignore`。
+- **Hermetic CLI E2E** 🚧 `packages/testing` 提供 CLI 子进程 harness 与 git-free 旅程；git 旅程与三平台验收见
+  GAP_ANALYSIS §2.3 / §6.3。
 
-详见 **[GAP_ANALYSIS.md](./GAP_ANALYSIS.md)**。
+> 权威状态清单以 **[GAP_ANALYSIS.md](./GAP_ANALYSIS.md)** 为准，本 Roadmap 只做概览。
 
 ## Architecture Summary
 

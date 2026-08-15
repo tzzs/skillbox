@@ -9,13 +9,13 @@
 
 ## 1. 系统要求
 
-| 要求     | 说明                                                                  |
-| -------- | --------------------------------------------------------------------- |
-| Node.js  | **≥ 20**（各 package `engines.node` 声明 `>=20`）                     |
-| pnpm     | 10.x（仓库锁定 `pnpm@10.25.0`，见根 `package.json` `packageManager`） |
-| 操作系统 | Linux / macOS / Windows（CI 三平台矩阵全绿）                          |
-| Git      | 开发 / 构建需要（`skillbox` 运行时命令不依赖系统 Git）                |
-| Agent    | 本机装有 Claude Code 和/或 Codex（用于 Detect / Import / Link）       |
+| 要求     | 说明                                                                                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node.js  | **≥ 20**（各 package `engines.node` 声明 `>=20`）                                                                                                                     |
+| pnpm     | 10.x（仓库锁定 `pnpm@10.25.0`，见根 `package.json` `packageManager`）                                                                                                 |
+| 操作系统 | Linux / macOS / Windows（CI 三平台矩阵全绿）                                                                                                                          |
+| Git      | **运行时依赖**：`skillbox connect/sync/pull/push` 与 Reconcile 通过系统 `git` 二进制执行（`GitClient`）；开发 / 构建 / 测试同样需要。缺失时相关命令报 `GIT_NOT_FOUND` |
+| Agent    | 本机装有 Claude Code 和/或 Codex（用于 Detect / Import / Link）                                                                                                       |
 
 ## 2. 从源码构建
 
