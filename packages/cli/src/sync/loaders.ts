@@ -9,6 +9,7 @@ import {
   SkillboxError,
   TokenStore,
   type CredentialStore,
+  type RepositorySync,
 } from '@skillbox/core'
 import type {
   GitHubProvider,
@@ -21,6 +22,7 @@ import type {
   DeviceFlowPollResult,
   SecretScanResult,
   SecretScanner,
+  SyncGitTransport,
 } from './providers.js'
 
 /**
@@ -209,6 +211,55 @@ export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
     loadSkillboxCore,
     'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
   )
+}
+
+/**
+ * Adapts a Core {@link RepositorySync} (auth-aware pull/push) onto the CLI's
+ * {@link SyncGitTransport} contract.
+ *
+ * `RepositorySync.pull()` throws when the pull ends in conflicts instead of
+ * returning them, so the conflicts are read back from git status afterwards —
+ * matching the `GitProvider.pull()` outcome shape the pipeline already renders
+ * as a typed `GIT_CONFLICT` error.
+ *
+ * When the GitHub account is not connected (`GITHUB_NOT_CONNECTED`), the pull
+ * falls back to the plain `gitProvider.pull()` — public remotes keep working
+ * without a token; the credential bridge only kicks in when a token exists.
+ */
+export function createSyncGitTransport(
+  repositorySync: Pick<RepositorySync, 'pull' | 'push'>,
+  git: GitProvider,
+): SyncGitTransport {
+  return {
+    async pull(): Promise<GitPullOutcome> {
+      try {
+        await repositorySync.pull()
+      } catch (error) {
+        // A divergent pull leaves the worktree in a conflict state; report it
+        // through the same contract as GitProvider.pull so the pipeline keeps
+        // its friendly conflict handling. Otherwise surface the original error.
+        const status = await git.status()
+        if (status.conflicts.length > 0) {
+          return { conflicts: status.conflicts, changedFiles: status.changedFiles }
+        }
+        if (isNotConnectedError(error)) {
+          const plain = await git.pull()
+          return { conflicts: plain.conflicts, changedFiles: plain.changedFiles }
+        }
+        throw error
+      }
+      const status = await git.status()
+      return { conflicts: status.conflicts, changedFiles: status.changedFiles }
+    },
+    async push(): Promise<void> {
+      await repositorySync.push()
+    },
+  }
+}
+
+/** True when the error is the core "GitHub not connected" signal. */
+function isNotConnectedError(error: unknown): boolean {
+  return error instanceof SkillboxError && error.code === ErrorCode.GITHUB_NOT_CONNECTED
 }
 
 export const GITHUB_CLIENT_ID_ENV = 'SKILLBOX_GITHUB_CLIENT_ID'

@@ -15,6 +15,7 @@ export type {
   SecretScanResult,
   SecretScanner,
   SecretSeverity,
+  SyncGitTransport,
 } from './providers.js'
 
 export type SyncStepId = 'scan' | 'detect' | 'secret-scan' | 'pull' | 'resolve' | 'commit' | 'push'
