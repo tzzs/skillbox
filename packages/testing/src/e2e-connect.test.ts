@@ -164,6 +164,62 @@ describe.skipIf(cliUnbuilt)('Hermetic CLI E2E (github connect)', () => {
     }
   })
 
+  it('fails cleanly when the user denies the device authorization', async () => {
+    const result = await runConnectWithPollError('access_denied')
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr + result.stdout).toContain('denied')
+  })
+
+  it('fails cleanly when the device code expires', async () => {
+    const result = await runConnectWithPollError('expired_token')
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr + result.stdout).toContain('expired')
+  })
+
+  /** Runs `skillbox connect` against a server whose first poll answers `error`. */
+  async function runConnectWithPollError(
+    error: 'access_denied' | 'expired_token',
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const pollServer = http.createServer((req, res) => {
+      const send = (status: number, body: unknown): void => {
+        res.writeHead(status, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(body))
+      }
+      const url = req.url ?? ''
+      if (req.method === 'POST' && url === '/login/device/code') {
+        send(200, {
+          device_code: 'device-3',
+          user_code: 'IJKL-9012',
+          verification_uri: `${base}/device`,
+          expires_in: 600,
+          interval: 0,
+        })
+        return
+      }
+      if (req.method === 'POST' && url === '/login/oauth/access_token') {
+        send(200, { error })
+        return
+      }
+      send(404, { message: 'not found', url })
+    })
+    await new Promise<void>((resolve) => pollServer.listen(0, '127.0.0.1', () => resolve()))
+    const address = pollServer.address() as AddressInfo
+    const pollBase = `http://127.0.0.1:${address.port}`
+    try {
+      return await cli.run(['connect'], {
+        cwd: repoDir,
+        env: {
+          SKILLBOX_GITHUB_CLIENT_ID: 'test-client',
+          SKILLBOX_GITHUB_API_BASE: pollBase,
+          SKILLBOX_GITHUB_LOGIN_BASE: pollBase,
+          SKILLBOX_CREDENTIAL_STORE: 'memory',
+        },
+      })
+    } finally {
+      await new Promise<void>((resolve) => pollServer.close(() => resolve()))
+    }
+  }
+
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await cli.cleanup()
