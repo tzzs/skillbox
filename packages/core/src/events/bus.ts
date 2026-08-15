@@ -16,6 +16,9 @@ export type SkillboxEvent =
   | { type: 'install:failed'; alias: string; error: string }
   | { type: 'reconcile:started' }
   | { type: 'reconcile:completed'; changed: boolean; skills: number; problems: number }
+  | { type: 'sync:step'; step: string; status: string; detail?: string }
+  | { type: 'sync:completed'; committed: boolean; pushed: boolean; problems: number }
+  | { type: 'security:finding'; severity: string; count: number }
 
 /** Synchronous subscriber; `emit` never awaits subscribers. */
 export type SkillboxEventListener = (event: SkillboxEvent) => void

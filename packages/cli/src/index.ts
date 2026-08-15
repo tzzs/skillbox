@@ -107,6 +107,15 @@ export async function main(
           problems: event.problems,
         })
         return
+      case 'sync:step':
+        logger.debug('sync:step', { step: event.step, status: event.status })
+        return
+      case 'sync:completed':
+        logger.info('sync:completed', { committed: event.committed, pushed: event.pushed })
+        return
+      case 'security:finding':
+        logger.warn('security:finding', { severity: event.severity, count: event.count })
+        return
     }
   })
 

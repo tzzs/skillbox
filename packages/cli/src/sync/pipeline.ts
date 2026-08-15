@@ -8,6 +8,7 @@ import {
   type SkillService,
 } from '@skillbox/core'
 import { renderTable } from '../table.js'
+import { emitSkillboxEvent } from '@skillbox/core'
 import type {
   DeviceFlowPollResult,
   GitHubProvider,
@@ -170,6 +171,17 @@ export class SyncService {
       const paths = changedFiles.length > 0 ? changedFiles : []
       const scan = await this.secretScanner.scanChangedFiles(paths)
       findings.push(...scan.findings)
+      if (scan.findings.length > 0) {
+        emitSkillboxEvent({
+          type: 'security:finding',
+          severity: scan.findings.some(
+            (finding) => finding.severity === 'critical' || finding.severity === 'high',
+          )
+            ? 'high'
+            : 'low',
+          count: scan.findings.length,
+        })
+      }
       if (scan.blocked) {
         const blockedPaths = scan.findings
           .filter(
@@ -273,6 +285,12 @@ export class SyncService {
     }
     this.recordStep(steps, 'push', 'ok', 'pushed to remote')
 
+    emitSkillboxEvent({
+      type: 'sync:completed',
+      committed: commit.committed,
+      pushed: true,
+      problems: reconcile.problems.length,
+    })
     const result: SyncResult = {
       repository: this.repositoryRoot,
       steps,
@@ -457,6 +475,7 @@ export class SyncService {
     detail: string,
   ): void {
     steps.push({ step, status, detail })
+    emitSkillboxEvent({ type: 'sync:step', step, status, detail })
     this.out(`  ${step.padEnd(13)} ${status.padEnd(9)} ${detail}\n`)
   }
 }
