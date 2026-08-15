@@ -7,8 +7,10 @@ import {
   createDebugBundle,
   createRepositorySync,
   createDefaultAgentRegistry,
+  defaultLogFilePath,
   ErrorCode,
   isSkillboxError,
+  Logger,
   migrateRepository,
   readLockfile,
   readManifest,
@@ -126,6 +128,8 @@ export interface CliDeps {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
   lifecycle?: LifecycleDeps
+  /** Structured audit logger; defaults to the home log file. */
+  logger?: Logger
 }
 
 export interface CliContext {
@@ -134,6 +138,8 @@ export interface CliContext {
   registry: AgentRegistry
   out: (chunk: string) => void
   err: (chunk: string) => void
+  /** Structured audit logger (info/warn to ~/.skillbox/logs/skillbox.log). */
+  logger: Logger
   gitProvider: GitProvider
   githubProvider: GitHubProvider
   secretScanner: SecretScanner
@@ -160,6 +166,7 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     registry,
     out,
     err,
+    logger: deps.logger ?? new Logger({ logFile: defaultLogFilePath(homeRoot) }),
     gitProvider: deps.gitProvider ?? createDefaultGitProvider(repositoryRoot),
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
     secretScanner: deps.secretScanner ?? createDefaultSecretScanner(repositoryRoot),
@@ -387,8 +394,24 @@ function problemAsError(problem: ReconcileProblem): SkillboxError {
  * state. The lock is always released (also on errors), and a crashed process
  * cannot wedge it (stale locks are broken).
  */
-function mutation<T>(ctx: CliContext, action: () => Promise<T>): Promise<T> {
-  return withRuntimeLock('mutation', action, { homeRoot: ctx.homeRoot })
+function mutation<T>(ctx: CliContext, operation: string, action: () => Promise<T>): Promise<T> {
+  ctx.logger.info(`mutation:${operation}:start`)
+  return withRuntimeLock(
+    'mutation',
+    async () => {
+      try {
+        const result = await action()
+        ctx.logger.info(`mutation:${operation}:done`)
+        return result
+      } catch (error) {
+        ctx.logger.warn(`mutation:${operation}:failed`, {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
+    },
+    { homeRoot: ctx.homeRoot },
+  )
 }
 
 /** Renders one file's migration report for `skillbox migrate`. */
@@ -480,7 +503,7 @@ export function buildProgram(ctx: CliContext): Command {
     .description('Scaffold a new skill and register it with the repository')
     .option('-d, --description <text>', 'short description for the skill')
     .action(async (name: string, options: { description?: string }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'create', async () => {
         const input: { name: string; description?: string } = { name }
         if (options.description !== undefined) {
           input.description = options.description
@@ -497,7 +520,7 @@ export function buildProgram(ctx: CliContext): Command {
     .description('Remove a skill (config only by default)')
     .option('-f, --delete-files', 'also delete files from the repository')
     .action(async (name: string, options: { deleteFiles?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'remove', async () => {
         const input: { name: string; deleteFiles?: boolean } = { name }
         if (options.deleteFiles === true) {
           input.deleteFiles = true
@@ -518,7 +541,7 @@ export function buildProgram(ctx: CliContext): Command {
     .description('Enable a skill for an agent')
     .requiredOption('-a, --agent <agent>', 'agent id (e.g. claude, codex)')
     .action(async (name: string, options: { agent: string }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'enable', async () => {
         const result = await skills.enableSkill({ name, agent: options.agent })
         ctx.out(
           `Enabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (already enabled)'}\n`,
@@ -532,7 +555,7 @@ export function buildProgram(ctx: CliContext): Command {
     .description('Disable a skill for an agent')
     .requiredOption('-a, --agent <agent>', 'agent to disable the skill for')
     .action(async (name: string, options: { agent: string }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'disable', async () => {
         const result = await skills.disableSkill({ name, agent: options.agent })
         ctx.out(
           `Disabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (was not enabled)'}\n`,
@@ -552,7 +575,7 @@ export function buildProgram(ctx: CliContext): Command {
     )
     .option('--ci', 'frozen-lockfile + fail on any reconcile problem (CI-safe)')
     .action(async (options: { frozenLockfile?: boolean; ci?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'install', async () => {
         const frozen = options.frozenLockfile === true || options.ci === true
         if (frozen) {
           await assertLockfileConsistent(ctx.repositoryRoot)
@@ -613,7 +636,7 @@ export function buildProgram(ctx: CliContext): Command {
     .command('sync')
     .description('Sync skills: Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push')
     .action(async () =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'sync', async () => {
         const result = await sync.sync()
         ctx.out(
           `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
@@ -629,7 +652,7 @@ export function buildProgram(ctx: CliContext): Command {
     .command('pull')
     .description('Fetch + merge remote changes, then reconcile and regenerate the lockfile')
     .action(async () =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'pull', async () => {
         const result = await sync.pull()
         ctx.out(
           `Pulled ${result.pulledFiles.length} file(s) for "${result.repository}"\n  skills   ${result.reconcile.skills.length}\n  problems ${result.reconcile.problems.length}\n  changed  ${result.reconcile.changed ? 'yes' : 'no'}\n`,
@@ -652,8 +675,10 @@ export function buildProgram(ctx: CliContext): Command {
     .command('connect')
     .description('Connect a GitHub account via Device Flow so Git Sync can push')
     .action(async () => {
+      ctx.logger.info('mutation:connect:start')
       if (ctx.repositorySync !== undefined) {
         const result = await ctx.repositorySync.connect()
+        ctx.logger.info('mutation:connect:done', { login: result.account.login })
         ctx.out(
           `\nConnected GitHub account "${result.account.login}" to "${result.repository.fullName}".` +
             `\n  origin  ${result.local.remote.action} (${result.local.remote.url})\n`,
@@ -672,11 +697,13 @@ export function buildProgram(ctx: CliContext): Command {
     .command('disconnect')
     .description('Disconnect GitHub — removes only local credentials and connection metadata')
     .action(async () => {
+      ctx.logger.info('mutation:disconnect:start')
       if (ctx.repositorySync !== undefined) {
         await ctx.repositorySync.disconnect()
       } else {
         await sync.disconnect()
       }
+      ctx.logger.info('mutation:disconnect:done')
       ctx.out('Disconnected from GitHub. Local and remote repositories were preserved.\n')
     })
 
@@ -767,22 +794,32 @@ export function buildProgram(ctx: CliContext): Command {
 
       if (options.json === true) {
         printJson(ctx.out, report)
-        return
-      }
-      for (const probe of report.probes) {
-        const marker = probe.ok ? '✓' : '✗'
-        const suffix = probe.ok
-          ? probe.detail !== undefined
-            ? ` — ${probe.detail}`
-            : ''
-          : probe.error !== undefined
-            ? ` — ${probe.error}`
-            : ''
-        ctx.out(`${marker} ${probe.name}${suffix}\n`)
+      } else {
+        for (const probe of report.probes) {
+          const marker = probe.ok ? '✓' : '✗'
+          const suffix = probe.ok
+            ? probe.detail !== undefined
+              ? ` — ${probe.detail}`
+              : ''
+            : probe.error !== undefined
+              ? ` — ${probe.error}`
+              : ''
+          ctx.out(`${marker} ${probe.name}${suffix}\n`)
+        }
+        const failedCount = report.probes.filter((probe) => !probe.ok).length
+        ctx.out(
+          failedCount === 0 ? '\nAll checks passed.\n' : `\n${failedCount} check(s) failed.\n`,
+        )
       }
       const failed = report.probes.filter((probe) => !probe.ok)
-      ctx.out(
-        failed.length === 0 ? '\nAll checks passed.\n' : `\n${failed.length} check(s) failed.\n`,
+      if (failed.length === 0) {
+        return
+      }
+      // Exit non-zero so CI can gate on `skillbox doctor`.
+      throw new SkillboxError(
+        ErrorCode.SKILL_BROKEN,
+        `Doctor found ${failed.length} problem(s): ${failed.map((probe) => probe.name).join(', ')}`,
+        { recoverable: true, context: { failed: failed.map((probe) => probe.name) } },
       )
     })
 
@@ -819,7 +856,7 @@ export function buildProgram(ctx: CliContext): Command {
     .option('--name <alias>', 'alias to install under (defaults to the source name)')
     .option('--yes', 'confirm HIGH-risk installs without prompting (CI)')
     .action(async (source: string, options: { agent?: string; name?: string; yes?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'add', async () => {
         const input: { source: string; agent?: string; alias?: string; yes?: boolean } = {
           source,
           yes: options.yes === true,
@@ -855,7 +892,7 @@ export function buildProgram(ctx: CliContext): Command {
     )
     .option('--yes', 'confirm HIGH-risk updates without prompting (CI)')
     .action(async (name: string, options: { yes?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'update', async () => {
         const outcome = await marketplace.update({ name, yes: options.yes === true })
         ctx.out(`${renderUpdateSummary(outcome)}\n`)
       }),
@@ -880,7 +917,7 @@ export function buildProgram(ctx: CliContext): Command {
       'Fork a managed skill into the repository (M17.1): copy the runtime, snapshot the base revision, keep upstream tracking',
     )
     .action(async (name: string) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'fork', async () => {
         const outcome = await lifecycle.fork({ name })
         ctx.out(`${renderForkSummary(outcome)}\n`)
       }),
@@ -892,7 +929,7 @@ export function buildProgram(ctx: CliContext): Command {
       'Vendor a managed or forked skill (M18): localize the runtime and clear upstream tracking',
     )
     .action(async (name: string) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'vendor', async () => {
         const outcome = await lifecycle.vendor({ name })
         ctx.out(`${renderVendorSummary(outcome)}\n`)
       }),
@@ -905,7 +942,7 @@ export function buildProgram(ctx: CliContext): Command {
     )
     .option('--yes', 'confirm the fork conversion without prompting (CI)')
     .action(async (name: string, options: { yes?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'edit', async () => {
         const outcome = await lifecycle.edit({ name, yes: options.yes === true })
         ctx.out(`${renderEditSummary(outcome)}\n`)
       }),
@@ -934,7 +971,7 @@ export function buildProgram(ctx: CliContext): Command {
     .option('--continue', 'finish the merge after resolving conflicts')
     .option('--abort', 'cancel the merge and restore the pre-merge state')
     .action(async (name: string, options: { continue?: boolean; abort?: boolean }) =>
-      mutation(ctx, async () => {
+      mutation(ctx, 'merge', async () => {
         const action =
           options.continue === true ? 'continue' : options.abort === true ? 'abort' : 'merge'
         const outcome = await lifecycle.merge({ name, action })

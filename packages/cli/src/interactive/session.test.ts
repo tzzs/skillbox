@@ -3,6 +3,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { AgentRegistry } from '@skillbox/core'
+import { Logger } from '@skillbox/core'
+import { defaultLogFilePath } from '@skillbox/core'
 import type { CliContext } from '../program.js'
 import type { InteractivePrompt } from './prompts.js'
 import { FIRST_RUN_FILE_NAME, InteractiveSession } from './session.js'
@@ -75,6 +77,7 @@ function createHarness(answers: string[]): SessionHarness {
     registry: new AgentRegistry(),
     out: (): void => undefined,
     err: (): void => undefined,
+    logger: new Logger({ logFile: defaultLogFilePath(homeRoot) }),
     gitProvider: {
       status: async () => ({
         isRepository: false,

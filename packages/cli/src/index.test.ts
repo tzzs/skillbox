@@ -207,8 +207,8 @@ describe('cli', () => {
     }
   })
 
-  it('runs doctor and writes a redacted debug bundle', async () => {
-    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-doctor-'))
+  it('writes structured mutation logs to the home log file', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-log-'))
     try {
       const home = path.join(base, 'home')
       const repo = path.join(base, 'repo')
@@ -216,14 +216,41 @@ describe('cli', () => {
       await fs.mkdir(repo, { recursive: true })
 
       const io = capture()
-      const exit = await main(['doctor', '--json'], {
+      const exit = await main(['create', 'hello'], {
         ...io,
         homeRoot: home,
         repositoryRoot: repo,
       })
       expect(exit).toBe(0)
-      const report = JSON.parse(io.out()) as { probes: Array<{ name: string }> }
-      expect(report.probes.some((probe) => probe.name === 'manifest')).toBe(true)
+
+      const log = await fs.readFile(path.join(home, 'logs', 'skillbox.log'), 'utf8')
+      expect(log).toContain('mutation:create:start')
+      expect(log).toContain('mutation:create:done')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('runs doctor, writes a redacted debug bundle and exits non-zero on problems', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-doctor-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      // A repository without a manifest fails the manifest probe: the command
+      // still prints the report and the bundle, but exits non-zero.
+      const io = capture()
+      const exit = await main(['doctor', '--json'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(1)
+      const report = JSON.parse(io.out()) as { probes: Array<{ name: string; ok: boolean }> }
+      const manifestProbe = report.probes.find((probe) => probe.name === 'manifest')
+      expect(manifestProbe?.ok).toBe(false)
 
       const bundlePath = path.join(base, 'bundle.json')
       const bundleIo = capture()
@@ -232,7 +259,7 @@ describe('cli', () => {
         homeRoot: home,
         repositoryRoot: repo,
       })
-      expect(bundleExit).toBe(0)
+      expect(bundleExit).toBe(1)
       const bundle = JSON.parse(await fs.readFile(bundlePath, 'utf8')) as {
         leakCheck: { findings: unknown[] }
       }
