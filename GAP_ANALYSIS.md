@@ -258,10 +258,10 @@ runtime/repo-dir 备份；merge 的 pre-merge backup（`merge/state.ts`）保持
 
 `packages/core/src/events/`：进程内 `EventBus`（类型化 `SkillboxEvent`、同步 fire-and-forget、
 单个坏 listener 不影响 emit）+ `defaultEventBus`。**Install 事务**发 `install:phase/completed/failed`、
-**Reconcile** 发 `reconcile:started/completed`；CLI `main()` 订阅并镜像到审计日志（phase → debug，
-completed → info，failed → warn）。**Web SSE**：`GET /api/events` 把事件流式推给前端，Library 页有
-实时活动指示器（`useEventStream`）。仍缺：git-sync/security-finding 事件、TUI 实时订阅
-（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
+**Reconcile** 发 `reconcile:started/completed`、**sync 管线**发 `sync:step/completed`、secret scan 发
+`security:finding`；CLI `main()` 订阅并镜像到审计日志（phase → debug，completed → info，
+failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推给前端，Library 页有实时活动指示器
+（`useEventStream`）。仍缺：TUI 实时订阅（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
 
 ### 4.5 ✅ Doctor 与 Debug Bundle（2026-08-14）
 
