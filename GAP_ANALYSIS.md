@@ -220,8 +220,10 @@ manifest/lockfile 快照级回滚（operation journal，roadmap 2.1 未做）。
 
 ### 3.5 Logging 尚未贯穿主要业务流水线（未变）
 
-Logger、verbosity、脱敏与 CLI flags 已落地，但 core 业务代码中除 logging 包自身外没有任何 logger 调用。
-缺：Sync / Install / Reconcile / Registry / Lifecycle 关键步骤日志、错误 context 统一脱敏、可导出 debug bundle。
+Logger、verbosity、脱敏与 CLI flags 已落地。**CLI mutation 审计日志已接入**：`CliContext.logger`
+（默认写 `~/.skillbox/logs/skillbox.log`）+ 13 个 mutation 命令 + connect/disconnect 记录
+`mutation:<op>:start/done/failed`（含错误 message，经 redactor 脱敏）；debug bundle 的 log tail 现在有真实内容。
+仍缺：core 业务层（install/reconcile/registry/lifecycle 事务内部）的结构化 debug 事件。
 
 ---
 
@@ -268,16 +270,17 @@ Security finding events、Web/TUI 实时进度订阅。
   仓库摘要（manifest/lockfile present/missing/invalid + skills 列表）+ **自动泄漏扫描**
   （`scanForLeaks`：github token `ghp_` 等前缀、Authorization/Bearer 头、x-oauth-token/x-github-token；
   命中只报 pattern+source+count，绝不包含值）
-- **CLI**：`skillbox doctor`（人类可读 / `--json` / `--bundle <path>`，泄漏命中时输出 WARNING）
+- **CLI**：`skillbox doctor`（人类可读 / `--json` / `--bundle <path>`，泄漏命中时输出 WARNING；
+  探针失败时**退出码非零**，CI 可用 `skillbox doctor` 做门禁）
 - 测试：`diagnostics/doctor.test.ts` 4 例 + CLI doctor 1 例
 
 ---
 
 ## 5. P2 — Agent、交互与分发扩展
 
-- ✅ 已实现 Claude / Codex / Cursor / **Gemini CLI**（2026-08-14，`adapters/gemini.ts`，通过共享
-  `runCliAdapterSuite` 一致性套件 14 例；已注册进 `createDefaultAgentRegistry`）
-- 缺 OpenCode、Windsurf、GitHub Copilot adapters（roadmap 阶段 6.3 conformance suite）
+- ✅ 全部六个 adapter 已实现：Claude / Codex / Cursor / **Gemini CLI** / **OpenCode** / **Windsurf** /
+  **GitHub Copilot**（2026-08-14；每个都通过共享 `runCliAdapterSuite` 一致性套件，已注册进
+  `createDefaultAgentRegistry`）
 - Fullscreen TUI 未实现，但 MVP_TASKS 允许 V0.1 不做，非阻断
 - 独立 `packages/web-server` 未拆分（Hono server 仍在 CLI package），按需再拆
 
@@ -448,6 +451,17 @@ Security finding events、Web/TUI 实时进度订阅。
   `registry.test.ts` 期望更新
 - 验证：core 710 通过 / 23 失败（git 二进制环境问题）；CLI 294/294 ✅；e2e 5 通过 / 2 跳过；
   typecheck / lint / build ✅
+
+### 9.13 本轮（git 就绪后第二批）交付
+
+- **OpenCode / Windsurf / GitHub Copilot adapters**：三个新 adapter 走同一 `CliAgentAdapter` 模板
+  （`.config/opencode/skills` / `.windsurf/skills` / `.copilot/skills` + 各自 BIN/CONFIG_DIR 环境变量），
+  通过共享 conformance suite；默认 registry 现注册全部 6 个 adapter
+- **doctor 退出码**：`skillbox doctor` 探针失败时抛 `SKILL_BROKEN`（退出 1），`--json` 同样生效
+- **logging 贯穿（CLI 层）**：`CliContext.logger` 默认写 `~/.skillbox/logs/skillbox.log`；13 个 mutation
+  命令 + connect/disconnect 记录 `mutation:<op>:start/done/failed` 审计日志（debug bundle 的 log tail
+  因此有真实内容）；测试 +1
+- 验证：core 776/776、CLI 295/295、e2e 7/7、typecheck / lint / build ✅
 
 ### 9.12 本轮（git 就绪后）交付
 
