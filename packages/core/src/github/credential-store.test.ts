@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import {
+  FileCredentialStore,
   LinuxSecretServiceCredentialStore,
   MacKeychainCredentialStore,
   MemoryCredentialStore,
@@ -234,5 +236,47 @@ describe('createCredentialStore', () => {
     expect(createCredentialStore({ platform: 'freebsd' as NodeJS.Platform })).toBeInstanceOf(
       MemoryCredentialStore,
     )
+  })
+})
+
+describe('FileCredentialStore', () => {
+  it('persists values across instances and deletes them', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-secrets-'))
+    try {
+      const key = { service: 'skillbox-github', account: 'oauth-tokens' }
+      const first = new FileCredentialStore(dir)
+      await first.set(key, '{"accessToken":"secret"}')
+      expect(await first.get(key)).toBe('{"accessToken":"secret"}')
+
+      // A fresh instance (a new process) reads the same value.
+      const second = new FileCredentialStore(dir)
+      expect(await second.get(key)).toBe('{"accessToken":"secret"}')
+
+      await second.delete(key)
+      expect(await first.get(key)).toBeNull()
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('createCredentialStore seams', () => {
+  it('selects the file store via the file option', async () => {
+    const store = createCredentialStore({ file: true, secretsDir: '/tmp/secrets' })
+    expect(store).toBeInstanceOf(FileCredentialStore)
+  })
+
+  it('selects the file store via the SKILLBOX_CREDENTIAL_STORE=file env', async () => {
+    const previous = process.env.SKILLBOX_CREDENTIAL_STORE
+    process.env.SKILLBOX_CREDENTIAL_STORE = 'file'
+    try {
+      expect(createCredentialStore()).toBeInstanceOf(FileCredentialStore)
+    } finally {
+      if (previous === undefined) {
+        delete process.env.SKILLBOX_CREDENTIAL_STORE
+      } else {
+        process.env.SKILLBOX_CREDENTIAL_STORE = previous
+      }
+    }
   })
 })
