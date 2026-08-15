@@ -23,6 +23,8 @@ import { RuntimeLibraryService, type MaterializeSkillStatus } from '../runtime/l
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent, removeStaleSkillLink, type LinkAction } from '../runtime/linker.js'
+import { fromManifestSource } from '../registry/source.js'
+import type { ProviderRegistry } from '../registry/registry.js'
 import {
   GitClient,
   planRemoteSource,
@@ -106,6 +108,12 @@ export interface ReconcileOptions {
   git?: GitClient
   /** Local root where remote clones are cached (defaults to the home cache). */
   remoteRoot?: string
+  /**
+   * Registry provider framework used to materialize sources the git engine
+   * cannot clone (registry/skills.sh entries on a fresh clone). Defaults to
+   * the process-wide `defaultRegistry`; tests inject fakes.
+   */
+  registry?: ProviderRegistry
 }
 
 export async function reconcile(options: ReconcileOptions): Promise<ReconcileResult> {
@@ -173,6 +181,7 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
         filesystem: fs,
         git,
         remoteRoot,
+        ...(options.registry === undefined ? {} : { registry: options.registry }),
       })
       if (!outcome.ok) {
         if (outcome.problem !== undefined) {
@@ -303,10 +312,10 @@ type RemoteResolveOutcome =
   | { ok: false; report: ReconcileSkillReport; problem?: ReconcileProblem }
 
 /**
- * Materializes the local git mirror of a remote source (clone-or-pull) and
- * resolves the skill directory inside it. GitHub private repositories rely on
- * the GitHub app credential bridge; the public HTTPS URL works with the
- * system git binary and any credential helper the machine has configured.
+ * Materializes the local source of a remote (managed) skill. Git-clone-able
+ * sources (github / git) go through the git mirror; registry sources
+ * (skills.sh) fall back to the registry provider framework, which downloads
+ * the skill subtree directly.
  */
 async function resolveRemoteSource(input: {
   alias: string
@@ -315,15 +324,12 @@ async function resolveRemoteSource(input: {
   filesystem: FilesystemService
   git: GitClient
   remoteRoot: string
+  registry?: ProviderRegistry
 }): Promise<RemoteResolveOutcome> {
   const source = input.skill.source
   const plan = planRemoteSource(source)
   if (plan === undefined) {
-    const message = `${source.type} source "${input.alias}" is not clone-able by the git engine yet (registry provider lands in V0.3)`
-    return {
-      ok: false,
-      report: { alias: input.alias, mode: input.mode, status: 'skipped', message },
-    }
+    return resolveRegistrySource(input)
   }
 
   const targetDir = path.join(input.remoteRoot, plan.key)
@@ -397,6 +403,81 @@ async function resolveRemoteSource(input: {
   }
 
   return { ok: true, sourcePath, revision: materialized.headRev }
+}
+
+/**
+ * Materializes a registry-type source (skills.sh) through the registry
+ * provider framework: resolve pins the revision, `download()` materializes the
+ * skill subtree into a local mirror under the remote root.
+ */
+async function resolveRegistrySource(input: {
+  alias: string
+  skill: ManifestSkill
+  mode: SkillMode
+  filesystem: FilesystemService
+  remoteRoot: string
+  registry?: ProviderRegistry
+}): Promise<RemoteResolveOutcome> {
+  const source = input.skill.source
+  const report = (
+    status: ReconcileSkillStatus,
+    message: string,
+    problem?: ReconcileProblem,
+  ): RemoteResolveOutcome => ({
+    ok: false,
+    report: { alias: input.alias, mode: input.mode, status, message },
+    ...(problem === undefined ? {} : { problem }),
+  })
+
+  const normalized = fromManifestSource(source)
+  if (normalized === null) {
+    return report(
+      'skipped',
+      `source type "${source.type}" (registry "${'registry' in source ? source.registry : '?'}") has no registry representation yet`,
+    )
+  }
+  const registry = input.registry
+  if (registry === undefined || !registry.hasProvider(normalized.type)) {
+    return report(
+      'skipped',
+      `registry source needs a "${normalized.type}" provider to materialize; run \`skillbox add\` to install it`,
+    )
+  }
+  const provider = registry.resolveProvider(normalized.type)
+  let revision: string
+  try {
+    const resolved = await provider.resolve(normalized)
+    revision = resolved.revision
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return report('broken', `registry resolve failed: ${message}`, {
+      code: ErrorCode.INSTALL_SOURCE_UNRESOLVED,
+      alias: input.alias,
+      message,
+    })
+  }
+
+  const targetDir = path.join(input.remoteRoot, `registry-${input.alias}`)
+  try {
+    // Providers materialize the skill subtree directly into `targetDir`.
+    await provider.download(normalized, revision, targetDir)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return report('broken', `registry download failed: ${message}`, {
+      code: ErrorCode.INSTALL_DOWNLOAD_FAILED,
+      alias: input.alias,
+      message,
+    })
+  }
+
+  if (!(await isDirectory(targetDir, input.filesystem))) {
+    return report('missing', 'registry download produced no skill directory', {
+      code: ErrorCode.SKILL_MISSING,
+      alias: input.alias,
+      message: `no skill directory at ${targetDir}`,
+    })
+  }
+  return { ok: true, sourcePath: targetDir, revision }
 }
 
 async function isDirectory(target: string, fs: FilesystemService): Promise<boolean> {

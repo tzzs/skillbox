@@ -12,6 +12,8 @@ import { reconcile } from './engine.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { ClaudeAdapter } from '../agent/adapters/claude.js'
 import { GitClient } from '../git/index.js'
+import { ProviderRegistry } from '../registry/registry.js'
+import type { RegistryProvider } from '../registry/types.js'
 
 function makeFixture(homeRoot: string) {
   const layout = buildSkillboxHomeLayout(homeRoot)
@@ -411,3 +413,72 @@ async function advanceGitRemote(
   await rawGit(workDir, ['commit', '-m', 'advance skill'])
   await rawGit(workDir, ['push', 'origin', 'main'])
 }
+
+/** Fake skills.sh provider: downloads the subtree into the target dir. */
+function fakeSkillsShProvider(): RegistryProvider {
+  return {
+    id: 'skills-sh',
+    search: async () => [],
+    resolve: async (source) => ({ source, revision: 'abc123' }),
+    download: async (_source, _revision, targetDir) => {
+      await fs.mkdir(targetDir, { recursive: true })
+      await fs.writeFile(path.join(targetDir, 'SKILL.md'), '# hello\n')
+    },
+    getLatestRevision: async () => 'abc123',
+  }
+}
+
+describe('reconcile with registry sources', () => {
+  it('materializes a registry (skills.sh) source via the registry provider on a fresh clone', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      await fs.mkdir(repoRoot)
+      const manifest = addSkill(emptyManifest(), 'hello', {
+        source: { type: 'registry', registry: 'skills.sh', package: 'acme/hello' },
+        mode: 'managed',
+      })
+      await writeManifest(repoRoot, manifest)
+
+      const { library, linkState } = makeFixture(path.join(dir, 'home'))
+      const providers = new ProviderRegistry()
+      providers.registerProvider(fakeSkillsShProvider())
+
+      const result = await reconcile({
+        repositoryRoot: repoRoot,
+        library,
+        linkState,
+        registry: providers,
+      })
+
+      expect(result.problems).toHaveLength(0)
+      const report = result.skills.find((entry) => entry.alias === 'hello')
+      expect(report?.status).toBe('ok')
+      expect(report?.revision).toBe('abc123')
+      await expect(
+        fs.stat(path.join(dir, 'home', 'library', 'managed', 'hello', 'SKILL.md')),
+      ).resolves.toBeDefined()
+      const lockfile = await readLockfile(repoRoot)
+      expect(lockfile.skills['hello']?.revision).toBe('abc123')
+    })
+  })
+
+  it('skips a registry source with an actionable hint when no provider is wired', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      await fs.mkdir(repoRoot)
+      const manifest = addSkill(emptyManifest(), 'hello', {
+        source: { type: 'registry', registry: 'skills.sh', package: 'acme/hello' },
+        mode: 'managed',
+      })
+      await writeManifest(repoRoot, manifest)
+
+      const { library, linkState } = makeFixture(path.join(dir, 'home'))
+      const result = await reconcile({ repositoryRoot: repoRoot, library, linkState })
+
+      const report = result.skills.find((entry) => entry.alias === 'hello')
+      expect(report?.status).toBe('skipped')
+      expect(report?.message).toContain('skills-sh')
+      expect(report?.message).toContain('skillbox add')
+    })
+  })
+})
