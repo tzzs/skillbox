@@ -8,6 +8,7 @@ import type { AgentAdapter } from './adapter.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { CursorAdapter } from './adapters/cursor.js'
+import { GeminiAdapter } from './adapters/gemini.js'
 
 /** Detection status of one agent, enriched with its installed skills. */
 export interface AgentDetectionSummary {
@@ -115,4 +116,5 @@ export function createDefaultAgentRegistry(): AgentRegistry {
     .register(new ClaudeAdapter())
     .register(new CodexAdapter())
     .register(new CursorAdapter())
+    .register(new GeminiAdapter())
 }
