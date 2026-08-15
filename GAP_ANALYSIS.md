@@ -257,10 +257,11 @@ runtime/repo-dir 备份；merge 的 pre-merge backup（`merge/state.ts`）保持
 ### 4.4 ✅ Event Bus / Progress Model（部分落地，2026-08-15）
 
 `packages/core/src/events/`：进程内 `EventBus`（类型化 `SkillboxEvent`、同步 fire-and-forget、
-单个坏 listener 不影响 emit）+ `defaultEventBus`。**Install 事务已发事件**（resolve/download/validate/
-security/materialize/manifest/lockfile phase + completed/failed），CLI `main()` 订阅并镜像到审计日志
-（phase → debug，completed → info，failed → warn）。仍缺：reconcile/git-sync/security-finding 事件、
-Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
+单个坏 listener 不影响 emit）+ `defaultEventBus`。**Install 事务**发 `install:phase/completed/failed`、
+**Reconcile** 发 `reconcile:started/completed`；CLI `main()` 订阅并镜像到审计日志（phase → debug，
+completed → info，failed → warn）。**Web SSE**：`GET /api/events` 把事件流式推给前端，Library 页有
+实时活动指示器（`useEventStream`）。仍缺：git-sync/security-finding 事件、TUI 实时订阅
+（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
 
 ### 4.5 ✅ Doctor 与 Debug Bundle（2026-08-14）
 
@@ -312,7 +313,8 @@ Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部�
   （本地假 GitHub API：Device Flow → 建私仓 → git init → 绑定 origin；另一例验证 `slow_down` 轮询重试）——
   全部 9/9 通过，CI build 后跑 `pnpm test:e2e`
 - ✅ `docs/e2e-acceptance.md` 更新为「手工手册 + 自动化覆盖」双轨，并记录全绿测试基线
-- 仍缺：authorization denied/expired 的 CLI 级旅程（单元层已覆盖）、private remote auth failure、
+- ✅ connect denied / expired 旅程（假服务器首个 poll 返回 access_denied / expired_token → CLI 干净退出 1）
+- 仍缺：private remote auth failure 的 E2E 级旅程（单元层已覆盖 GIT_AUTH_FAILED 映射）、
   三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
 
 ---
@@ -489,6 +491,15 @@ Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部�
 - **connect slow_down 重试旅程**（`e2e-connect.test.ts` 第二例）：假 GitHub 服务器首个 access_token
   poll 返回 `slow_down`，CLI 按新 interval 重试后完成授权 → 建仓 → origin 绑定
 - 验证：e2e 9/9
+
+### 9.17 本轮（git 就绪后第六批）交付
+
+- **connect denied/expired 旅程**（e2e +2）：假服务器首个 access_token poll 返回 `access_denied` /
+  `expired_token`，CLI 分别干净退出 1 并提示 denied/expired
+- **Reconcile 事件**：`reconcile:started/completed` 接入 defaultEventBus
+- **Web SSE 实时订阅（§4.4）**：`GET /api/events`（hono streamSSE，客户端断开自动退订）+
+  前端 `useEventStream` hook + Library 页实时活动指示器；web 测试 +1
+- 验证：core 779/779、CLI 296/296、e2e 11/11、typecheck / lint / build ✅
 
 ### 9.12 本轮（git 就绪后）交付
 
