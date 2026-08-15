@@ -305,12 +305,21 @@ export interface CredentialStoreFactoryOptions {
   /** Directory for the Windows DPAPI blob store. */
   secretsDir?: string
   platform?: NodeJS.Platform
+  /** Force the in-memory store (hermetic E2E seam). */
+  memory?: boolean
 }
 
 /** Picks the platform-native CredentialStore (falls back to the in-memory one). */
 export function createCredentialStore(
   options: CredentialStoreFactoryOptions = {},
 ): CredentialStore {
+  // Documented test/embedded seam: `memory: true` or the
+  // `SKILLBOX_CREDENTIAL_STORE=memory` env forces the in-memory store so
+  // hermetic E2E journeys (and headless boxes without a Secret Service) can
+  // complete the device flow; tokens are then not persisted across processes.
+  if (options.memory === true || process.env.SKILLBOX_CREDENTIAL_STORE === 'memory') {
+    return new MemoryCredentialStore()
+  }
   const platform = options.platform ?? process.platform
   switch (platform) {
     case 'win32': {

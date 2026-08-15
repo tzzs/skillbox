@@ -269,6 +269,10 @@ export interface ProductionGitHubProviderOptions {
   clientId?: string
   /** Test/platform seam. Production defaults to the native credential store. */
   credentialStore?: CredentialStore
+  /** GitHub API base (defaults to `SKILLBOX_GITHUB_API_BASE` / api.github.com). */
+  apiBaseUrl?: string
+  /** GitHub login base for the device flow (defaults to `SKILLBOX_GITHUB_LOGIN_BASE` / github.com). */
+  loginBaseUrl?: string
 }
 
 /** Typed adapter over the shipped Core GitHubService. */
@@ -311,7 +315,19 @@ export function createProductionGitHubProvider(
   options: ProductionGitHubProviderOptions = {},
 ): GitHubProvider {
   const clientId = options.clientId ?? process.env[GITHUB_CLIENT_ID_ENV] ?? ''
-  const api = new GitHubApi({ clientId })
+  const api = new GitHubApi({
+    clientId,
+    ...(options.apiBaseUrl !== undefined
+      ? { apiBaseUrl: options.apiBaseUrl }
+      : process.env.SKILLBOX_GITHUB_API_BASE !== undefined
+        ? { apiBaseUrl: process.env.SKILLBOX_GITHUB_API_BASE }
+        : {}),
+    ...(options.loginBaseUrl !== undefined
+      ? { loginBaseUrl: options.loginBaseUrl }
+      : process.env.SKILLBOX_GITHUB_LOGIN_BASE !== undefined
+        ? { loginBaseUrl: process.env.SKILLBOX_GITHUB_LOGIN_BASE }
+        : {}),
+  })
   const credentialStore =
     options.credentialStore ??
     createCredentialStore({ secretsDir: path.join(homeRoot, 'state', 'secrets') })
