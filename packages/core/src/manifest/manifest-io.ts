@@ -4,6 +4,7 @@ import { atomicWriteFile } from '../fs/atomic-write.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { ensureGitAttributes } from '../integrity/gitattributes.js'
 import { SkillboxError, ErrorCode } from '../errors.js'
+import { manifestMigrations } from '../migrations/manifest.js'
 import {
   MANIFEST_FILE_NAME,
   MANIFEST_VERSION,
@@ -144,15 +145,24 @@ export async function readManifest(repositoryRoot: string): Promise<SkillboxMani
       { context: { path: filePath, version } },
     )
   }
-  if (version !== MANIFEST_VERSION) {
+  if (version > MANIFEST_VERSION) {
     throw new SkillboxError(
       ErrorCode.UNSUPPORTED_MANIFEST_VERSION,
       `Unsupported manifest version ${version} (supported: ${MANIFEST_VERSION})`,
       { context: { path: filePath, version } },
     )
   }
+  // Older manifests are migrated in memory (roadmap 5.2): the registry
+  // applies registered migrations up to the current version; an unregistered
+  // older version surfaces MIGRATION_MISSING instead of guessing. The next
+  // write persists the migrated shape.
+  const migrated = manifestMigrations.apply(
+    version,
+    MANIFEST_VERSION,
+    document as Record<string, unknown>,
+  )
 
-  const result = skillboxManifestSchema.safeParse(document)
+  const result = skillboxManifestSchema.safeParse(migrated.document)
   if (!result.success) {
     const issues = result.error.issues.map((issue) => ({
       path: issue.path.join('.'),

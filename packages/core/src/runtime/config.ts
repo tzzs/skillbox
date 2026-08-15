@@ -6,6 +6,8 @@ import { SkillboxError, ErrorCode } from '../errors.js'
 export const linkStrategySchema = z.enum(['auto', 'symlink', 'junction', 'copy'])
 
 export const runtimeConfigSchema = z.object({
+  /** Schema version of the machine config (see migrations/config.ts). */
+  version: z.number().int().positive().optional(),
   /** Absolute path of the Repository this machine is wired to. */
   repository: z.string().min(1).optional(),
   /** How Skillbox links skills into agent skill directories. */
@@ -63,6 +65,7 @@ function sortObjectRecord<T>(record: Record<string, T>): Record<string, T> {
 
 function sortConfig(config: RuntimeConfig): RuntimeConfig {
   const out: RuntimeConfig = {}
+  if (config.version !== undefined) out.version = config.version
   if (config.repository !== undefined) out.repository = config.repository
   if (config.linkStrategy !== undefined) out.linkStrategy = config.linkStrategy
   if (config.web !== undefined) out.web = { ...config.web }
