@@ -41,5 +41,15 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.6.2",
     "vitest": "^3.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/REPO.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/OWNER/REPO#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/REPO/issues"
   }
 }
