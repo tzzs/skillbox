@@ -314,8 +314,10 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
   全部 9/9 通过，CI build 后跑 `pnpm test:e2e`
 - ✅ `docs/e2e-acceptance.md` 更新为「手工手册 + 自动化覆盖」双轨，并记录全绿测试基线
 - ✅ connect denied / expired 旅程（假服务器首个 poll 返回 access_denied / expired_token → CLI 干净退出 1）
-- 仍缺：private remote auth failure 的 E2E 级旅程（单元层已覆盖 GIT_AUTH_FAILED 映射）、
-  三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
+- ✅ **private remote auth failure 旅程**：`skillbox connect`（file store 跨进程持久化 token）→
+  二次进程 `skillbox push` 打到 401 git 远端 → 干净失败并报认证错误（证明 connection gate 通过、
+  credential bridge 到达传输层）
+- 仍缺：三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
 
 ---
 
@@ -543,3 +545,12 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 2. doctor / debug bundle / Event Bus / logging 贯穿（§3.5、§4.4、§4.5）
 3. Gemini / OpenCode 等 Agent adapters（§5）
 4. 视需求拆分 Web Server 或实现 Fullscreen TUI（§5）
+
+### 9.19 本轮（git 就绪后第八批）交付
+
+- **FileCredentialStore**（`SKILLBOX_CREDENTIAL_STORE=file` / `file: true`）：明文文件凭据存储
+  （`state/secrets/<service>.<account>.json`），用于 headless/嵌入式与跨进程 hermetc E2E——
+  明确标注"非加密、OS keychain 可用时禁用"；`createCredentialStore` seam 测试 +2、单元测试 +1
+- **private remote auth failure 旅程**（e2e +1）：connect（file store）→ 二次进程 push 到 401 远端 →
+  干净认证失败；证明 connect 的 token 跨进程持久化 + credential bridge 到达 git 传输层
+- 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅
