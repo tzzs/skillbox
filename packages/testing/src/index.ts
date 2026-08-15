@@ -9,3 +9,6 @@ export async function createTempDir(prefix = 'skillbox-test-'): Promise<string> 
 export async function removeTempDir(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true })
 }
+
+export * from './cli-harness.js'
+export * from './git-fixture.js'
