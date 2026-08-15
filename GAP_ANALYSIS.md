@@ -303,13 +303,14 @@ Security finding events、Web/TUI 实时进度订阅。
   `INSTALLATION.md` 系统要求同步
 - 发布 metadata（repository/homepage/bugs/license/provenance）待 §6.1 一并补齐
 
-### 6.3 E2E 验收与自动化（部分落地）
+### 6.3 E2E 验收与自动化（大部分落地）
 
-- ✅ `packages/testing` CLI 子进程 harness + git-free 旅程已通过（§2.3），CI build 后跑 `pnpm test:e2e`
-- ✅ **git 旅程已编写**（`e2e-git.test.ts`：bare remote fixture + create→commit→push→clone→pull，
-  自跳过当 git 缺失/CLI 未构建；本机无 git 所以 2 例跳过，CI 上会执行）
-- `docs/e2e-acceptance.md` 仍是纯手工手册，未记录完成结果；authorization timeout/cancel/retry、
-  private remote auth failure、三平台 manual acceptance 仍缺（roadmap 阶段 3 未勾选项）
+- ✅ Hermetic CLI E2E：git-free 旅程 5 例、git 旅程 2 例（bare remote fixture）、**connect 旅程 1 例**
+  （本地假 GitHub API：Device Flow → 建私仓 → git init → 绑定 origin）——全部 8/8 通过，CI build 后跑
+  `pnpm test:e2e`
+- ✅ `docs/e2e-acceptance.md` 更新为「手工手册 + 自动化覆盖」双轨，并记录全绿测试基线
+- 仍缺：authorization timeout/cancel/retry、private remote auth failure、三平台 manual acceptance
+  （Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
 
 ---
 
@@ -462,6 +463,15 @@ Security finding events、Web/TUI 实时进度订阅。
   命令 + connect/disconnect 记录 `mutation:<op>:start/done/failed` 审计日志（debug bundle 的 log tail
   因此有真实内容）；测试 +1
 - 验证：core 776/776、CLI 295/295、e2e 7/7、typecheck / lint / build ✅
+
+### 9.14 本轮（git 就绪后第三批）交付
+
+- **Hermetic connect 旅程**（`e2e-connect.test.ts`）：本地假 GitHub API 服务器（device flow + user +
+  repo create）→ `skillbox connect` 完整跑通授权 → 建仓 → origin 绑定；为此给 production factory 增加
+  `SKILLBOX_GITHUB_API_BASE` / `SKILLBOX_GITHUB_LOGIN_BASE` env（企业/测试用途），`createCredentialStore`
+  增加 `memory` 选项 + `SKILLBOX_CREDENTIAL_STORE=memory` env seam（headless E2E）
+- `docs/e2e-acceptance.md` 结果化（§6.3）
+- 验证：e2e 8/8（+connect）、core 776/776、CLI 295/295、typecheck / lint ✅
 
 ### 9.12 本轮（git 就绪后）交付
 

@@ -1,9 +1,26 @@
 # 0.1.0 End-to-End Acceptance Test（E2E 验收手册）
 
 > **来源：** MVP_TASKS §98 — 0.1.0 End-to-End Acceptance Test
-> **状态：** 分步操作手册（不依赖自动化测试框架，纯手工逐步验收）
-> **版本：** 0.1
-> **Last Updated：** 2026-08-09
+> **状态：** 手工验收手册 + 自动化覆盖（`packages/testing`，CI `pnpm test:e2e` 在 build 后执行）
+> **版本：** 0.2
+> **Last Updated：** 2026-08-15
+
+## 0. 自动化覆盖（已落地并全绿）
+
+以下旅程由 `packages/testing` 的 Hermetic CLI E2E 自动执行（真实 CLI 子进程 + 临时
+`SKILLBOX_HOME`/仓库；git 旅程需要系统 git，connect 旅程用本地假 GitHub 服务器，无需网络）：
+
+| 旅程 | 文件 | 状态 |
+|------|------|------|
+| version / create → list → remove / install / 未知命令 | `e2e.test.ts` | ✅ 5 例通过 |
+| create → commit → push → fresh-clone → pull → status（bare remote fixture） | `e2e-git.test.ts` | ✅ 2 例通过 |
+| connect：Device Flow → 建私仓 → git init → 绑定 origin（本地假 GitHub API） | `e2e-connect.test.ts` | ✅ 1 例通过 |
+
+运行方式：`pnpm build && pnpm test:e2e`（CI build job 已接入）。测试基线（本机，git 2.47.3）：
+core 776/776、CLI 295/295、e2e 8/8、typecheck/lint/build 全绿。
+
+> 自动化尚未覆盖：授权超时/取消/重试、私仓认证失败、三平台（Windows/macOS/Linux）真实 Agent 目录
+> 与 Credential Store 行为——这些仍按下方手工手册验收。
 
 ---
 
