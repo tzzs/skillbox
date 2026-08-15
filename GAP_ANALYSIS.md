@@ -308,12 +308,12 @@ Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部�
 
 ### 6.3 E2E 验收与自动化（大部分落地）
 
-- ✅ Hermetic CLI E2E：git-free 旅程 5 例、git 旅程 2 例（bare remote fixture）、**connect 旅程 1 例**
-  （本地假 GitHub API：Device Flow → 建私仓 → git init → 绑定 origin）——全部 8/8 通过，CI build 后跑
-  `pnpm test:e2e`
+- ✅ Hermetic CLI E2E：git-free 旅程 5 例、git 旅程 2 例（bare remote fixture）、**connect 旅程 2 例**
+  （本地假 GitHub API：Device Flow → 建私仓 → git init → 绑定 origin；另一例验证 `slow_down` 轮询重试）——
+  全部 9/9 通过，CI build 后跑 `pnpm test:e2e`
 - ✅ `docs/e2e-acceptance.md` 更新为「手工手册 + 自动化覆盖」双轨，并记录全绿测试基线
-- 仍缺：authorization timeout/cancel/retry、private remote auth failure、三平台 manual acceptance
-  （Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
+- 仍缺：authorization denied/expired 的 CLI 级旅程（单元层已覆盖）、private remote auth failure、
+  三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
 
 ---
 
@@ -482,7 +482,13 @@ Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部�
   install 事务全程发 `install:phase/completed/failed` 事件；CLI `main()` 订阅并镜像到
   `~/.skillbox/logs/skillbox.log`（phase→debug、completed→info、failed→warn，订阅随命令结束释放）
 - 测试：`events/bus.test.ts` 2 例 + install 事件 1 例
-- 验证：core 779/779、CLI 295/295、e2e 8/8、typecheck / lint / build ✅
+- 验证：core 779/779、CLI 295/295、e2e 9/9、typecheck / lint / build ✅
+
+### 9.16 本轮（git 就绪后第五批）交付
+
+- **connect slow_down 重试旅程**（`e2e-connect.test.ts` 第二例）：假 GitHub 服务器首个 access_token
+  poll 返回 `slow_down`，CLI 按新 interval 重试后完成授权 → 建仓 → origin 绑定
+- 验证：e2e 9/9
 
 ### 9.12 本轮（git 就绪后）交付
 
