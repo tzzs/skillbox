@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   ErrorCode,
+  fromManifestSource,
   isSkillboxError,
   readLockfile,
   readManifest,
@@ -68,33 +69,13 @@ function asSkillboxError(error: unknown, code: SkillboxErrorCode, fallback: stri
 /**
  * Maps a lockfile/manifest source (SPEC §23, `github|git|registry|local`)
  * onto the registry framework's `NormalizedSource` so `outdated` / `update`
- * can ask the providers for the latest revision.
- *
- * TODO(marketplace, agent 1): `git` and `registry` sources are not
- * representable in `NormalizedSource` yet — agent 1's `fromManifestSource`
- * (`packages/core/src/registry/source.ts`) can replace this mapping once it
- * covers those source types.
+ * can ask the providers for the latest revision. Delegates to Core's
+ * canonical `fromManifestSource` (`packages/core/src/registry/source.ts`);
+ * returns `undefined` for source types without a registry representation yet
+ * (non-skills.sh registries).
  */
 export function normalizeLockedSource(source: ManifestSkillSource): NormalizedSource | undefined {
-  switch (source.type) {
-    case 'github': {
-      const normalized: NormalizedSource = {
-        type: 'github',
-        repo: source.repo,
-      }
-      if (source.path !== undefined) {
-        normalized.path = source.path
-      }
-      if (source.ref !== undefined) {
-        normalized.ref = source.ref
-      }
-      return normalized
-    }
-    case 'local':
-      return { type: 'local', path: source.path }
-    default:
-      return undefined
-  }
+  return fromManifestSource(source) ?? undefined
 }
 
 export class MarketplaceService {

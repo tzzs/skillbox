@@ -104,7 +104,12 @@ function ensureDefaultProvidersRegistered(core: Record<string, unknown>): void {
   if (typeof registerProvider !== 'function' || registry?.listProviders === undefined) {
     return
   }
-  for (const candidate of [core.GitHubProvider, core.SkillsShProvider, core.LocalProvider]) {
+  for (const candidate of [
+    core.GitHubProvider,
+    core.SkillsShProvider,
+    core.GitSourceProvider,
+    core.LocalProvider,
+  ]) {
     if (typeof candidate !== 'function') {
       continue
     }

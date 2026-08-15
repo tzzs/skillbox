@@ -43,12 +43,23 @@ export interface LocalNormalizedSource {
   path: string
 }
 
+/** Generic git remote (GitLab / Bitbucket / self-hosted) — mirrors core types. */
+export interface GitNormalizedSource {
+  type: 'git'
+  /** Clone URL (https / ssh / scp-style). */
+  url: string
+  /** Repo-relative skill directory inside the checkout. */
+  path?: string
+  /** Branch / tag / commit pin. */
+  ref?: string
+}
+
 /**
  * Canonical form of a skill source (SPEC §23) — mirrors agent 1's
  * `NormalizedSource` in `packages/core/src/registry/types.ts`.
  */
 export type NormalizedSource =
-  GithubNormalizedSource | SkillsShNormalizedSource | LocalNormalizedSource
+  GithubNormalizedSource | SkillsShNormalizedSource | GitNormalizedSource | LocalNormalizedSource
 
 /** One search hit from the aggregated registry (skills.sh + GitHub). */
 export interface RegistrySearchResult {
