@@ -3,7 +3,7 @@ import { parse as parseYaml } from 'yaml'
 import { ErrorCode, SkillboxError, isSkillboxError, type SkillboxErrorCode } from '../errors.js'
 import { atomicWriteFile } from '../fs/atomic-write.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
-import { resolveInsideRoot } from '../fs/paths.js'
+import { validateRelativePath } from '../fs/paths.js'
 import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { createDefaultAgentRegistry } from '../agent/index.js'
 import { MANIFEST_FILE_NAME } from '../manifest/schema.js'
@@ -15,7 +15,6 @@ import {
   validateSkillAlias,
   writeManifest,
   type ManifestSkillInput,
-  type ManifestSkillSource,
   type SkillboxManifest,
 } from '../manifest/index.js'
 import {
@@ -54,6 +53,12 @@ export function describeSource(source: NormalizedSource): string {
     }
     case 'skills-sh':
       return `skills-sh:${source.package}`
+    case 'git': {
+      let description = `git:${source.url}`
+      if (source.path !== undefined) description += `@${source.path}`
+      if (source.ref !== undefined) description += `#${source.ref}`
+      return description
+    }
     case 'local':
       return `local:${source.path}`
   }
@@ -72,6 +77,9 @@ export function defaultAliasFor(source: NormalizedSource): string {
     case 'skills-sh':
       raw = source.package.split('/').pop() ?? source.package
       break
+    case 'git':
+      raw = source.path?.split('/').pop() ?? path.basename(source.url.replace(/\.git$/, ''))
+      break
     case 'local':
       raw = path.basename(source.path)
       break
@@ -89,32 +97,13 @@ export function sanitizeAlias(raw: string): string {
 }
 
 /**
- * Stopgap mapping from the registry framework's `NormalizedSource` onto the
- * Manifest/Lockfile `ManifestSkillSource` shape. TODO(agent-1): replace with
- * the canonical conversion once the registry framework finalizes its mapping.
+ * Canonical mapping from the registry framework's `NormalizedSource` onto the
+ * Manifest/Lockfile `ManifestSkillSource` shape — lives in
+ * `packages/core/src/registry/source.ts`; re-exported here under the legacy
+ * name the install transaction used.
  */
-export function normalizedSourceToManifestSource(source: NormalizedSource): ManifestSkillSource {
-  switch (source.type) {
-    case 'github': {
-      const node: ManifestSkillSource = { type: 'github', repo: source.repo }
-      if (source.path !== undefined) node.path = source.path
-      const ref = source.ref ?? source.branch
-      if (ref !== undefined) node.ref = ref
-      return node
-    }
-    case 'skills-sh': {
-      const node: ManifestSkillSource = {
-        type: 'registry',
-        registry: 'skills.sh',
-        package: source.package,
-      }
-      if (source.version !== undefined) node.version = source.version
-      return node
-    }
-    case 'local':
-      return { type: 'local', path: source.path }
-  }
-}
+import { toManifestSource as normalizedSourceToManifestSource } from '../registry/source.js'
+export { normalizedSourceToManifestSource }
 
 function rethrowOrWrap(error: unknown, code: SkillboxErrorCode, message: string): never {
   if (isSkillboxError(error)) {
@@ -170,14 +159,22 @@ async function restoreSnapshot(
   }
 }
 
-/** Resolves the skill subtree inside the downloaded directory (Path Validate). */
-async function validateSkillRoot(downloadRoot: string, source: NormalizedSource): Promise<string> {
+/**
+ * Validates the source sub-path expression (Path Validate). Registry
+ * providers materialize the skill *subtree* of the source directly into the
+ * download directory (the path prefix is stripped, see `github.ts` /
+ * `skills-sh.ts` / `local.ts`), so the download root already is the skill
+ * root — there is nothing to re-resolve. The source path itself must still be
+ * a portable relative path: `../` escapes and absolute segments are refused
+ * before the download is trusted.
+ */
+async function validateSkillSourcePath(source: NormalizedSource): Promise<void> {
   const subPath = 'path' in source ? source.path : undefined
   if (subPath === undefined) {
-    return downloadRoot
+    return
   }
   try {
-    return resolveInsideRoot(downloadRoot, subPath)
+    validateRelativePath(subPath)
   } catch (error) {
     throw new SkillboxError(
       ErrorCode.INSTALL_INVALID_PATH,
@@ -361,7 +358,13 @@ async function runInstallTransaction(
     }
     let expectedIntegrity = resolved.integrity
 
-    /* Step 2 — Download to tmp (skipped on a managed-cache hit, M15.3). */
+    /* Step 2 — Path Validate: the source sub-path must be a portable relative
+       path (providers materialize the subtree into the download, so there is
+       nothing to re-resolve — but `../` escapes are refused before any
+       download happens). */
+    await validateSkillSourcePath(source)
+
+    /* Step 3 — Download to tmp (skipped on a managed-cache hit, M15.3). */
     let skillRoot: string
     let downloadUsed = false
     let cacheEntry: CacheEntry | null = null
@@ -399,14 +402,11 @@ async function runInstallTransaction(
       skillRoot = downloadDir
     }
 
-    /* Step 3 — Path Validate: the source sub-path must stay inside the download. */
-    const skillRootDir = await validateSkillRoot(skillRoot, source)
-
     /* Step 4 — Structure Validate: SKILL.md (and optional skillbox.yaml). */
-    await validateSkillStructure(skillRootDir, filesystem)
+    await validateSkillStructure(skillRoot, filesystem)
 
     /* Step 5 — Integrity: hash must equal the source/lockfile expectation (M15.5). */
-    const integrity = await computeSkillIntegrity(skillRootDir)
+    const integrity = await computeSkillIntegrity(skillRoot)
     if (expectedIntegrity !== undefined && integrity !== expectedIntegrity) {
       throw new SkillboxError(
         ErrorCode.INTEGRITY_MISMATCH,
@@ -418,7 +418,7 @@ async function runInstallTransaction(
     }
 
     /* Step 6 — Security: static scan; high risk is rejected by default. */
-    const securityScan = await scanSkillForSecurity(skillRootDir)
+    const securityScan = await scanSkillForSecurity(skillRoot)
     if (securityScan.block && !allowHighRisk) {
       throw new SkillboxError(
         ErrorCode.INSTALL_SECURITY_BLOCKED,
@@ -449,7 +449,7 @@ async function runInstallTransaction(
       materialized = await library.materializeSkill({
         alias,
         mode: 'managed',
-        source: skillRootDir,
+        source: skillRoot,
       })
     } catch (error) {
       throw rethrowOrWrap(
