@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { acquireRuntimeLock } from '@skillbox/core'
 import type { RepositorySync } from '@skillbox/core'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
@@ -103,6 +107,139 @@ describe('cli', () => {
     expect(io.out()).toContain('octocat/skillbox-skills')
     expect(await main(['disconnect'], { ...io, repositorySync })).toBe(0)
     expect(disconnects).toBe(1)
+  })
+
+  it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-migrate-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(path.join(home, 'state'), { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      await fs.writeFile(path.join(home, 'config.json'), JSON.stringify({ linkStrategy: 'copy' }))
+      await fs.writeFile(path.join(repo, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
+      await fs.writeFile(path.join(repo, 'skillbox.lock'), 'lockfileVersion: 1\nskills: {}\n')
+
+      const io = capture()
+      const exit = await main(['migrate'], { ...io, homeRoot: home, repositoryRoot: repo })
+
+      expect(exit).toBe(0)
+      expect(io.out()).toContain('config v0 → v1 (add version field)')
+      expect(io.out()).toContain('up to date')
+      const persisted = JSON.parse(await fs.readFile(path.join(home, 'config.json'), 'utf8')) as {
+        version?: number
+      }
+      expect(persisted.version).toBe(1)
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a mutation while another process holds the runtime lock', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-lock-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const handle = await acquireRuntimeLock('mutation', { homeRoot: home })
+      const io = capture()
+      const exit = await main(['create', 'hello'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(ExitCode.GENERIC)
+      expect(io.err()).toContain('Another skillbox process')
+      await handle.release()
+
+      // After release the mutation succeeds.
+      const second = capture()
+      const retry = await main(['create', 'hello'], {
+        ...second,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(retry).toBe(0)
+      expect(second.out()).toContain('Created skill "hello"')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('lists backups and rolls back a removed skill via `skillbox rollback <id>`', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-rollback-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+
+      expect(await main(['create', 'hello'], deps(capture()))).toBe(0)
+      expect(await main(['remove', 'hello', '--delete-files'], deps(capture()))).toBe(0)
+      await expect(fs.stat(path.join(repo, 'skills', 'hello'))).rejects.toThrow()
+
+      const listIo = capture()
+      expect(await main(['rollback', '--json'], deps(listIo))).toBe(0)
+      const body = JSON.parse(listIo.out()) as {
+        backups: Array<{ id: string; operation: string; alias: string; kind: string }>
+      }
+      expect(
+        body.backups.some((backup) => backup.operation === 'remove' && backup.alias === 'hello'),
+      ).toBe(true)
+      const repoDir = body.backups.find((backup) => backup.kind === 'repo-dir')
+      expect(repoDir).toBeDefined()
+
+      const rollbackIo = capture()
+      expect(await main(['rollback', repoDir?.id ?? ''], deps(rollbackIo))).toBe(0)
+      expect(rollbackIo.out()).toContain('Rolled back "hello"')
+      await expect(
+        fs.readFile(path.join(repo, 'skills', 'hello', 'SKILL.md'), 'utf8'),
+      ).resolves.toContain('# hello')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('runs doctor and writes a redacted debug bundle', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-doctor-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const io = capture()
+      const exit = await main(['doctor', '--json'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(0)
+      const report = JSON.parse(io.out()) as { probes: Array<{ name: string }> }
+      expect(report.probes.some((probe) => probe.name === 'manifest')).toBe(true)
+
+      const bundlePath = path.join(base, 'bundle.json')
+      const bundleIo = capture()
+      const bundleExit = await main(['doctor', '--bundle', bundlePath], {
+        ...bundleIo,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(bundleExit).toBe(0)
+      const bundle = JSON.parse(await fs.readFile(bundlePath, 'utf8')) as {
+        leakCheck: { findings: unknown[] }
+      }
+      expect(bundle.leakCheck.findings).toEqual([])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
   })
 })
 
