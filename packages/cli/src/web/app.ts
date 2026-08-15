@@ -1,19 +1,28 @@
 import { Hono } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import type { RuntimeConfig } from '@skillbox/core'
+import {
+  BackupService,
+  withRuntimeLock,
+  type RuntimeConfig,
+  type RollbackResult,
+} from '@skillbox/core'
 import type {
   AgentsResponse,
   HealthResponse,
   InstallResponse,
+  LifecycleOperationResult,
   OutdatedResponse,
   ReconcileResponse,
   RegistrySearchOptions,
   RegistrySearchResponse,
+  RollbackListResponse,
+  RollbackRestoreResponse,
   SettingsResponse,
   SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
   WebAppOptions,
+  WebServices,
 } from './types.js'
 import { toApiError, unknownRouteEnvelope, WebApiError } from './errors.js'
 import { isHtmlNavigation, staticHandler } from './static.js'
@@ -36,7 +45,6 @@ export function createWebApp(options: WebAppOptions): Hono {
   })
 
   /* ---- read-only API (M10.6) ---- */
-
   app.get('/api/health', (c) => {
     return c.json<HealthResponse>({
       status: 'ok',
@@ -99,61 +107,149 @@ export function createWebApp(options: WebAppOptions): Hono {
   })
 
   app.put('/api/settings', async (c) => {
-    const body = await requireJsonBody(c)
-    const patch = parseSettingsPatch(body)
-    const current = await services.config.load()
-    const merged = mergeSettings(current, patch)
-    await services.config.save(merged)
-    return c.json<SettingsResponse>({ settings: merged })
+    return mutation(services, async () => {
+      const body = await requireJsonBody(c)
+      const patch = parseSettingsPatch(body)
+      const current = await services.config.load()
+      const merged = mergeSettings(current, patch)
+      await services.config.save(merged)
+      return c.json<SettingsResponse>({ settings: merged })
+    })
   })
 
   /* ---- mutating API (M10.7) ---- */
 
   app.post('/api/skills', async (c) => {
-    const body = await requireJsonBody(c)
-    const name = stringField(body, 'name')
-    const description = stringField(body, 'description')
-    const input: { name: string; description?: string } = { name }
-    if (description !== undefined) {
-      input.description = description
-    }
-    const created = await services.skills.createSkill(input)
-    return c.json({ created }, 201)
+    return mutation(services, async () => {
+      const body = await requireJsonBody(c)
+      const name = stringField(body, 'name')
+      const description = stringField(body, 'description')
+      const input: { name: string; description?: string } = { name }
+      if (description !== undefined) {
+        input.description = description
+      }
+      const created = await services.skills.createSkill(input)
+      return c.json({ created }, 201)
+    })
   })
 
   app.put('/api/skills/:id/content', async (c) => {
-    const id = c.req.param('id')
-    const body = await requireJsonBody(c)
-    const content = stringField(body, 'content')
-    const saved = await services.skills.writeSkillMarkdown({ name: id, content })
-    return c.json({ saved })
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const body = await requireJsonBody(c)
+      const content = stringField(body, 'content')
+      const saved = await services.skills.writeSkillMarkdown({ name: id, content })
+      return c.json({ saved })
+    })
   })
 
   app.delete('/api/skills/:id', async (c) => {
-    const id = c.req.param('id')
-    const removed = await services.skills.removeSkill({ name: id })
-    return c.json({ removed })
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const removed = await services.skills.removeSkill({ name: id })
+      return c.json({ removed })
+    })
   })
 
   app.post('/api/skills/:id/enable', async (c) => {
-    const id = c.req.param('id')
-    const body = await requireJsonBody(c)
-    const agent = stringField(body, 'agent')
-    const assignment = await services.skills.enableSkill({ name: id, agent })
-    return c.json({ assignment })
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const body = await requireJsonBody(c)
+      const agent = stringField(body, 'agent')
+      const assignment = await services.skills.enableSkill({ name: id, agent })
+      return c.json({ assignment })
+    })
   })
 
   app.post('/api/skills/:id/disable', async (c) => {
-    const id = c.req.param('id')
-    const body = await requireJsonBody(c)
-    const agent = stringField(body, 'agent')
-    const assignment = await services.skills.disableSkill({ name: id, agent })
-    return c.json({ assignment })
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const body = await requireJsonBody(c)
+      const agent = stringField(body, 'agent')
+      const assignment = await services.skills.disableSkill({ name: id, agent })
+      return c.json({ assignment })
+    })
   })
 
   app.post('/api/reconcile', async (c) => {
-    const reconcile = await services.skills.install()
-    return c.json<ReconcileResponse>({ reconcile })
+    return mutation(services, async () => {
+      const reconcile = await services.skills.install()
+      return c.json<ReconcileResponse>({ reconcile })
+    })
+  })
+
+  /* ---- V0.4 lifecycle API (M17 fork/vendor/restore, M20 merge) ---- */
+
+  /**
+   * M17.1 — Fork: Managed → Forked. The runtime is copied into the
+   * repository (`skills/<name>`), the mode flips to `forked` and the base
+   * revision is recorded so the 3-way merge has a base.
+   */
+  app.post('/api/skills/:id/fork', async (c) => {
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const result = await services.lifecycle.fork(id)
+      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+    })
+  })
+
+  /**
+   * M18 — Vendor: Managed/Forked → Vendored. The content is frozen in the
+   * repository and all upstream tracking is dropped (terminal state).
+   */
+  app.post('/api/skills/:id/vendor', async (c) => {
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const result = await services.lifecycle.vendor(id)
+      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+    })
+  })
+
+  /**
+   * M17.3 — Restore Upstream: re-materializes the pinned revision of a
+   * modified managed skill so the runtime matches the lockfile integrity
+   * again. The pre-restore content is kept in a recovery snapshot.
+   */
+  app.post('/api/skills/:id/restore', async (c) => {
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const result = await services.lifecycle.restore(id)
+      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+    })
+  })
+
+  /**
+   * M20 — 3-way merge (default), or `--continue` / `--abort` of an in-flight
+   * merge via `{ "action": "continue" | "abort" }`.
+   */
+  app.post('/api/skills/:id/merge', async (c) => {
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const body = await requireJsonBody(c)
+      const action =
+        body['action'] === 'continue' || body['action'] === 'abort' ? body['action'] : 'merge'
+      const result = await services.lifecycle.merge(id, action)
+      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+    })
+  })
+
+  /* ---- V0.4.2 rollback API (roadmap 2.4) ---- */
+
+  /** Lists the recoverable backups recorded by mutating operations. */
+  app.get('/api/rollbacks', async (c) => {
+    const rollbacks = await new BackupService({ homeRoot: services.homeRoot }).list()
+    return c.json<RollbackListResponse>({ rollbacks })
+  })
+
+  /** Restores one backup (cross-repo / incomplete records are refused). */
+  app.post('/api/rollbacks/:id/restore', async (c) => {
+    return mutation(services, async () => {
+      const id = c.req.param('id')
+      const rollback: RollbackResult = await new BackupService({
+        homeRoot: services.homeRoot,
+      }).rollback(id, { repositoryRoot: services.repositoryRoot })
+      return c.json<RollbackRestoreResponse>({ rollback }, 201)
+    })
   })
 
   /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
@@ -198,12 +294,14 @@ export function createWebApp(options: WebAppOptions): Hono {
    * `all` allows them after explicit user confirmation).
    */
   app.post('/api/registry/install', async (c) => {
-    const body = await requireJsonBody(c)
-    const source = stringField(body, 'source')
-    const targetAgents = stringArrayField(body, 'targetAgents')
-    const allowPolicy = allowPolicyField(body)
-    const installed = await services.install.install({ source, targetAgents, allowPolicy })
-    return c.json<InstallResponse>({ installed }, 201)
+    return mutation(services, async () => {
+      const body = await requireJsonBody(c)
+      const source = stringField(body, 'source')
+      const targetAgents = stringArrayField(body, 'targetAgents')
+      const allowPolicy = allowPolicyField(body)
+      const installed = await services.install.install({ source, targetAgents, allowPolicy })
+      return c.json<InstallResponse>({ installed }, 201)
+    })
   })
 
   app.all('/api/*', (c) => c.json(unknownRouteEnvelope(), 404))
@@ -240,6 +338,17 @@ export function createWebApp(options: WebAppOptions): Hono {
 }
 
 /* ---- request helpers ---- */
+
+/**
+ * Runs a mutating web handler under the cross-process runtime lock
+ * (`~/.skillbox/state/locks/mutation.lock`, roadmap 5.1) so concurrent CLI /
+ * Web processes cannot corrupt the Manifest / Lockfile / library / merge
+ * state. The lock is always released (also on errors); stale locks from
+ * crashed processes are broken automatically.
+ */
+async function mutation<T>(services: WebServices, action: () => Promise<T>): Promise<T> {
+  return withRuntimeLock('mutation', action, { homeRoot: services.homeRoot })
+}
 
 interface JsonRequestLike {
   json(): Promise<unknown>

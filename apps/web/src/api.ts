@@ -238,6 +238,31 @@ export interface SkillDiff {
   unchanged: boolean
 }
 
+/* ---- V0.4 lifecycle API (M17 fork/vendor/restore, M20 merge) ---- */
+
+/** One lifecycle operation's outcome, rendered by the Web UI. */
+export interface LifecycleOperationResult {
+  name: string
+  action: 'forked' | 'vendored' | 'restored' | 'merged' | 'continued' | 'aborted'
+  /** Repo-relative path of the forked/vendored copy (when applicable). */
+  localPath?: string
+  /** Revision the skill is based on / restored to (when applicable). */
+  revision?: string
+  /** Files restored to the lockfile integrity (restore / merge abort). */
+  filesRestored?: number
+  /** Files merged (3-way merge). */
+  filesMerged?: number
+  /** Conflict hunks left in the content (0 = clean merge). */
+  changes?: number
+  /** Conflicts left after a merge / continue (empty = clean). */
+  conflicts?: Array<{ path: string; hunks: number; reason?: string }>
+  /** New base revision after a clean merge. */
+  baseRevision?: string
+}
+
+/** Merge action accepted by `POST /api/skills/:id/merge`. */
+export type MergeAction = 'merge' | 'continue' | 'abort'
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -319,6 +344,11 @@ export interface ApiClient {
   installRegistrySkill(input: InstallInput): Promise<InstallResult>
   /* V0.4 diff API */
   skillDiff(name: string): Promise<SkillDiff>
+  /* V0.4 lifecycle API */
+  forkSkill(name: string): Promise<LifecycleOperationResult>
+  vendorSkill(name: string): Promise<LifecycleOperationResult>
+  restoreSkill(name: string): Promise<LifecycleOperationResult>
+  mergeSkill(name: string, action?: MergeAction): Promise<LifecycleOperationResult>
 }
 
 function encodeName(name: string): string {
@@ -452,5 +482,37 @@ export const api: ApiClient = {
   async skillDiff(name) {
     const response = await request<{ diff: SkillDiff }>(`/api/skills/${encodeName(name)}/diff`)
     return response.diff
+  },
+
+  async forkSkill(name) {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/fork`,
+      { method: 'POST' },
+    )
+    return response.result
+  },
+
+  async vendorSkill(name) {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/vendor`,
+      { method: 'POST' },
+    )
+    return response.result
+  },
+
+  async restoreSkill(name) {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/restore`,
+      { method: 'POST' },
+    )
+    return response.result
+  },
+
+  async mergeSkill(name, action = 'merge') {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/merge`,
+      { method: 'POST', body: JSON.stringify({ action }) },
+    )
+    return response.result
   },
 }

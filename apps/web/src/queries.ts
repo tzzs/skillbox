@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
   type InstallInput,
+  type LifecycleOperationResult,
+  type MergeAction,
   type RegistrySearchParams,
   type SettingsPatch,
   type SkillStatusEntry,
@@ -217,4 +219,41 @@ export function useInstallRegistrySkill() {
 
 export function skillsForAgent(agentId: string, skills: SkillStatusEntry[]): SkillStatusEntry[] {
   return skills.filter((skill) => skill.agents.includes(agentId))
+}
+
+/* ---- V0.4 lifecycle API (M17 fork/vendor/restore, M20 merge) ---- */
+
+/** Refreshes every skill-scoped view after a lifecycle mutation. */
+function invalidateSkillViews(queryClient: ReturnType<typeof useQueryClient>, name: string): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skill(name) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skillDiff(name) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+}
+
+/**
+ * Fork / Vendor / Restore mutations (M17.1 / M18 / M17.3). A fork flips the
+ * mode to `forked`, vendor freezes content as `vendored`, restore re-fetches
+ * the pinned revision of a modified managed skill.
+ */
+export function useLifecycleAction(action: 'fork' | 'vendor' | 'restore') {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string): Promise<LifecycleOperationResult> => {
+      if (action === 'fork') return api.forkSkill(name)
+      if (action === 'vendor') return api.vendorSkill(name)
+      return api.restoreSkill(name)
+    },
+    onSuccess: (_data, name) => invalidateSkillViews(queryClient, name),
+  })
+}
+
+/** 3-way merge / continue / abort (M20.6). */
+export function useMergeSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { name: string; action?: MergeAction }) =>
+      api.mergeSkill(input.name, input.action),
+    onSuccess: (_data, input) => invalidateSkillViews(queryClient, input.name),
+  })
 }

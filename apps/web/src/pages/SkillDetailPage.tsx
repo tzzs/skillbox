@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Check, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
-import type { AgentSummary } from '../api.js'
+import type { AgentSummary, LifecycleOperationResult, MergeAction } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
   useAgents,
+  useLifecycleAction,
+  useMergeSkill,
   useRemoveSkill,
   useSaveSkillContent,
   useSkill,
@@ -227,6 +229,10 @@ export function SkillDetailPage() {
       </div>
 
       <div className="card">
+        <LifecycleCard skill={skill} />
+      </div>
+
+      <div className="card">
         <h2 className="card-title">Danger zone</h2>
         <p className="page-description">
           Removing a skill updates the manifest and lockfile only; files on disk are kept.
@@ -327,4 +333,208 @@ function AgentToggleList({
 
 function shortDigest(value: string): string {
   return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`
+}
+
+type LifecycleActionKind = 'fork' | 'vendor' | 'restore' | 'merge' | 'continue' | 'abort'
+
+interface LifecycleCandidate {
+  kind: LifecycleActionKind
+  label: string
+  hint: string
+}
+
+/**
+ * M17/M18/M20 — lifecycle actions for one skill. The available actions follow
+ * the mode/status state machine: managed skills can fork / restore / vendor /
+ * merge; forked skills can vendor / merge; a skill in conflict state can
+ * continue or abort an in-flight merge. Every action runs through the
+ * Core-backed web API (and the cross-process mutation lock server-side).
+ */
+function LifecycleCard({ skill }: { skill: { name: string; mode: string; status: string } }) {
+  const fork = useLifecycleAction('fork')
+  const vendor = useLifecycleAction('vendor')
+  const restore = useLifecycleAction('restore')
+  const merge = useMergeSkill()
+  const [pending, setPending] = useState<LifecycleActionKind | null>(null)
+  const [result, setResult] = useState<LifecycleOperationResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const candidates: LifecycleCandidate[] = []
+  if (skill.mode === 'managed') {
+    candidates.push({
+      kind: 'fork',
+      label: 'Convert to fork',
+      hint: 'Copy the runtime into the repository and keep local edits.',
+    })
+    candidates.push({
+      kind: 'restore',
+      label: 'Restore upstream',
+      hint: 'Re-fetch the pinned revision — local edits are replaced (a recovery snapshot is kept).',
+    })
+  }
+  if (skill.mode === 'managed' || skill.mode === 'forked') {
+    candidates.push({
+      kind: 'vendor',
+      label: 'Vendor',
+      hint: 'Freeze the content in the repository and drop upstream tracking (terminal).',
+    })
+    candidates.push({
+      kind: 'merge',
+      label: 'Merge upstream',
+      hint: '3-way merge the latest upstream revision against the base.',
+    })
+  }
+  if (skill.status === 'conflict') {
+    candidates.push({
+      kind: 'continue',
+      label: 'Continue merge',
+      hint: 'Finish the merge after resolving the conflicts manually.',
+    })
+    candidates.push({
+      kind: 'abort',
+      label: 'Abort merge',
+      hint: 'Restore the pre-merge state.',
+    })
+  }
+
+  const dispatch = (kind: LifecycleActionKind): void => {
+    setError(null)
+    setResult(null)
+    const onSuccess = (data: LifecycleOperationResult): void => {
+      setPending(null)
+      setResult(data)
+    }
+    const onError = (err: unknown): void => {
+      setPending(null)
+      setError(errorMessage(err))
+    }
+    switch (kind) {
+      case 'fork':
+        fork.mutate(skill.name, { onSuccess, onError })
+        break
+      case 'vendor':
+        vendor.mutate(skill.name, { onSuccess, onError })
+        break
+      case 'restore':
+        restore.mutate(skill.name, { onSuccess, onError })
+        break
+      case 'merge':
+      case 'continue':
+      case 'abort':
+        merge.mutate({ name: skill.name, action: kind as MergeAction }, { onSuccess, onError })
+        break
+    }
+  }
+
+  const busy = fork.isPending || vendor.isPending || restore.isPending || merge.isPending
+
+  return (
+    <div>
+      <h2 className="card-title">Lifecycle</h2>
+      <p className="page-description">
+        Fork / vendor / restore / merge change the skill&apos;s mode and how it tracks upstream.
+      </p>
+      {candidates.length === 0 && (
+        <p className="page-description">No lifecycle actions for a {skill.mode} skill.</p>
+      )}
+      {candidates.length > 0 && (
+        <div className="agent-toggle-list">
+          {candidates.map((candidate) => {
+            const isPending = pending === candidate.kind
+            return (
+              <div key={candidate.kind} className="agent-toggle-row">
+                <div className="agent-toggle-info">
+                  <span className="agent-name">{candidate.label}</span>
+                  <span className="agent-id">{candidate.hint}</span>
+                </div>
+                {isPending ? (
+                  <div className="form-actions" style={{ margin: 0 }}>
+                    <button
+                      type="button"
+                      className="btn btn--primary btn--small"
+                      onClick={() => dispatch(candidate.kind)}
+                      disabled={busy}
+                    >
+                      {busy ? <span className="spinner" /> : <Check aria-hidden="true" />}
+                      Confirm
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      onClick={() => setPending(null)}
+                      disabled={busy}
+                    >
+                      <X aria-hidden="true" />
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn--small"
+                    onClick={() => {
+                      setPending(candidate.kind)
+                      setError(null)
+                    }}
+                    disabled={busy}
+                  >
+                    Run
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {result !== null && (
+        <p className="saved-note">
+          <LifecycleResultSummary result={result} />
+        </p>
+      )}
+      {error !== null && <div className="form-error">{error}</div>}
+    </div>
+  )
+}
+
+/** Human summary of a lifecycle outcome (fork / vendor / restore / merge). */
+function LifecycleResultSummary({ result }: { result: LifecycleOperationResult }) {
+  switch (result.action) {
+    case 'forked':
+      return (
+        <>
+          Forked — now at {result.localPath ?? 'the repository'} (base {result.revision}).
+        </>
+      )
+    case 'vendored':
+      return <>Vendored — content frozen at {result.localPath ?? 'the repository'}.</>
+    case 'restored':
+      return (
+        <>
+          Restored {result.filesRestored ?? 0} file(s) to the pinned revision{' '}
+          {result.revision ?? ''} — the runtime is pristine again.
+        </>
+      )
+    case 'merged':
+      if ((result.conflicts ?? []).length > 0) {
+        return (
+          <>
+            Merge left {result.conflicts?.length} conflicted file(s) — resolve them, then use{' '}
+            <strong>Continue merge</strong> or <strong>Abort merge</strong>.
+          </>
+        )
+      }
+      return <>Merged {result.filesMerged ?? 0} file(s) (base updated).</>
+    case 'continued':
+      if ((result.conflicts ?? []).length > 0) {
+        return (
+          <>
+            Merge is still in conflict ({result.conflicts?.length} file(s)) — resolve and continue
+            again, or abort.
+          </>
+        )
+      }
+      return <>Merge completed — {result.filesMerged ?? 0} file(s) updated.</>
+    case 'aborted':
+      return <>Merge aborted — restored {result.filesRestored ?? 0} file(s).</>
+  }
 }

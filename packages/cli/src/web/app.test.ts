@@ -35,6 +35,7 @@ import type {
   DiffService,
   InstallResult,
   InstallService,
+  LifecycleService,
   OutdatedSkill,
   RegistrySearchOptions,
   RegistrySearchResult,
@@ -541,8 +542,12 @@ class FakeGithubProvider implements RegistryProvider {
     return { source, revision: this.revision }
   }
 
-  async download(_source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
-    await cp(this.seedDir, targetDir, { recursive: true })
+  async download(source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
+    // Real providers materialize the skill *subtree* into `targetDir`.
+    const subPath = source.type === 'github' ? source.path : undefined
+    const seedRoot =
+      subPath === undefined ? this.seedDir : join(this.seedDir, ...subPath.split('/'))
+    await cp(seedRoot, targetDir, { recursive: true })
   }
 
   async getLatestRevision(): Promise<string> {
@@ -1148,5 +1153,251 @@ describe('GET /api/skills/:id/diff — real Core-backed diff service', () => {
         await writeLockfile(repository, emptyLockfile())
       },
     )
+  })
+})
+
+/* ---- V0.4 lifecycle API (M17 fork / M18 vendor / M17.3 restore / M20 merge) ---- */
+
+/**
+ * Seeds a managed skill (library copy + manifest + lockfile with a pinned
+ * revision) so the real Core lifecycle transactions have something to act on.
+ */
+async function seedManagedSkillWeb(
+  context: { repository: string; home: string },
+  alias = 'hello',
+): Promise<{ integrity: string; upstream: NormalizedSource }> {
+  const managedPath = join(context.home, 'library', 'managed', alias)
+  await mkdir(managedPath, { recursive: true })
+  await writeFile(join(managedPath, 'SKILL.md'), '# Hello\n')
+  await writeFile(join(managedPath, 'notes.md'), 'original\n')
+  const upstream: NormalizedSource = {
+    type: 'github',
+    repo: 'acme/skillz',
+    path: 'skills/hello',
+    ref: 'main',
+  }
+  const integrity = await computeSkillIntegrity(managedPath)
+  await writeManifest(
+    context.repository,
+    addSkill(emptyManifest(), alias, { source: upstream, mode: 'managed' }),
+  )
+  const locked = createLockedSkill({
+    mode: 'managed',
+    source: upstream,
+    integrity,
+    revision: 'abc123',
+  })
+  locked.upstream = {
+    source: upstream,
+    baseRevision: 'abc123',
+    baseIntegrity: integrity,
+    latestRevision: 'abc123',
+  }
+  const lockfile = emptyLockfile()
+  lockfile.skills[alias] = locked
+  await writeLockfile(context.repository, lockfile)
+  return { integrity, upstream }
+}
+
+describe('V0.4 lifecycle API — real Core transactions', () => {
+  it('forks a managed skill (M17.1): 201, mode flips to forked', async () => {
+    await withRealRegistryApp(
+      async ({ app, repository }) => {
+        const response = await app.request('/api/skills/hello/fork', { method: 'POST' })
+        expect(response.status).toBe(201)
+        const body = (await response.json()) as { result: { action: string } }
+        expect(body.result.action).toBe('forked')
+
+        const manifest = await readManifest(repository)
+        expect(manifest.skills['hello']?.mode).toBe('forked')
+        expect(manifest.skills['hello']?.source).toEqual({
+          type: 'local',
+          path: 'skills/hello',
+        })
+        await expect(
+          readFile(join(repository, 'skills', 'hello', 'SKILL.md'), 'utf8'),
+        ).resolves.toBe('# Hello\n')
+      },
+      async (context) => {
+        await seedManagedSkillWeb(context)
+      },
+    )
+  })
+
+  it('vendors a managed skill (M18): 201, mode flips to vendored', async () => {
+    await withRealRegistryApp(
+      async ({ app, repository }) => {
+        const response = await app.request('/api/skills/hello/vendor', { method: 'POST' })
+        expect(response.status).toBe(201)
+        const body = (await response.json()) as { result: { action: string } }
+        expect(body.result.action).toBe('vendored')
+
+        const manifest = await readManifest(repository)
+        expect(manifest.skills['hello']?.mode).toBe('vendored')
+      },
+      async (context) => {
+        await seedManagedSkillWeb(context)
+      },
+    )
+  })
+
+  it('restores a modified managed skill to the pinned revision (M17.3)', async () => {
+    await withRealRegistryApp(
+      async ({ app, home }) => {
+        const response = await app.request('/api/skills/hello/restore', { method: 'POST' })
+        expect(response.status).toBe(201)
+        const body = (await response.json()) as {
+          result: { action: string; filesRestored?: number }
+        }
+        expect(body.result.action).toBe('restored')
+        expect(body.result.filesRestored).toBeGreaterThan(0)
+
+        // The local edit is gone; the runtime matches the pinned content again.
+        await expect(
+          readFile(join(home, 'library', 'managed', 'hello', 'SKILL.md'), 'utf8'),
+        ).resolves.toBe('# Hello\n')
+        await expect(
+          readFile(join(home, 'library', 'managed', 'hello', 'edited.md'), 'utf8'),
+        ).rejects.toThrow()
+      },
+      async (context) => {
+        const seed = await seedManagedSkillWeb(context)
+        // Divergence: the user edited the runtime copy locally.
+        await writeFile(join(context.home, 'library', 'managed', 'hello', 'edited.md'), 'local\n')
+        void seed
+        // Provider re-downloads the pinned content. FakeGithubProvider
+        // materializes the subtree under `source.path`, so the seed is a
+        // full-repo shape with the skill at `skills/hello`.
+        const seedDir = join(context.home, 'upstream-seed')
+        await mkdir(join(seedDir, 'skills', 'hello'), { recursive: true })
+        await writeFile(join(seedDir, 'skills', 'hello', 'SKILL.md'), '# Hello\n')
+        await writeFile(join(seedDir, 'skills', 'hello', 'notes.md'), 'original\n')
+        registerProvider(new FakeGithubProvider(seedDir, 'abc123'))
+      },
+    )
+  })
+})
+
+describe('V0.4 lifecycle API — merge routing and envelopes', () => {
+  it('routes merge / continue / abort through the lifecycle service', async () => {
+    const calls: string[] = []
+    const lifecycle: LifecycleService = {
+      fork: async (name) => ({ name, action: 'forked' }),
+      vendor: async (name) => ({ name, action: 'vendored' }),
+      restore: async (name) => ({ name, action: 'restored', filesRestored: 4 }),
+      merge: async (name, action) => {
+        calls.push(`${name}:${action}`)
+        return {
+          name,
+          action: action === 'continue' ? 'continued' : action === 'abort' ? 'aborted' : 'merged',
+          filesMerged: 3,
+        }
+      },
+    }
+    await withLifecycleApp(lifecycle, async (app) => {
+      const merged = await app.request('/api/skills/hello/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(merged.status).toBe(201)
+      expect(((await merged.json()) as { result: { action: string } }).result.action).toBe('merged')
+
+      const continued = await app.request('/api/skills/hello/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'continue' }),
+      })
+      expect(((await continued.json()) as { result: { action: string } }).result.action).toBe(
+        'continued',
+      )
+
+      const aborted = await app.request('/api/skills/hello/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'abort' }),
+      })
+      expect(((await aborted.json()) as { result: { action: string } }).result.action).toBe(
+        'aborted',
+      )
+
+      // An unknown action falls back to the full merge.
+      expect(calls).toEqual(['hello:merge', 'hello:continue', 'hello:abort'])
+    })
+  })
+
+  it('maps lifecycle errors onto the M10.8 envelope (409 illegal transition)', async () => {
+    const lifecycle: LifecycleService = {
+      fork: async () => {
+        throw new SkillboxError(
+          ErrorCode.LIFECYCLE_ILLEGAL_TRANSITION,
+          'Skill "hello" cannot transition from vendored to forked',
+          { context: { from: 'vendored', to: 'forked' } },
+        )
+      },
+      vendor: async (name) => ({ name, action: 'vendored' }),
+      restore: async (name) => ({ name, action: 'restored' }),
+      merge: async (name, action) => ({ name, action: action === 'abort' ? 'aborted' : 'merged' }),
+    }
+    await withLifecycleApp(lifecycle, async (app) => {
+      const response = await app.request('/api/skills/hello/fork', { method: 'POST' })
+      expect(response.status).toBe(409)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('LIFECYCLE_ILLEGAL_TRANSITION')
+    })
+  })
+})
+
+/** Builds a web app with an injected lifecycle service (routing tests). */
+async function withLifecycleApp(
+  lifecycle: LifecycleService,
+  run: (app: Hono) => Promise<void>,
+): Promise<void> {
+  const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-lifecycle-repo-'))
+  const home = await mkdtemp(join(tmpdir(), 'skillbox-web-lifecycle-home-'))
+  try {
+    const services = createWebServices({ repositoryRoot: repository, homeRoot: home, lifecycle })
+    const app = createWebApp({ services })
+    await run(app)
+  } finally {
+    await rm(repository, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+describe('V0.4.2 rollback API', () => {
+  it('lists backups and restores the runtime of a removed skill', async () => {
+    await withApp(async (app, { home }) => {
+      const created = await app.request('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'hello', description: 'demo' }),
+      })
+      expect(created.status).toBe(201)
+
+      const removed = await app.request('/api/skills/hello', { method: 'DELETE' })
+      expect(removed.status).toBe(200)
+      await expect(
+        readFile(join(home, 'library', 'local', 'hello', 'SKILL.md'), 'utf8'),
+      ).rejects.toThrow()
+
+      const list = await app.request('/api/rollbacks')
+      expect(list.status).toBe(200)
+      const body = (await list.json()) as {
+        rollbacks: Array<{ id: string; operation: string; kind: string }>
+      }
+      const runtime = body.rollbacks.find(
+        (record) => record.operation === 'remove' && record.kind === 'runtime',
+      )
+      expect(runtime).toBeDefined()
+
+      const restored = await app.request(`/api/rollbacks/${runtime?.id ?? ''}/restore`, {
+        method: 'POST',
+      })
+      expect(restored.status).toBe(201)
+      await expect(
+        readFile(join(home, 'library', 'local', 'hello', 'SKILL.md'), 'utf8'),
+      ).resolves.toContain('# hello')
+    })
   })
 })

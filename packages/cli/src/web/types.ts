@@ -1,7 +1,9 @@
 import type {
   AgentRegistry,
+  BackupRecord,
   ReconcileResult,
   RepositoryStatus,
+  RollbackResult,
   RuntimeConfig,
   RuntimeConfigService,
   SkillDiff,
@@ -134,6 +136,44 @@ export interface DiffService {
   diffSkill(name: string): Promise<SkillDiff>
 }
 
+/** One lifecycle operation's outcome, rendered by the Web UI. */
+export interface LifecycleOperationResult {
+  name: string
+  action: 'forked' | 'vendored' | 'restored' | 'merged' | 'continued' | 'aborted'
+  /** Repo-relative path of the forked/vendored copy (when applicable). */
+  localPath?: string
+  /** Revision the skill is based on / restored to (when applicable). */
+  revision?: string
+  /** Files restored to the lockfile integrity (restore / merge abort). */
+  filesRestored?: number
+  /** Files merged (3-way merge). */
+  filesMerged?: number
+  /** Conflict hunks left in the content (0 = clean merge). */
+  changes?: number
+  /** Conflicts left after a merge / continue (empty = clean). */
+  conflicts?: Array<{ path: string; hunks: number; reason?: string }>
+  /** New base revision after a clean merge. */
+  baseRevision?: string
+}
+
+/**
+ * V0.4 lifecycle operations (fork / vendor / restore / merge) behind the web
+ * API. Every method delegates to the Core transaction
+ * (`@skillbox/core/lifecycle` / `merge`); errors keep their Skillbox code so
+ * the M10.8 envelope maps them (LIFECYCLE_ILLEGAL_TRANSITION,
+ * INTEGRITY_MISMATCH, MERGE_CONFLICT, …).
+ */
+export interface LifecycleService {
+  /** Managed → Forked (M17.1): copy the runtime into the repository. */
+  fork(name: string): Promise<LifecycleOperationResult>
+  /** Managed/Forked → Vendored (M18): freeze content, drop upstream. */
+  vendor(name: string): Promise<LifecycleOperationResult>
+  /** Managed → restored upstream (M17.3): re-materialize the pinned revision. */
+  restore(name: string): Promise<LifecycleOperationResult>
+  /** 3-way merge (M20.6) / `--continue` / `--abort` of one skill. */
+  merge(name: string, action: 'merge' | 'continue' | 'abort'): Promise<LifecycleOperationResult>
+}
+
 /**
  * The Core services the Web layer is allowed to talk to. Every API route goes
  * through one of these services; the web layer never touches skill files or
@@ -153,6 +193,8 @@ export interface WebServices {
   install: InstallService
   /** V0.4 skill diff computation (agent 2 contract). */
   diff: DiffService
+  /** V0.4 lifecycle operations (fork / vendor / restore / merge). */
+  lifecycle: LifecycleService
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
@@ -220,6 +262,16 @@ export interface InstallResponse {
 /** Success shape of `GET /api/skills/:id/diff` (M19.5). */
 export interface SkillDiffResponse {
   diff: SkillDiff
+}
+
+/** Success shape of `GET /api/rollbacks` (roadmap 2.4). */
+export interface RollbackListResponse {
+  rollbacks: BackupRecord[]
+}
+
+/** Success shape of `POST /api/rollbacks/:id/restore` (roadmap 2.4). */
+export interface RollbackRestoreResponse {
+  rollback: RollbackResult
 }
 
 /** Options accepted by {@link createWebApp}. */

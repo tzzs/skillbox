@@ -1,21 +1,28 @@
 import {
+  abortMerge,
+  continueMerge,
   createDefaultAgentRegistry,
   defaultRegistry,
   diffSkill,
   ErrorCode,
+  forkSkill,
   fromManifestSource,
+  GitSourceProvider,
   GitHubProvider,
   installSkill,
   isSkillboxError,
   LocalProvider,
+  mergeSkill,
   parseSource,
   readLockfile,
   readManifest,
+  restoreManagedSkill,
   RuntimeConfigService,
   SkillsShProvider,
   SkillService,
   sourceToString,
   StatusService,
+  vendorSkill,
   type AgentRegistry,
   type RegistryProvider,
   type RegistrySearchResult as CoreRegistrySearchResult,
@@ -29,6 +36,8 @@ import type {
   InstallInput,
   InstallResult,
   InstallService,
+  LifecycleOperationResult,
+  LifecycleService,
   OutdatedSkill,
   RegistrySearchOptions,
   RegistrySearchResult,
@@ -67,6 +76,11 @@ export interface CreateWebServicesOptions {
    * `defaultRegistry`); tests inject fakes to override.
    */
   diff?: DiffService
+  /**
+   * V0.4 lifecycle operations (fork / vendor / restore / merge). Defaults to
+   * the Core transactions; tests inject fakes to override.
+   */
+  lifecycle?: LifecycleService
 }
 
 /**
@@ -98,6 +112,89 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     updates: options.updates ?? createUpdatesService(repositoryRoot),
     install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
     diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
+    lifecycle: options.lifecycle ?? createLifecycleService(repositoryRoot, homeRoot, registry),
+  }
+}
+
+/**
+ * V0.4 lifecycle operations behind the web API (M17 fork / M18 vendor /
+ * M17.3 restore / M20 merge). Every method delegates to the Core transaction
+ * and maps the result onto the web shape; errors keep their Skillbox code so
+ * the M10.8 envelope can offer the right recovery hint.
+ */
+function createLifecycleService(
+  repositoryRoot: string,
+  homeRoot: string,
+  registry: AgentRegistry,
+): LifecycleService {
+  return {
+    async fork(name: string): Promise<LifecycleOperationResult> {
+      const result = await forkSkill(name, { repositoryRoot, homeRoot })
+      return {
+        name: result.alias,
+        action: 'forked',
+        localPath: result.repositoryPath,
+        revision: result.baseRevision,
+      }
+    },
+    async vendor(name: string): Promise<LifecycleOperationResult> {
+      const result = await vendorSkill(name, { repositoryRoot, homeRoot })
+      return {
+        name: result.alias,
+        action: 'vendored',
+        localPath: result.repositoryPath,
+      }
+    },
+    async restore(name: string): Promise<LifecycleOperationResult> {
+      const result = await restoreManagedSkill(name, {
+        repositoryRoot,
+        homeRoot,
+        agentRegistry: registry,
+      })
+      return {
+        name: result.alias,
+        action: 'restored',
+        revision: result.revision,
+        filesRestored: result.filesRestored,
+      }
+    },
+    async merge(
+      name: string,
+      action: 'merge' | 'continue' | 'abort',
+    ): Promise<LifecycleOperationResult> {
+      if (action === 'abort') {
+        const result = await abortMerge(name, { repositoryRoot, homeRoot })
+        return { name: result.name, action: 'aborted', filesRestored: result.filesRestored }
+      }
+      if (action === 'continue') {
+        const result = await continueMerge(name, { repositoryRoot, homeRoot })
+        return {
+          name: result.name,
+          action: 'continued',
+          filesMerged: result.filesMerged,
+          changes: result.changes,
+          conflicts: result.remainingConflicts.map((conflict) => ({
+            path: conflict.path,
+            hunks: conflict.hunks,
+            ...(conflict.reason !== undefined ? { reason: conflict.reason } : {}),
+          })),
+          ...(result.baseRevision !== undefined ? { baseRevision: result.baseRevision } : {}),
+        }
+      }
+      const result = await mergeSkill(name, { repositoryRoot, homeRoot })
+      return {
+        name: result.name,
+        action: 'merged',
+        filesMerged: result.filesMerged,
+        changes: result.changes,
+        conflicts: result.conflicts.map((conflict) => ({
+          path: conflict.path,
+          hunks: conflict.hunks,
+          ...(conflict.reason !== undefined ? { reason: conflict.reason } : {}),
+        })),
+        ...(result.baseRevision !== undefined ? { baseRevision: result.baseRevision } : {}),
+      }
+    },
   }
 }
 
@@ -129,6 +226,7 @@ let defaultProvidersRegistered = false
 const DEFAULT_PROVIDER_FACTORIES: ReadonlyArray<() => RegistryProvider> = [
   () => new GitHubProvider(),
   () => new SkillsShProvider(),
+  () => new GitSourceProvider(),
   () => new LocalProvider(),
 ]
 

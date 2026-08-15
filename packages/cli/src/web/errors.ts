@@ -50,6 +50,19 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
      base snapshot in its current state. */
   [ErrorCode.DIFF_UPSTREAM_UNAVAILABLE]: 409,
   [ErrorCode.DIFF_BASE_UNAVAILABLE]: 409,
+  /* V0.4 lifecycle layer (M17/M18/M20): illegal transitions and merge-state
+     conflicts are client-side mistakes, not infrastructure faults. */
+  [ErrorCode.LIFECYCLE_ILLEGAL_TRANSITION]: 409,
+  [ErrorCode.LIFECYCLE_MANAGED_MODIFIED]: 409,
+  [ErrorCode.MERGE_BINARY_CONFLICT]: 409,
+  [ErrorCode.MERGE_ALREADY_IN_PROGRESS]: 409,
+  [ErrorCode.MERGE_NOT_IN_PROGRESS]: 409,
+  [ErrorCode.MERGE_NO_BASE]: 409,
+  [ErrorCode.MERGE_INVALID_STATE]: 409,
+  [ErrorCode.FORK_TARGET_EXISTS]: 409,
+  [ErrorCode.VENDOR_TARGET_EXISTS]: 409,
+  [ErrorCode.RESTORE_FAILED]: 500,
+  [ErrorCode.RUNTIME_LOCKED]: 409,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */
