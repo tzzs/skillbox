@@ -33,6 +33,7 @@ import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
 import { scanSkillForSecurity } from '../security/index.js'
+import { emitSkillboxEvent } from '../events/index.js'
 import { ManagedCache, type CacheEntry } from './cache.js'
 import type { InstallResult, InstallSkillOptions, UpdateSkillOptions } from './types.js'
 
@@ -349,6 +350,7 @@ async function runInstallTransaction(
     }
     const resolved = await options.provider.resolve(source)
     revision = resolved.revision
+    emitSkillboxEvent({ type: 'install:phase', phase: 'resolve', alias, revision })
     if (revision === '') {
       throw new SkillboxError(
         ErrorCode.INSTALL_SOURCE_UNRESOLVED,
@@ -401,9 +403,11 @@ async function runInstallTransaction(
       downloadUsed = true
       skillRoot = downloadDir
     }
+    emitSkillboxEvent({ type: 'install:phase', phase: 'download', alias, revision })
 
     /* Step 4 — Structure Validate: SKILL.md (and optional skillbox.yaml). */
     await validateSkillStructure(skillRoot, filesystem)
+    emitSkillboxEvent({ type: 'install:phase', phase: 'validate', alias, revision })
 
     /* Step 5 — Integrity: hash must equal the source/lockfile expectation (M15.5). */
     const integrity = await computeSkillIntegrity(skillRoot)
@@ -435,6 +439,13 @@ async function runInstallTransaction(
       )
     }
     const security = { risk: securityScan.risk, scannedAt: new Date().toISOString() }
+    emitSkillboxEvent({
+      type: 'install:phase',
+      phase: 'security',
+      alias,
+      revision,
+      detail: security.risk,
+    })
 
     // Cache the verified + accepted download (M15.3). Placed after the security
     // gate so a blocked install never leaves content behind.
@@ -459,6 +470,13 @@ async function runInstallTransaction(
       )
     }
     materializedPath = materialized.path
+    emitSkillboxEvent({
+      type: 'install:phase',
+      phase: 'materialize',
+      alias,
+      revision,
+      detail: materialized.status,
+    })
 
     /* Step 8 — Manifest: the repository gains only a Manifest entry (M15.3);
        the update flow replaces the existing entry instead (M16.2). */
@@ -484,6 +502,7 @@ async function runInstallTransaction(
         : updateManifestSkill(manifest, alias, manifestPatch)
     await writeManifest(repositoryRoot, nextManifest)
     manifestWritten = true
+    emitSkillboxEvent({ type: 'install:phase', phase: 'manifest', alias, revision })
 
     /* Step 9 — Lock: revision / integrity / security / upstream (SPEC §117). */
     const lockfile = await readLockfileOrEmpty(repositoryRoot)
@@ -503,6 +522,7 @@ async function runInstallTransaction(
     }
     await writeLockfile(repositoryRoot, nextLockfile)
     lockfileWritten = true
+    emitSkillboxEvent({ type: 'install:phase', phase: 'lockfile', alias, revision })
 
     /* Step 10 — Agents: link the materialized skill to each target agent. */
     for (const agentId of targetAgents) {
@@ -544,6 +564,7 @@ async function runInstallTransaction(
       }
     }
 
+    emitSkillboxEvent({ type: 'install:completed', alias, revision, integrity })
     return {
       alias,
       mode: 'managed',
@@ -569,6 +590,11 @@ async function runInstallTransaction(
         // best effort
       }
     }
+    emitSkillboxEvent({
+      type: 'install:failed',
+      alias,
+      error: error instanceof Error ? error.message : String(error),
+    })
     try {
       await rollback()
     } catch (rollbackError) {

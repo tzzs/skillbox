@@ -19,6 +19,7 @@ import type {
 } from '../registry/types.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { installSkill, defaultAliasFor } from './transaction.js'
+import { defaultEventBus } from '../events/index.js'
 import { ManagedCache } from './cache.js'
 
 const GITHUB_SOURCE: NormalizedSource = {
@@ -299,6 +300,36 @@ describe('installSkill', () => {
           ref: 'main',
         },
       })
+    })
+  })
+
+  it('emits install lifecycle events on the default event bus', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      await fs.mkdir(repoRoot, { recursive: true })
+
+      const seed = path.join(dir, 'seed')
+      await seedRepo(seed)
+
+      const events: Array<{ type: string; phase?: string }> = []
+      const subscription = defaultEventBus.on((event) => events.push(event))
+      try {
+        await installSkill(GITHUB_SOURCE, {
+          repositoryRoot: repoRoot,
+          provider: new FakeGithubProvider(seed, 'abc123'),
+          homeRoot,
+        })
+      } finally {
+        subscription.unsubscribe()
+      }
+
+      expect(
+        events.filter((event) => event.type === 'install:phase').map((event) => event.phase),
+      ).toEqual(
+        expect.arrayContaining(['resolve', 'download', 'validate', 'materialize', 'lockfile']),
+      )
+      expect(events.some((event) => event.type === 'install:completed')).toBe(true)
     })
   })
 
