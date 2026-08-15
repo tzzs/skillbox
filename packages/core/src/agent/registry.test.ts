@@ -46,7 +46,7 @@ describe('AgentRegistry', () => {
         .list()
         .map((adapter) => adapter.id)
         .sort(),
-    ).toEqual(['claude', 'codex', 'cursor', 'gemini'])
+    ).toEqual(['claude', 'codex', 'copilot', 'cursor', 'gemini', 'opencode', 'windsurf'])
   })
 
   it('reports undetected agents with a zero skill count', async () => {

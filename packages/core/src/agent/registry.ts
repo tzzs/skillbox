@@ -9,6 +9,9 @@ import { ClaudeAdapter } from './adapters/claude.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { CursorAdapter } from './adapters/cursor.js'
 import { GeminiAdapter } from './adapters/gemini.js'
+import { OpenCodeAdapter } from './adapters/opencode.js'
+import { WindsurfAdapter } from './adapters/windsurf.js'
+import { CopilotAdapter } from './adapters/copilot.js'
 
 /** Detection status of one agent, enriched with its installed skills. */
 export interface AgentDetectionSummary {
@@ -117,4 +120,7 @@ export function createDefaultAgentRegistry(): AgentRegistry {
     .register(new CodexAdapter())
     .register(new CursorAdapter())
     .register(new GeminiAdapter())
+    .register(new OpenCodeAdapter())
+    .register(new WindsurfAdapter())
+    .register(new CopilotAdapter())
 }
