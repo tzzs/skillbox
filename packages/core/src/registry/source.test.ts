@@ -160,11 +160,7 @@ describe('parseSource', () => {
   })
 
   it('rejects known-but-unsupported schemes with SOURCE_UNSUPPORTED', () => {
-    for (const input of [
-      'git:https://git.example.com/org/repo',
-      'gitlab:org/repo',
-      'git@github.com:org/repo.git',
-    ]) {
+    for (const input of ['ssh:git@example.com:org/repo.git', 'file:/tmp/skill']) {
       let caught: unknown
       try {
         parseSource(input)
@@ -174,6 +170,58 @@ describe('parseSource', () => {
       expect(isSkillboxError(caught)).toBe(true)
       expect(caught).toMatchObject({ code: ErrorCode.SOURCE_UNSUPPORTED })
     }
+  })
+
+  it('parses gitlab:/bitbucket: host shorthands as git sources', () => {
+    expect(parseSource('gitlab:org/repo')).toEqual({
+      type: 'git',
+      url: 'https://gitlab.com/org/repo',
+    })
+    expect(parseSource('gitlab:org/repo#main')).toEqual({
+      type: 'git',
+      url: 'https://gitlab.com/org/repo',
+      ref: 'main',
+    })
+    expect(parseSource('bitbucket:org/repo.git')).toEqual({
+      type: 'git',
+      url: 'https://bitbucket.org/org/repo.git',
+    })
+  })
+
+  it('parses generic git sources (git: URL and scp-style)', () => {
+    expect(parseSource('git:https://git.example.com/org/repo.git')).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+    })
+    expect(parseSource('git:https://git.example.com/org/repo.git#main')).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+      ref: 'main',
+    })
+    expect(parseSource('git@git.example.com:org/repo.git')).toEqual({
+      type: 'git',
+      url: 'git@git.example.com:org/repo.git',
+    })
+    expect(parseSource('git@git.example.com:org/repo.git#v1.0.0')).toEqual({
+      type: 'git',
+      url: 'git@git.example.com:org/repo.git',
+      ref: 'v1.0.0',
+    })
+  })
+
+  it('round-trips git sources through string / manifest / normalized forms', () => {
+    const normalized = parseSource('git:https://git.example.com/org/repo.git#main')
+    expect(sourceToString(normalized)).toBe('git:https://git.example.com/org/repo.git#main')
+    const manifest = toManifestSource(normalized)
+    expect(manifest).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+      ref: 'main',
+    })
+    expect(fromManifestSource(manifest)).toEqual(normalized)
+    expect(normalizeSourceString('git:https://git.example.com/org/repo.git#main')).toBe(
+      'git:https://git.example.com/org/repo.git#main',
+    )
   })
 
   it('rejects unsupported github.com URL shapes', () => {
@@ -272,8 +320,15 @@ describe('toManifestSource / fromManifestSource', () => {
     expect(fromManifestSource(toManifestSource(normalized))).toEqual(normalized)
   })
 
-  it('returns null for git and non-skills.sh registry sources', () => {
-    expect(fromManifestSource({ type: 'git', url: 'https://example.com/r.git' })).toBeNull()
+  it('returns null only for non-skills.sh registry sources', () => {
+    // `git` sources gained a registry representation (GitSourceProvider).
+    expect(
+      fromManifestSource({ type: 'git', url: 'https://example.com/r.git', path: 'skills/hello' }),
+    ).toEqual({
+      type: 'git',
+      url: 'https://example.com/r.git',
+      path: 'skills/hello',
+    })
     expect(fromManifestSource({ type: 'registry', registry: 'other', package: 'pkg' })).toBeNull()
   })
 })

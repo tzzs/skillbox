@@ -17,6 +17,9 @@ import type { NormalizedSource } from './types.js'
  * | `org/repo#main`                      | `{type:'github', repo, ref}`     |
  * | `https://github.com/org/repo/tree/main/p` | `{type:'github', repo, ref, path}` |
  * | `skills.sh/<name>`                   | `{type:'skills-sh', package}`    |
+ * | `git:https://host/org/repo.git`      | `{type:'git', url}`              |
+ * | `git:https://host/org/repo.git#main` | `{type:'git', url, ref}`         |
+ * | `git@host:org/repo.git`              | `{type:'git', url}`              |
  * | `./dir`, `C:\dir`, `/abs/dir`        | `{type:'local', path}`           |
  *
  * The lockfile stores the normalized form; the manifest may keep the
@@ -32,7 +35,13 @@ const OWNER_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 const WINDOWS_DRIVE = /^[A-Za-z]:[\\/]/
 
-const UNSUPPORTED_SCHEMES = ['git:', 'gitlab:', 'bitbucket:', 'ssh:', 'file:', 'git@']
+const UNSUPPORTED_SCHEMES = ['ssh:', 'file:']
+
+/** Host shorthands mapped onto generic git URLs (`gitlab:org/repo`). */
+const GIT_HOST_SHORTHANDS: Record<string, string> = {
+  gitlab: 'https://gitlab.com',
+  bitbucket: 'https://bitbucket.org',
+}
 
 /** GitHub shorthand expression without scheme: `owner/repo[@path][#ref]`. */
 const GITHUB_EXPRESSION =
@@ -203,6 +212,41 @@ function isLocalInput(input: string): boolean {
   )
 }
 
+/** `git:<url>[#ref]` — generic git remotes (GitLab/Bitbucket/self-hosted). */
+function parseGitExpression(input: string, expression: string): NormalizedSource {
+  let rest = expression.trim()
+  let ref: string | undefined
+  const hashIndex = rest.indexOf('#')
+  if (hashIndex !== -1) {
+    ref = normalizeRef(rest.slice(hashIndex + 1), input)
+    rest = rest.slice(0, hashIndex)
+  }
+  const url = rest.trim()
+  if (url.length === 0) {
+    throw invalidSource(input, 'expected git:<url>')
+  }
+  return {
+    type: 'git',
+    url,
+    ...(ref !== undefined ? { ref } : {}),
+  }
+}
+
+/** `git@host:path[#ref]` — scp-style git URLs (GitLab/Bitbucket/self-hosted). */
+function parseScpGit(input: string): NormalizedSource {
+  const hashIndex = input.indexOf('#')
+  const url = (hashIndex === -1 ? input : input.slice(0, hashIndex)).trim()
+  if (!/^git@[^:\s]+:.+/.test(url)) {
+    throw invalidSource(input, 'expected git@host:path')
+  }
+  const ref = hashIndex === -1 ? undefined : normalizeRef(input.slice(hashIndex + 1), input)
+  return {
+    type: 'git',
+    url,
+    ...(ref !== undefined ? { ref } : {}),
+  }
+}
+
 /**
  * Parses a user-facing source expression into its canonical `NormalizedSource`.
  *
@@ -231,6 +275,21 @@ export function parseSource(input: string): NormalizedSource {
     return parseSkillsSh(input, trimmed.slice('skills.sh/'.length))
   }
 
+  const gitScheme = /^git:/i.exec(trimmed)
+  if (gitScheme !== null) {
+    return parseGitExpression(input, trimmed.slice(gitScheme[0].length))
+  }
+
+  if (trimmed.startsWith('git@')) {
+    return parseScpGit(trimmed)
+  }
+
+  for (const [scheme, base] of Object.entries(GIT_HOST_SHORTHANDS)) {
+    if (trimmed.startsWith(`${scheme}:`)) {
+      return parseGitExpression(input, `${base}/${trimSlashes(trimmed.slice(scheme.length + 1))}`)
+    }
+  }
+
   if (trimmed.startsWith('https://github.com/') || trimmed.startsWith('http://github.com/')) {
     return parseGithubUrl(trimmed)
   }
@@ -251,7 +310,7 @@ export function parseSource(input: string): NormalizedSource {
 
   throw invalidSource(
     trimmed,
-    'expected github:org/repo, https://github.com/org/repo, org/repo@path, skills.sh/<name>, ./dir or an absolute path',
+    'expected github:org/repo, https://github.com/org/repo, org/repo@path, skills.sh/<name>, git:<url>, git@host:path, ./dir or an absolute path',
   )
 }
 
@@ -268,6 +327,11 @@ export function sourceToString(source: NormalizedSource): string {
       let value = `skills.sh/${source.package}`
       if (source.path !== undefined) value += `@${source.path}`
       if (source.version !== undefined) value += `#${source.version}`
+      return value
+    }
+    case 'git': {
+      let value = `git:${source.url}`
+      if (source.ref !== undefined) value += `#${source.ref}`
       return value
     }
     case 'local':
@@ -314,6 +378,13 @@ export function toManifestSource(source: NormalizedSource): ManifestSkillSource 
         package: source.package,
         ...(source.version !== undefined ? { version: source.version } : {}),
       }
+    case 'git':
+      return {
+        type: 'git',
+        url: source.url,
+        ...(source.path !== undefined ? { path: source.path } : {}),
+        ...(source.ref !== undefined ? { ref: source.ref } : {}),
+      }
     case 'local':
       return { type: 'local', path: source.path }
   }
@@ -321,7 +392,7 @@ export function toManifestSource(source: NormalizedSource): ManifestSkillSource 
 
 /**
  * Inverse of {@link toManifestSource}. Returns `null` when the manifest source
- * has no registry representation (`git` URLs, non-skills.sh registries).
+ * has no registry representation (non-skills.sh registries).
  */
 export function fromManifestSource(source: ManifestSkillSource): NormalizedSource | null {
   switch (source.type) {
@@ -341,9 +412,14 @@ export function fromManifestSource(source: ManifestSkillSource): NormalizedSourc
         package: source.package,
         ...(source.version !== undefined ? { version: source.version } : {}),
       }
+    case 'git':
+      return {
+        type: 'git',
+        url: source.url,
+        ...(source.path !== undefined ? { path: source.path } : {}),
+        ...(source.ref !== undefined ? { ref: source.ref } : {}),
+      }
     case 'local':
       return { type: 'local', path: source.path }
-    case 'git':
-      return null
   }
 }

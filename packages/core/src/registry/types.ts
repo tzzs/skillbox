@@ -1,7 +1,12 @@
 /** Registry source types the framework can normalize and dispatch on. */
-export type RegistrySourceType = 'github' | 'skills-sh' | 'local'
+export type RegistrySourceType = 'github' | 'skills-sh' | 'git' | 'local'
 
-export const REGISTRY_SOURCE_TYPES: readonly RegistrySourceType[] = ['github', 'skills-sh', 'local']
+export const REGISTRY_SOURCE_TYPES: readonly RegistrySourceType[] = [
+  'github',
+  'skills-sh',
+  'git',
+  'local',
+]
 
 /** Where the skill lives inside a GitHub repository. */
 export interface GithubNormalizedSource {
@@ -37,12 +42,27 @@ export interface LocalNormalizedSource {
 }
 
 /**
+ * A generic git repository source (`git:` URLs and scp-style `git@host:path`
+ * expressions, i.e. any host). GitHub is handled by {@link GithubNormalizedSource};
+ * GitLab / Bitbucket / self-hosted remotes land here.
+ */
+export interface GitNormalizedSource {
+  type: 'git'
+  /** Clone URL (https / ssh / scp-style). */
+  url: string
+  /** Repo-relative skill directory inside the checkout. */
+  path?: string
+  /** Branch / tag / commit pin. */
+  ref?: string
+}
+
+/**
  * Canonical form of a skill source (SPEC §23). Every registry-aware consumer
  * (search/add/outdated/update, install transaction, web) works against this
  * shape; the lockfile records it verbatim.
  */
 export type NormalizedSource =
-  GithubNormalizedSource | SkillsShNormalizedSource | LocalNormalizedSource
+  GithubNormalizedSource | SkillsShNormalizedSource | GitNormalizedSource | LocalNormalizedSource
 
 /** Security review state reported by a registry (or unknown). */
 export type SecurityReviewState = 'unknown' | 'reviewed'

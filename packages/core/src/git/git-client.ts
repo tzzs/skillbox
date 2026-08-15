@@ -250,6 +250,25 @@ export class GitClient {
     return result.stdout.trim()
   }
 
+  /**
+   * `git ls-remote <url> <ref>` — resolves a remote ref name (branch / tag /
+   * `HEAD`) to its object id without cloning. Returns `undefined` when the
+   * ref does not exist on the remote.
+   */
+  async lsRemote(
+    url: string,
+    ref = 'HEAD',
+    options: { auth?: GitTransportAuth } = {},
+  ): Promise<string | undefined> {
+    const result = await this.runGit(
+      process.cwd(),
+      ['ls-remote', url, ref],
+      authOptions(options.auth),
+    )
+    const first = result.stdout.trim().split(/\s+/)[0]
+    return first === undefined || first === '' ? undefined : first
+  }
+
   /** Whether the git binary responds on this machine. */
   async isInstalled(): Promise<boolean> {
     try {
