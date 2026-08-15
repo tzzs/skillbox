@@ -254,10 +254,13 @@ runtime config schema 新增可选 `version` 字段。CLI 新增 `skillbox migra
 runtime/repo-dir 备份；merge 的 pre-merge backup（`merge/state.ts`）保持独立（与 merge state 强耦合）。
 仍缺：destructive migration 的备份（当前无 destructive 迁移，migration registry 为空）。
 
-### 4.4 Event Bus / Progress Model
+### 4.4 ✅ Event Bus / Progress Model（部分落地，2026-08-15）
 
-无进程内 Event Bus；无 Download progress、Install lifecycle events、Git sync events、
-Security finding events、Web/TUI 实时进度订阅。
+`packages/core/src/events/`：进程内 `EventBus`（类型化 `SkillboxEvent`、同步 fire-and-forget、
+单个坏 listener 不影响 emit）+ `defaultEventBus`。**Install 事务已发事件**（resolve/download/validate/
+security/materialize/manifest/lockfile phase + completed/failed），CLI `main()` 订阅并镜像到审计日志
+（phase → debug，completed → info，failed → warn）。仍缺：reconcile/git-sync/security-finding 事件、
+Web SSE / TUI 实时进度订阅（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
 
 ### 4.5 ✅ Doctor 与 Debug Bundle（2026-08-14）
 
@@ -472,6 +475,14 @@ Security finding events、Web/TUI 实时进度订阅。
   增加 `memory` 选项 + `SKILLBOX_CREDENTIAL_STORE=memory` env seam（headless E2E）
 - `docs/e2e-acceptance.md` 结果化（§6.3）
 - 验证：e2e 8/8（+connect）、core 776/776、CLI 295/295、typecheck / lint ✅
+
+### 9.15 本轮（git 就绪后第四批）交付
+
+- **Event Bus（§4.4）**：`events/bus.ts`（类型化事件 + defaultEventBus + 隔离坏 listener）；
+  install 事务全程发 `install:phase/completed/failed` 事件；CLI `main()` 订阅并镜像到
+  `~/.skillbox/logs/skillbox.log`（phase→debug、completed→info、failed→warn，订阅随命令结束释放）
+- 测试：`events/bus.test.ts` 2 例 + install 事件 1 例
+- 验证：core 779/779、CLI 295/295、e2e 8/8、typecheck / lint / build ✅
 
 ### 9.12 本轮（git 就绪后）交付
 
