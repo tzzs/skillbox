@@ -12,6 +12,8 @@ import {
   useSkill,
   useSkillContent,
   useToggleSkill,
+  useRestoreRollback,
+  useRollbacks,
 } from '../queries.js'
 import { AgentTags, ModePill, SkillPath, StatusPill } from '../components/Pills.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
@@ -233,6 +235,10 @@ export function SkillDetailPage() {
       </div>
 
       <div className="card">
+        <RollbackCard skillName={skill.name} />
+      </div>
+
+      <div className="card">
         <h2 className="card-title">Danger zone</h2>
         <p className="page-description">
           Removing a skill updates the manifest and lockfile only; files on disk are kept.
@@ -265,6 +271,50 @@ export function SkillDetailPage() {
         {remove.isError && <div className="form-error">{errorMessage(remove.error)}</div>}
       </div>
     </section>
+  )
+}
+
+function RollbackCard({ skillName }: { skillName: string }) {
+  const backups = useRollbacks()
+  const restore = useRestoreRollback()
+  const relevant = (backups.data ?? []).filter((backup) => backup.alias === skillName)
+  return (
+    <>
+      <h2 className="card-title">Rollback</h2>
+      {relevant.length === 0 ? (
+        <p className="page-description">No recoverable backups are available for this skill.</p>
+      ) : (
+        <div className="agent-toggle-list">
+          {relevant.slice(0, 5).map((backup) => (
+            <div className="agent-toggle-row" key={backup.id}>
+              <div className="agent-toggle-info">
+                <span className="agent-name">{backup.operation}</span>
+                <span className="agent-id">{new Date(backup.createdAt).toLocaleString()}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn--small"
+                disabled={restore.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Restore backup from ${new Date(backup.createdAt).toLocaleString()}?`,
+                    )
+                  )
+                    restore.mutate(backup.id)
+                }}
+              >
+                {restore.isPending ? <span className="spinner" /> : 'Restore'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {restore.isSuccess && (
+        <p className="saved-note">Rollback restored {restore.data.filesRestored} files.</p>
+      )}
+      {restore.isError && <div className="form-error">{errorMessage(restore.error)}</div>}
+    </>
   )
 }
 

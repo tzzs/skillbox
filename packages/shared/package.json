@@ -2,7 +2,7 @@
   "name": "@skillbox/shared",
   "version": "0.1.0",
   "description": "Skillbox shared utilities",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,11 +33,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/REPO.git",
+    "url": "https://github.com/tzzs/skillbox.git",
     "directory": "packages/shared"
   },
-  "homepage": "https://github.com/OWNER/REPO#readme",
+  "homepage": "https://github.com/tzzs/skillbox#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/REPO/issues"
+    "url": "https://github.com/tzzs/skillbox/issues"
   }
 }

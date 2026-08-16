@@ -14,13 +14,13 @@
 |------|------|------|
 | version / create → list → remove / install / 未知命令 | `e2e.test.ts` | ✅ 5 例通过 |
 | create → commit → push → fresh-clone → pull → status（bare remote fixture） | `e2e-git.test.ts` | ✅ 2 例通过 |
-| connect：Device Flow → 建私仓 → git init → 绑定 origin（本地假 GitHub API） | `e2e-connect.test.ts` | ✅ 1 例通过 |
+| connect：Device Flow → 建私仓 → git init → 绑定 origin（本地假 GitHub API） | `e2e-connect.test.ts` | ✅ 4 例通过（slow_down / denied / expired / success） |
 
 运行方式：`pnpm build && pnpm test:e2e`（CI build job 已接入）。测试基线（本机，git 2.47.3）：
 core 776/776、CLI 295/295、e2e 8/8、typecheck/lint/build 全绿。
 
-> 自动化尚未覆盖：授权超时/取消/重试、私仓认证失败、三平台（Windows/macOS/Linux）真实 Agent 目录
-> 与 Credential Store 行为——这些仍按下方手工手册验收。
+> 自动化已覆盖：授权 slow_down 重试、denied/expired 失败和私仓认证失败。三平台（Windows/macOS/Linux）真实 Agent 目录
+> 与 Credential Store 行为仍需发布前手工验收。
 
 ---
 

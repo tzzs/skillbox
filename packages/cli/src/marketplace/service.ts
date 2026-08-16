@@ -3,6 +3,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   ErrorCode,
+  ManagedCache,
+  buildSkillboxHomeLayout,
   fromManifestSource,
   isSkillboxError,
   readLockfile,
@@ -101,10 +103,10 @@ export class MarketplaceService {
    * the target agent → install transaction → summary.
    *
    * The security review runs BEFORE anything is written: the pinned revision
-   * is downloaded into a temp dir, scanned with agent 2's static scanner, and
-   * HIGH-risk skills are gated on explicit confirmation (`--yes` or an
-   * interactive prompt). The temp download is discarded after the scan; the
-   * install transaction downloads again through the managed cache (M15.3).
+   * is read from the managed cache when available, otherwise downloaded into
+   * a temp dir and scanned. HIGH-risk skills are gated on explicit confirmation
+   * (`--yes` or an interactive prompt); cache misses are populated by the
+   * install transaction (M15.3).
    */
   async add(input: {
     source: string
@@ -326,6 +328,12 @@ export class MarketplaceService {
     source: NormalizedSource,
     revision: string,
   ): Promise<SecurityScanResult> {
+    const cache = new ManagedCache(buildSkillboxHomeLayout(this.options.homeRoot).cache)
+    const cached = await cache.get(source, revision).catch(() => null)
+    if (cached !== null) {
+      return await this.options.scanner.scan(cached.path)
+    }
+
     let provider: RegistryProvider
     try {
       provider = await this.options.registryClient.providerFor(source)

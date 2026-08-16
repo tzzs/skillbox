@@ -443,8 +443,8 @@ const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction',
 
 interface SettingsWebPatch {
   linkStrategy?: LinkStrategy
-  web?: { port?: number; open?: boolean }
-  agents?: Record<string, { path?: string }>
+  web?: { port?: number; host?: string; open?: boolean }
+  agents?: Record<string, { path?: string; skillDirectories?: string[] }>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -493,6 +493,12 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
       }
       web.port = raw.web.port
     }
+    if (raw.web.host !== undefined) {
+      if (typeof raw.web.host !== 'string' || raw.web.host.trim().length === 0) {
+        throw new WebApiError('INVALID_REQUEST', 'Field "web.host" must be a non-empty string')
+      }
+      web.host = raw.web.host.trim()
+    }
     if (raw.web.open !== undefined) {
       if (typeof raw.web.open !== 'boolean') {
         throw new WebApiError('INVALID_REQUEST', 'Field "web.open" must be a boolean')
@@ -511,13 +517,41 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
       if (value === undefined) {
         continue
       }
-      if (!isRecord(value) || typeof value.path !== 'string') {
+      if (!isRecord(value)) {
+        throw new WebApiError('INVALID_REQUEST', `Agent override "${agentId}" must be an object`)
+      }
+      if (value.path !== undefined && typeof value.path !== 'string') {
         throw new WebApiError(
           'INVALID_REQUEST',
-          `Agent override "${agentId}" must be an object with a "path" string (empty removes it)`,
+          `Agent override "${agentId}" path must be a string`,
         )
       }
-      agents[agentId] = { path: value.path }
+      let skillDirectories: string[] | undefined
+      if (value.skillDirectories !== undefined) {
+        if (
+          !Array.isArray(value.skillDirectories) ||
+          value.skillDirectories.length === 0 ||
+          value.skillDirectories.some(
+            (item) => typeof item !== 'string' || item.trim().length === 0,
+          )
+        ) {
+          throw new WebApiError(
+            'INVALID_REQUEST',
+            `Agent override "${agentId}" skillDirectories must be a non-empty string array`,
+          )
+        }
+        skillDirectories = value.skillDirectories.map((item) => item.trim())
+      }
+      if (value.path === undefined && skillDirectories === undefined) {
+        throw new WebApiError(
+          'INVALID_REQUEST',
+          `Agent override "${agentId}" has no editable fields`,
+        )
+      }
+      agents[agentId] = {
+        ...(value.path === undefined ? {} : { path: value.path }),
+        ...(skillDirectories === undefined ? {} : { skillDirectories }),
+      }
     }
     patch.agents = agents
   }
@@ -540,6 +574,9 @@ function mergeSettings(current: RuntimeConfig, patch: SettingsWebPatch): Runtime
     if (patch.web.port !== undefined) {
       mergedWeb.port = patch.web.port
     }
+    if (patch.web.host !== undefined) {
+      mergedWeb.host = patch.web.host
+    }
     if (patch.web.open !== undefined) {
       mergedWeb.open = patch.web.open
     }
@@ -550,18 +587,27 @@ function mergeSettings(current: RuntimeConfig, patch: SettingsWebPatch): Runtime
     let touched = false
     for (const [agentId, override] of Object.entries(patch.agents)) {
       const existing = mergedAgents[agentId]
-      const entry: { path?: string; executable?: string } = {}
+      const entry: { path?: string; executable?: string; skillDirectories?: string[] } = {}
       if (existing !== undefined) {
         if (existing.path !== undefined) entry.path = existing.path
-        else if (existing.executable !== undefined) entry.executable = existing.executable
+        if (existing.executable !== undefined) entry.executable = existing.executable
+        if (existing.skillDirectories !== undefined)
+          entry.skillDirectories = [...existing.skillDirectories]
       }
       touched = true
-      if (!(typeof override.path === 'string' && override.path.length > 0)) {
+      if (override.path !== undefined) {
+        if (override.path.length === 0) delete entry.path
+        else {
+          entry.path = override.path
+          delete entry.executable
+        }
+      }
+      if (override.skillDirectories !== undefined)
+        entry.skillDirectories = [...override.skillDirectories]
+      if (Object.keys(entry).length === 0) {
         delete mergedAgents[agentId]
         continue
       }
-      entry.path = override.path
-      delete entry.executable
       mergedAgents[agentId] = entry
     }
     if (touched) {

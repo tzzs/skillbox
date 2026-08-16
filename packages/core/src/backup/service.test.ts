@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { withTempDir } from '../fs/test-utils.js'
 import { ErrorCode } from '../errors.js'
@@ -204,5 +205,31 @@ describe('BackupService', () => {
       // The content dir is untouched (the transaction's rollback removes it).
       await expect(fs.stat(target)).resolves.toBeDefined()
     })
+  })
+})
+
+describe('metadata snapshots', () => {
+  it('restores manifest and lockfile presence atomically', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-backup-meta-'))
+    const repo = path.join(home, 'repo')
+    await fs.mkdir(repo, { recursive: true })
+    const manifest = path.join(repo, 'skillbox.yaml')
+    const lockfile = path.join(repo, 'skillbox.lock')
+    await fs.writeFile(manifest, 'before-manifest')
+    await fs.writeFile(lockfile, 'before-lock')
+    const service = new BackupService({ homeRoot: home })
+    const record = await service.snapshotMetadata({
+      id: 'metadata-1',
+      operation: 'install',
+      repositoryRoot: repo,
+      manifestPath: manifest,
+      lockfilePath: lockfile,
+    })
+    await fs.writeFile(manifest, 'after-manifest')
+    await fs.rm(lockfile)
+    await service.rollback(record.id, { repositoryRoot: repo })
+    expect(await fs.readFile(manifest, 'utf8')).toBe('before-manifest')
+    expect(await fs.readFile(lockfile, 'utf8')).toBe('before-lock')
+    await fs.rm(home, { recursive: true, force: true })
   })
 })
