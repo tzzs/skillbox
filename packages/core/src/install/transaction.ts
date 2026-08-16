@@ -339,9 +339,9 @@ async function runInstallTransaction(
   try {
     /* Step 1 — Resolve: pin the source to a concrete revision. */
     if (options.provider === undefined) {
-      // TODO(agent-1): resolve the provider through the registry framework
-      // (`packages/core/src/registry/`) once it lands; callers currently
-      // inject a provider instance.
+      // Callers resolve the provider through the registry framework
+      // (`packages/core/src/registry/`) before invoking the transaction —
+      // `updateSkill` falls back to `resolveProvider(source.type)`.
       throw new SkillboxError(
         ErrorCode.INSTALL_SOURCE_UNRESOLVED,
         `No registry provider is wired for "${source.type}" sources`,

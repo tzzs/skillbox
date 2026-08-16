@@ -234,8 +234,9 @@ Logger、verbosity、脱敏与 CLI flags 已落地。**CLI mutation 审计日志
 `packages/core/src/operations/lock.ts`：跨进程 mutation 锁（`~/.skillbox/state/locks/<name>.lock`），
 原子创建（O_EXCL）+ owner 元数据（pid/hostname/createdAt）+ stale 检测（默认 10min，自动破除并重试）+
 安全释放（只删自己仍持有的锁）。CLI 全部 mutation 命令（create/remove/enable/disable/install/sync/pull/
-add/update/fork/vendor/edit/merge）已用 `mutation(ctx, …)` 包裹（同一个 `mutation` 锁）。测试：
-`operations/lock.test.ts` 5 例 + CLI 锁冲突测试。Interactive/Web 直连服务的路径待接入（Web 随 §3.2 一并接入）。
+add/update/fork/vendor/edit/merge）已用 `mutation(ctx, …)` 包裹（同一个 `mutation` 锁）；**Interactive
+session** 的 create/import/sync 也已接入（`withMutation`，含审计日志）；Web 全部 mutating 路由同样接入
+（§3.2）。测试：`operations/lock.test.ts` 5 例 + CLI 锁冲突测试。
 
 ### 4.2 ✅ Schema Migration（2026-08-14）
 
@@ -328,9 +329,11 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 - ✅ 已清理：`skill-lifecycle/service.ts` 的「`detectManagedModifications` has not landed」、
   `skill-lifecycle/types.ts` / `loaders.ts` 的 `restoreManagedSkill` TODO（Restore 已实现）、
   `sync/loaders.ts` 的旧 GitHub 构造器注释
+- ✅ 已清理：`install/transaction.ts` 的 provider TODO（registry 框架已落地，注释更新为现状描述）、
+  `marketplace/types.ts` 的 updateSkill TODO（已由 `@skillbox/core/install` 提供）
 - 仍准确：`exit-codes.ts`「until agent 2 lands `MERGE_CONFLICT`」（Core `ErrorCode` 确无
-  `MERGE_CONFLICT`，有 `MERGE_BINARY_CONFLICT` 等）、`marketplace/service.ts` 的 git/registry
-  source TODO（§3.1）、`install/transaction.ts` 的 provider TODO（§3.1 的不一致）
+  `MERGE_CONFLICT`，有 `MERGE_BINARY_CONFLICT` 等）、`marketplace/service.ts` 的 cache 公开 API TODO
+  （§4.2）
 
 ### 7.2 重复 Adapter、动态导入与双 Orchestrator（部分缓解）
 
@@ -553,4 +556,12 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
   明确标注"非加密、OS keychain 可用时禁用"；`createCredentialStore` seam 测试 +2、单元测试 +1
 - **private remote auth failure 旅程**（e2e +1）：connect（file store）→ 二次进程 push 到 401 远端 →
   干净认证失败；证明 connect 的 token 跨进程持久化 + credential bridge 到达 git 传输层
+- 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅
+
+### 9.20 本轮（git 就绪后第九批）交付
+
+- **Interactive session mutation 锁（§4.1 收尾）**：`session.withMutation` 包裹 create / import /
+  sync 三个变更入口（跨进程 `mutation` 锁 + 审计日志），与 CLI 命令、Web 路由三端一致
+- **过时注释清理（§7.1）**：`install/transaction.ts` provider TODO、`marketplace/types.ts`
+  updateSkill TODO 更新为现状描述
 - 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅

@@ -232,13 +232,10 @@ export interface InstallResult {
 }
 
 /**
- * CLI-side update request for `skillbox update <name>` (M16.2).
- *
- * TODO(marketplace, agent 2): satisfied at runtime by agent 2's `updateSkill`
- * export from `@skillbox/core/install` once it lands; until then the loader
- * adapter surfaces a "not available in this build yet" error. The core
- * transaction must preserve the existing agent links (MVP #136) and bump the
- * lockfile `revision` / `integrity`.
+ * CLI-side update request for `skillbox update <name>` (M16.2). Satisfied at
+ * runtime by `updateSkill` from `@skillbox/core/install`, which preserves the
+ * existing agent links (MVP #136) and bumps the lockfile `revision` /
+ * `integrity`.
  */
 export interface UpdateSkillInput {
   /** Skill alias recorded in the manifest/lockfile. */

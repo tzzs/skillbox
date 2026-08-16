@@ -4,6 +4,7 @@ import {
   FilesystemService,
   isSkillboxError,
   RuntimeConfigService,
+  withRuntimeLock,
   SkillboxHome,
   SkillService,
   StatusService,
@@ -134,6 +135,27 @@ export class InteractiveSession {
   /* First-run onboarding (M9.4)                                        */
   /* ------------------------------------------------------------------ */
 
+  /** Runs a mutating interactive operation under the cross-process mutation
+   *  lock (roadmap 5.1), mirroring the CLI commands' audit logging. */
+  private async withMutation<T>(operation: string, action: () => Promise<T>): Promise<T> {
+    return withRuntimeLock(
+      'mutation',
+      async () => {
+        try {
+          const result = await action()
+          this.ctx.logger.info(`mutation:${operation}:done`)
+          return result
+        } catch (error) {
+          this.ctx.logger.warn(`mutation:${operation}:failed`, {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
+      },
+      { homeRoot: this.ctx.homeRoot },
+    )
+  }
+
   private async isFirstRun(): Promise<boolean> {
     return !(await this.filesystem.exists(this.markerPath))
   }
@@ -184,7 +206,7 @@ export class InteractiveSession {
   }
 
   private async syncNow(): Promise<void> {
-    const result = await this.skills.install()
+    const result = await this.withMutation('sync', () => this.skills.install())
     const state = result.changed ? 'changed' : 'unchanged'
     this.prompts.success(
       `Synced "${result.repository}" (${result.skills.length} skills, ${result.problems.length} problems, ${state}).`,
@@ -309,7 +331,7 @@ export class InteractiveSession {
       if (desc !== undefined) {
         input.description = desc
       }
-      const created = await this.skills.createSkill(input)
+      const created = await this.withMutation('create', () => this.skills.createSkill(input))
       this.prompts.success(`Created skill "${created.name}"`)
       this.prompts.info(`  repo:    ${created.path}`)
       this.prompts.info(`  library: ${created.materialized.path}`)
@@ -382,10 +404,16 @@ export class InteractiveSession {
     }
 
     const plan = buildImportPlan(candidates, choices)
+    const outcomes = await this.withMutation('import', async () => {
+      const results: Array<'imported' | 'conflict' | 'none'> = []
+      for (const item of plan) {
+        results.push(await this.importOne(item))
+      }
+      return results
+    })
     let imported = 0
     let conflictsReset = 0
-    for (const item of plan) {
-      const outcome = await this.importOne(item)
+    for (const outcome of outcomes) {
       if (outcome === 'imported') {
         imported += 1
       } else if (outcome === 'conflict') {
