@@ -79,10 +79,10 @@ importers:
         specifier: ^1.13.7
         version: 1.19.17(hono@4.13.1)
       '@skillbox/core':
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../core
       '@skillbox/shared':
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../shared
       commander:
         specifier: ^13.1.0
