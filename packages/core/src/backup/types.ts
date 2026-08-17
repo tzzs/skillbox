@@ -7,7 +7,7 @@
 export const BACKUP_INDEX_VERSION = 1 as const
 
 /** What a backup contains (decides how rollback restores it). */
-export type BackupKind = 'runtime' | 'repo-dir'
+export type BackupKind = 'runtime' | 'repo-dir' | 'repo-metadata'
 
 export interface BackupRecord {
   /** Stable id (`<operation>-<alias>-<timestamp>`), also the backup dir name. */
@@ -23,6 +23,15 @@ export interface BackupRecord {
   path: string
   /** Absolute path that was backed up — the restore target. */
   sourcePath: string
+  /** Optional metadata snapshot manifest for repo-metadata backups. */
+  metadata?:
+    | {
+        manifestPath: string
+        lockfilePath: string
+        manifestExists: boolean
+        lockfileExists: boolean
+      }
+    | undefined
   /** Repository the backup belongs to (cross-repo rollback is refused). */
   repositoryRoot: string
 }

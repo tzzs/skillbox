@@ -96,6 +96,22 @@ export function useSettings() {
   })
 }
 
+export function useRollbacks() {
+  return useQuery({ queryKey: ['rollbacks'], queryFn: () => api.rollbacks() })
+}
+
+export function useRestoreRollback() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.restoreRollback(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+      void queryClient.invalidateQueries({ queryKey: ['rollbacks'] })
+    },
+  })
+}
+
 export function useSaveSettings() {
   const queryClient = useQueryClient()
   return useMutation({

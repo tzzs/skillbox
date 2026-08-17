@@ -14,7 +14,9 @@ export const runtimeConfigSchema = z.object({
   linkStrategy: linkStrategySchema.optional(),
   web: z
     .object({
-      port: z.number().int().positive().optional(),
+      port: z.number().int().positive().max(65535).optional(),
+      /** Bind address used by the Web server (defaults to localhost). */
+      host: z.string().min(1).optional(),
       open: z.boolean().optional(),
     })
     .optional(),
@@ -24,6 +26,8 @@ export const runtimeConfigSchema = z.object({
       z.string().min(1),
       z.object({
         path: z.string().min(1).optional(),
+        /** Multiple skill roots override adapter-discovered directories. */
+        skillDirectories: z.array(z.string().min(1)).min(1).optional(),
         executable: z.string().min(1).optional(),
       }),
     )
@@ -69,7 +73,21 @@ function sortConfig(config: RuntimeConfig): RuntimeConfig {
   if (config.repository !== undefined) out.repository = config.repository
   if (config.linkStrategy !== undefined) out.linkStrategy = config.linkStrategy
   if (config.web !== undefined) out.web = { ...config.web }
-  if (config.agents !== undefined) out.agents = sortObjectRecord(config.agents)
+  if (config.agents !== undefined) {
+    out.agents = sortObjectRecord(
+      Object.fromEntries(
+        Object.entries(config.agents).map(([id, entry]) => [
+          id,
+          {
+            ...entry,
+            ...(entry.skillDirectories === undefined
+              ? {}
+              : { skillDirectories: [...entry.skillDirectories] }),
+          },
+        ]),
+      ),
+    )
+  }
   if (config.github !== undefined) out.github = { ...config.github }
   return out
 }

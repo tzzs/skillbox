@@ -171,14 +171,12 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
   `sync/pull/push`）、`skillbox sync/pull/push/connect/disconnect/status`、secret scan、multi-device。
   连接状态、remote/ahead/behind 与 connect 的仓库编排（建/选私仓、`git init`、绑定 origin）由
   `@skillbox/core/sync`（RepositorySync）提供。
-- **0.3 — Marketplace / Registry** ✅ 已落地：`skillbox search`、`add <source>`、managed cache、
-  `outdated` / `update`、Web Explore/Install/Updates。已知限制：`git:` / SSH / GitLab / Bitbucket source
-  暂不支持（见 GAP_ANALYSIS §3.1）。
-- **0.4 — Skill Lifecycle** 🚧 部分落地：`fork` / `vendor` / `diff` / 3-way merge（含 `--continue` / `--abort`）
-  已实现；`edit` 的 [Restore] 分支与通用 rollback 待实现（见 GAP_ANALYSIS §2.1 / §3.3）。
+- **0.3 — Marketplace / Registry** ✅ 已落地：`search`、`add`、managed cache、`git:` / GitLab / Bitbucket source、
+  `outdated` / `update`、Web Explore/Install/Updates；安全预览优先复用 managed cache。
+- **0.4 — Skill Lifecycle** ✅ 已落地：`fork` / `vendor` / `diff` / Restore / 3-way merge（含 `--continue` / `--abort`）、
+  通用 CLI/Web rollback 与操作恢复记录。
 - **安全层（P1）** ✅ 已落地：安装前 Security Scan、Web 风险展示、`.skillboxignore`。
-- **Hermetic CLI E2E** 🚧 `packages/testing` 提供 CLI 子进程 harness 与 git-free 旅程；git 旅程与三平台验收见
-  GAP_ANALYSIS §2.3 / §6.3。
+- **Hermetic CLI E2E** ✅ 已覆盖 git-free、bare remote、connect、授权失败、私仓认证失败旅程；三平台真实环境验收仍需发布前执行。
 
 > 权威状态清单以 **[GAP_ANALYSIS.md](./GAP_ANALYSIS.md)** 为准，本 Roadmap 只做概览。
 
@@ -224,9 +222,9 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
 
 Linux / macOS / Windows 三平台矩阵 CI（lint + typecheck + test + build）：
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/tzzs/skillbox/actions/workflows/ci.yml/badge.svg)](https://github.com/tzzs/skillbox/actions/workflows/ci.yml)
 
-> 占位：仓库公开并配置 GitHub Actions 后替换 `OWNER/REPO` 为实际值。
+> CI 状态来自 `tzzs/skillbox` GitHub Actions。
 
 ## Contributing
 

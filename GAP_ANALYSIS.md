@@ -207,23 +207,21 @@ Web 已补齐全部 lifecycle 操作（§1.5 路由清单已更新）：
 - **Web API**：`GET /api/rollbacks`、`POST /api/rollbacks/:id/restore`（走 mutation 锁）
 - 测试：`backup/service.test.ts` 7 例、restore rollback-able 1 例、remove 备份 1 例、CLI rollback 1 例、web rollback 1 例
 
-仍缺（非阻断）：Web UI 的 rollback 入口（可在 Skill Detail 的 lifecycle 卡片补一个 Restore-backup 按钮）；
-manifest/lockfile 快照级回滚（operation journal，roadmap 2.1 未做）。
+✅ Web UI 已提供 Skill Detail rollback 入口（按 Skill 展示备份并确认恢复）。
+manifest/lockfile 快照级回滚仍属于后续增强；当前 Operation Journal 已记录写操作状态并支持崩溃恢复标记。
 
-### 3.4 配置模型仍与 SPEC 有差异（部分未变）
+### 3.4 配置模型已与 Web/CLI 基本统一（2026-08-17）
 
-- `web` 配置仍只有 `port` / `open`，**缺 `web.host`**：CLI `web --host` flag 存在，但 config schema、
-  Settings 页面与 API 都不支持 host
-- Agent override 仍是单个 `path` / `executable`，SPEC 规划的 `skillDirectories: string[]` 只存在于
-  domain 检测模型（`domain/agent.ts`），尚未进入 Runtime Config 覆盖
-- 新增字段时应提供 schema migration 或向后兼容解析（与 §4.2 联动）
+- ✅ `web.host` 已进入 Runtime Config、Settings API/UI；CLI 参数优先于持久化配置
+- ✅ Agent override 已支持 `skillDirectories: string[]`，并保留旧 `path` / `executable` 兼容
+- 新增字段仍应继续提供 schema migration 或向后兼容解析（与 §4.2 联动）
 
 ### 3.5 Logging 尚未贯穿主要业务流水线（未变）
 
 Logger、verbosity、脱敏与 CLI flags 已落地。**CLI mutation 审计日志已接入**：`CliContext.logger`
 （默认写 `~/.skillbox/logs/skillbox.log`）+ 13 个 mutation 命令 + connect/disconnect 记录
 `mutation:<op>:start/done/failed`（含错误 message，经 redactor 脱敏）；debug bundle 的 log tail 现在有真实内容。
-仍缺：core 业务层（install/reconcile/registry/lifecycle 事务内部）的结构化 debug 事件。
+Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事件；registry/lifecycle 的专用结构化 debug 字段仍可继续细化。
 
 ---
 
@@ -298,15 +296,15 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 - ✅ cli / core / shared / root 已补齐 `license`（MIT）/ `repository` / `homepage` / `bugs` metadata；
   root 新增 `pnpm pack:verify`（`scripts/verify-package.mjs`：`npm pack --dry-run` 断言 bin/dist/
   dist/web 完整，并报告 private/workspace 两个发布 blocker）
-- 仍为决策项（脚本如实报告，不阻断）：`"private": true` 未移除、`workspace:*` 依赖需按
-  shared → core → cli 顺序发布、`OWNER/REPO` 占位待仓库公开后替换、provenance 发布配置
+- ✅ cli / core / shared 已移除 private blocker，CLI workspace 依赖已改为发布版本范围 `^0.1.0`；
+  `pack:verify` 已确认无 workspace blocker。仍需发布时配置 npm provenance 与实际 token。
 
 ### 6.2 README / Release Metadata（部分修复）
 
-- README CI badge 仍为 `OWNER/REPO` 占位（仓库公开前无法替换）
+- ✅ README CI badge 已替换为 `tzzs/skillbox` 实际地址
 - ✅ README Roadmap 已更新：0.2/0.3 标记已落地、0.4 部分落地、E2E 状态、Git 运行时依赖；
   `INSTALLATION.md` 系统要求同步
-- 发布 metadata（repository/homepage/bugs/license/provenance）待 §6.1 一并补齐
+- repository/homepage/bugs/license metadata 已补齐；provenance 需在真实 npm 发布环境中启用
 
 ### 6.3 E2E 验收与自动化（大部分落地）
 

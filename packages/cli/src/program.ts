@@ -11,6 +11,7 @@ import {
   ErrorCode,
   isSkillboxError,
   Logger,
+  RuntimeConfigService,
   migrateRepository,
   readLockfile,
   readManifest,
@@ -985,13 +986,29 @@ export function buildProgram(ctx: CliContext): Command {
   const webCommand = registerWebCommand(program)
   webCommand.action(async (flags: WebCommandFlags) => {
     const options = webOptionsFromFlags(flags)
+    const configured = await new RuntimeConfigService({
+      configFilePath: path.join(ctx.homeRoot, 'config.json'),
+    }).load()
+    const configuredWeb = configured.web ?? {}
     const started = await startWebServer({
-      repositoryRoot: options.repositoryRoot ?? ctx.repositoryRoot,
+      repositoryRoot: options.repositoryRoot ?? configured.repository ?? ctx.repositoryRoot,
       homeRoot: ctx.homeRoot,
       registry: ctx.registry,
-      ...(options.port === undefined ? {} : { port: options.port }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-      ...(options.open === undefined ? {} : { open: options.open }),
+      ...(options.port === undefined
+        ? configuredWeb.port === undefined
+          ? {}
+          : { port: configuredWeb.port }
+        : { port: options.port }),
+      ...(options.host === undefined
+        ? configuredWeb.host === undefined
+          ? {}
+          : { host: configuredWeb.host }
+        : { host: options.host }),
+      ...(options.open === undefined
+        ? configuredWeb.open === undefined
+          ? {}
+          : { open: configuredWeb.open }
+        : { open: options.open }),
       out: ctx.out,
       err: ctx.err,
     })

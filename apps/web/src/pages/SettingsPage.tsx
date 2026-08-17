@@ -18,6 +18,7 @@ const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction',
 interface MachineDraft {
   linkStrategy: LinkStrategy
   webPort: string
+  webHost: string
   webOpen: boolean
   agentPaths: Record<string, string>
 }
@@ -49,14 +50,15 @@ export function SettingsPage() {
     }
     const overrides: Record<string, string> = {}
     for (const [id, entry] of Object.entries(settings.agents ?? {})) {
-      if (entry !== null && typeof entry === 'object' && entry.path !== undefined) {
-        overrides[id] = entry.path
+      if (entry !== null && typeof entry === 'object') {
+        if (entry.path !== undefined) overrides[id] = entry.path
       }
     }
     setSeededOverrides(overrides)
     setDraft({
       linkStrategy: settings.linkStrategy ?? 'auto',
       webPort: settings.web?.port === undefined ? '' : String(settings.web.port),
+      webHost: settings.web?.host ?? '',
       webOpen: settings.web?.open ?? true,
       agentPaths: {},
     })
@@ -90,16 +92,22 @@ export function SettingsPage() {
       return
     }
     const patch: SettingsPatch = { linkStrategy: draft.linkStrategy }
-    const web: { port?: number; open?: boolean } = {
+    const web: { port?: number; host?: string; open?: boolean } = {
       ...(draft.webPort.trim() !== '' ? { port } : {}),
+      ...(draft.webHost.trim() !== '' ? { host: draft.webHost.trim() } : {}),
       open: draft.webOpen,
     }
     const currentPort = settings?.web?.port
+    const currentHost = settings?.web?.host ?? ''
     const currentOpen = settings?.web?.open ?? true
-    if (web.open !== currentOpen || (web.port ?? undefined) !== (currentPort ?? undefined)) {
+    if (
+      web.open !== currentOpen ||
+      (web.port ?? undefined) !== (currentPort ?? undefined) ||
+      (web.host ?? '') !== currentHost
+    ) {
       patch.web = web
     }
-    const agentPatch: Record<string, { path: string }> = {}
+    const agentPatch: Record<string, { path?: string; skillDirectories?: string[] }> = {}
     for (const agent of agents) {
       const value = draft.agentPaths[agent.id]
       if (value !== undefined) {
@@ -253,6 +261,18 @@ export function SettingsPage() {
                 </div>
 
                 <div className="settings-row">
+                  <div className="field" style={{ flex: 1 }}>
+                    <label className="field-label" htmlFor="setting-web-host">
+                      Web Host
+                    </label>
+                    <input
+                      id="setting-web-host"
+                      className="field-input"
+                      value={draft.webHost}
+                      onChange={(event) => setDraft({ ...draft, webHost: event.target.value })}
+                      placeholder="127.0.0.1"
+                    />
+                  </div>
                   <div className="field" style={{ flex: 1 }}>
                     <label className="field-label" htmlFor="setting-web-port">
                       Web Port

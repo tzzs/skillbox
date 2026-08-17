@@ -99,8 +99,8 @@ export type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
 /** Machine config persisted at `~/.skillbox/config.json` (GAP 1.2). */
 export interface RuntimeSettingsInput {
   linkStrategy?: LinkStrategy
-  web?: { port?: number; open?: boolean }
-  agents?: Record<string, { path?: string; executable?: string }>
+  web?: { port?: number; host?: string; open?: boolean }
+  agents?: Record<string, { path?: string; executable?: string; skillDirectories?: string[] }>
 }
 
 /**
@@ -110,8 +110,8 @@ export interface RuntimeSettingsInput {
  */
 export interface SettingsPatch {
   linkStrategy?: LinkStrategy
-  web?: { port?: number; open?: boolean }
-  agents?: Record<string, { path: string }>
+  web?: { port?: number; host?: string; open?: boolean }
+  agents?: Record<string, { path?: string; skillDirectories?: string[] }>
 }
 
 /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
@@ -263,6 +263,26 @@ export interface LifecycleOperationResult {
 /** Merge action accepted by `POST /api/skills/:id/merge`. */
 export type MergeAction = 'merge' | 'continue' | 'abort'
 
+export interface BackupRecord {
+  id: string
+  kind: 'runtime' | 'repo-dir'
+  operation: string
+  alias: string
+  createdAt: string
+  path: string
+  sourcePath: string
+  repositoryRoot: string
+}
+
+export interface RollbackResult {
+  id: string
+  kind: 'runtime' | 'repo-dir'
+  operation: string
+  alias: string
+  filesRestored: number
+  path: string
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -349,6 +369,8 @@ export interface ApiClient {
   vendorSkill(name: string): Promise<LifecycleOperationResult>
   restoreSkill(name: string): Promise<LifecycleOperationResult>
   mergeSkill(name: string, action?: MergeAction): Promise<LifecycleOperationResult>
+  rollbacks(): Promise<BackupRecord[]>
+  restoreRollback(id: string): Promise<RollbackResult>
 }
 
 function encodeName(name: string): string {
@@ -514,5 +536,18 @@ export const api: ApiClient = {
       { method: 'POST', body: JSON.stringify({ action }) },
     )
     return response.result
+  },
+
+  async rollbacks() {
+    const response = await request<{ rollbacks: BackupRecord[] }>('/api/rollbacks')
+    return response.rollbacks
+  },
+
+  async restoreRollback(id) {
+    const response = await request<{ rollback: RollbackResult }>(
+      `/api/rollbacks/${encodeURIComponent(id)}/restore`,
+      { method: 'POST' },
+    )
+    return response.rollback
   },
 }

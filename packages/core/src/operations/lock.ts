@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import { resolveSkillboxHome } from '../runtime/paths.js'
+import { OperationJournal } from './journal.js'
 
 /** Default lock age after which a lock is treated as stale (10 minutes). */
 export const DEFAULT_STALE_LOCK_MS = 10 * 60 * 1_000
@@ -25,6 +26,8 @@ export interface RuntimeLockOptions {
   now?: () => number
   hostname?: () => string
   pid?: number
+  /** Optional durable operation journal for crash recovery. */
+  journal?: OperationJournal
 }
 
 export interface RuntimeLockOwner {
@@ -39,7 +42,7 @@ export interface RuntimeLockHandle {
   readonly name: string
   readonly owner: RuntimeLockOwner
   /** Removes the lock file only when this process still owns it. */
-  release(): Promise<void>
+  release(completed?: boolean): Promise<void>
 }
 
 function serializeOwner(owner: RuntimeLockOwner): string {
@@ -110,6 +113,8 @@ export async function acquireRuntimeLock(
     operation: name,
   }
   const lockFile = lockPathOf(homeRoot, name)
+  const journal = options.journal
+  const journalRecord = journal === undefined ? undefined : await journal.begin(name)
 
   for (let attempt = 0; ; attempt += 1) {
     await filesystem.mkdir(lockDirOf(homeRoot))
@@ -153,7 +158,14 @@ export async function acquireRuntimeLock(
   return {
     name,
     owner,
-    release: () => releaseRuntimeLock(homeRoot, name, owner, filesystem),
+    release: async (completed = true) => {
+      await releaseRuntimeLock(homeRoot, name, owner, filesystem)
+      if (journalRecord !== undefined) {
+        await journal?.update(journalRecord.id, {
+          state: completed ? 'completed' : 'failed',
+        })
+      }
+    },
   }
 }
 
@@ -195,11 +207,18 @@ export async function withRuntimeLock<T>(
   fn: () => Promise<T>,
   options: RuntimeLockOptions = {},
 ): Promise<T> {
-  const handle = await acquireRuntimeLock(name, options)
+  const journal =
+    options.journal ??
+    new OperationJournal(options.homeRoot === undefined ? {} : { homeRoot: options.homeRoot })
+  await journal.recoverUnfinished()
+  const handle = await acquireRuntimeLock(name, { ...options, journal })
   try {
-    return await fn()
-  } finally {
-    await handle.release()
+    const result = await fn()
+    await handle.release(true)
+    return result
+  } catch (error) {
+    await handle.release(false)
+    throw error
   }
 }
 

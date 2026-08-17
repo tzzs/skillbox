@@ -105,6 +105,7 @@ export class BackupService {
     path: string
     sourcePath: string
     repositoryRoot: string
+    metadata?: BackupRecord['metadata']
   }): Promise<BackupRecord> {
     if (!(await this.filesystem.exists(input.path))) {
       throw new SkillboxError(
@@ -122,6 +123,7 @@ export class BackupService {
       path: path.resolve(input.path),
       sourcePath: path.resolve(input.sourcePath),
       repositoryRoot: path.resolve(input.repositoryRoot),
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     }
     const index = await this.loadIndex()
     const rest = index.backups.filter((existing) => existing.id !== record.id)
@@ -129,6 +131,41 @@ export class BackupService {
     await this.saveIndex(index)
     await this.prune()
     return record
+  }
+
+  /** Creates a manifest/lockfile snapshot before a repository mutation. */
+  async snapshotMetadata(input: {
+    id: string
+    operation: string
+    repositoryRoot: string
+    manifestPath: string
+    lockfilePath: string
+    alias?: string
+  }): Promise<BackupRecord> {
+    const snapshot = backupDir(this.homeRoot, input.id)
+    await this.filesystem.remove(snapshot)
+    await this.filesystem.mkdir(snapshot)
+    const manifestExists = await this.filesystem.exists(input.manifestPath)
+    const lockfileExists = await this.filesystem.exists(input.lockfilePath)
+    if (manifestExists)
+      await this.filesystem.copy(input.manifestPath, path.join(snapshot, 'skillbox.yaml'))
+    if (lockfileExists)
+      await this.filesystem.copy(input.lockfilePath, path.join(snapshot, 'skillbox.lock'))
+    return this.record({
+      id: input.id,
+      kind: 'repo-metadata',
+      operation: input.operation,
+      alias: input.alias ?? '*',
+      path: snapshot,
+      sourcePath: input.repositoryRoot,
+      repositoryRoot: input.repositoryRoot,
+      metadata: {
+        manifestPath: input.manifestPath,
+        lockfilePath: input.lockfilePath,
+        manifestExists,
+        lockfileExists,
+      },
+    })
   }
 
   /** Removes an index entry without touching its content (transaction rollback). */
@@ -181,11 +218,26 @@ export class BackupService {
       )
     }
     try {
-      if (await this.filesystem.exists(record.sourcePath)) {
-        await this.filesystem.remove(record.sourcePath)
+      if (record.kind === 'repo-metadata' && record.metadata !== undefined) {
+        const manifestBackup = path.join(record.path, 'skillbox.yaml')
+        const lockfileBackup = path.join(record.path, 'skillbox.lock')
+        await this.restoreOptionalFile(
+          manifestBackup,
+          record.metadata.manifestPath,
+          record.metadata.manifestExists,
+        )
+        await this.restoreOptionalFile(
+          lockfileBackup,
+          record.metadata.lockfilePath,
+          record.metadata.lockfileExists,
+        )
+      } else {
+        if (await this.filesystem.exists(record.sourcePath)) {
+          await this.filesystem.remove(record.sourcePath)
+        }
+        await this.filesystem.mkdir(path.dirname(record.sourcePath))
+        await this.filesystem.copy(record.path, record.sourcePath)
       }
-      await this.filesystem.mkdir(path.dirname(record.sourcePath))
-      await this.filesystem.copy(record.path, record.sourcePath)
     } catch (error) {
       throw new SkillboxError(
         ErrorCode.ROLLBACK_FAILED,
@@ -201,6 +253,24 @@ export class BackupService {
       alias: record.alias,
       filesRestored: scan.files.length,
       path: record.sourcePath,
+    }
+  }
+
+  private async restoreOptionalFile(
+    backup: string,
+    target: string,
+    existed: boolean,
+  ): Promise<void> {
+    if (existed) {
+      if (!(await this.filesystem.exists(backup)))
+        throw new SkillboxError(
+          ErrorCode.BACKUP_INCOMPLETE,
+          `Metadata snapshot is missing at "${backup}"`,
+        )
+      await this.filesystem.mkdir(path.dirname(target))
+      await this.filesystem.writeFile(target, await this.filesystem.readFile(backup))
+    } else if (await this.filesystem.exists(target)) {
+      await this.filesystem.remove(target)
     }
   }
 

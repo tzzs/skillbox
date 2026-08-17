@@ -24,9 +24,8 @@ export interface InstallSkillOptions {
    * Registry provider that resolves and downloads the source. Required for
    * remote sources (`github` / `skills-sh`).
    *
-   * TODO(agent-1): once the registry provider framework
-   * (`packages/core/src/registry/`) lands, wire the provider lookup here
-   * instead of requiring callers to pass an instance.
+   * When omitted, callers should resolve the provider through the registry
+   * framework before entering the transaction.
    */
   provider?: RegistryProvider
   /**
