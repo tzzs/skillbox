@@ -385,7 +385,11 @@ code,
 .content {
   overflow-y: auto;
   padding: 36px 44px 72px;
-  background-image: radial-gradient(ellipse 900px 500px at 50% -10%, var(--focus-ring), transparent 70%);
+  background-image: radial-gradient(
+    ellipse 900px 500px at 50% -10%,
+    var(--focus-ring),
+    transparent 70%
+  );
   background-repeat: no-repeat;
 }
 
