@@ -15,7 +15,7 @@ import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const packages = ['@skillbox/shared', '@skillbox/core', '@skillbox/web-server', '@skillbox/cli']
+const packages = ['@skillbox/shared', '@skillbox/core', '@skillbox/cli']
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const sandbox = await mkdtemp(join(tmpdir(), 'skillbox-pack-smoke-'))

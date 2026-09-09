@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ErrorCode } from '../errors.js'
-import { repositoryKey } from '../operations/lock.js'
+import { repositoryKey } from '../operations/sync-runtime-lock.js'
 import { ConflictSessionStore } from './conflict-session-store.js'
 import type { ConflictSession } from './types.js'
 

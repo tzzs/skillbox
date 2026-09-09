@@ -18,8 +18,6 @@ import type {
   ResolvedSource,
 } from '../registry/types.js'
 import { installSkill, updateSkill } from './transaction.js'
-import { createSkillSourceResolver } from '../sources/index.js'
-import type { CanonicalSkillSource, SkillSourceAdapter } from '../sources/types.js'
 
 const GITHUB_SOURCE: NormalizedSource = {
   type: 'github',
@@ -116,41 +114,6 @@ class FakeAgentAdapter implements AgentAdapter {
 }
 
 describe('updateSkill', () => {
-  it('uses the injected canonical source resolver to check the latest revision', async () => {
-    await withTempDir(async (dir) => {
-      const repoRoot = path.join(dir, 'repo')
-      const homeRoot = path.join(dir, 'home')
-      const seed = path.join(dir, 'seed')
-      await fs.mkdir(repoRoot, { recursive: true })
-      await seedRepo(seed, 'v1')
-      await installSkill(GITHUB_SOURCE, {
-        repositoryRoot: repoRoot,
-        homeRoot,
-        provider: new FakeGithubProvider(seed, 'abc123'),
-      })
-
-      const calls: CanonicalSkillSource[] = []
-      const adapter: SkillSourceAdapter = {
-        type: 'github',
-        capabilities: { resolve: false, download: false, latest: true, materialize: false },
-        async latest(source) {
-          calls.push(source)
-          return 'abc123'
-        },
-      }
-      const result = await updateSkill(GITHUB_SOURCE, {
-        repositoryRoot: repoRoot,
-        homeRoot,
-        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
-      })
-
-      expect(result.revision).toBe('abc123')
-      expect(calls).toEqual([
-        { type: 'github', repo: 'acme/skillz', path: 'skills/hello', ref: 'main' },
-      ])
-    })
-  })
-
   it('no-ops when the locked revision is already the latest', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')

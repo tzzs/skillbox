@@ -15,7 +15,6 @@ import { readLockfile, writeLockfile, type SkillboxLockfile } from '../lockfile/
 import type { ManifestSkillSource } from '../manifest/schema.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
-import { createOperationRuntime } from '../operations/runtime.js'
 import { baseSnapshotDir, saveBaseSnapshot } from './bases.js'
 import { assertLegalTransition } from './transitions.js'
 import type { ForkSkillOptions, ForkSkillResult } from './types.js'
@@ -129,159 +128,140 @@ export async function forkSkill(
     )
   }
 
+  /* --- rollback bookkeeping --- */
   const manifestPath = path.join(repositoryRoot, 'skillbox.yaml')
   const lockfilePath = path.join(repositoryRoot, 'skillbox.lock')
-  const operationRuntime =
-    options.operationRuntime ??
-    createOperationRuntime({
+  const manifestBefore = await snapshotFileOrUndefined(manifestPath, filesystem)
+  const lockfileBefore = await snapshotFileOrUndefined(lockfilePath, filesystem)
+  const createdDirs: string[] = []
+  let manifestWritten = false
+  let lockfileWritten = false
+  let rollbackFailed = false
+
+  const rollback = async (): Promise<void> => {
+    if (manifestWritten) {
+      try {
+        await restoreSnapshot(manifestPath, manifestBefore, filesystem)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+    if (lockfileWritten) {
+      try {
+        await restoreSnapshot(lockfilePath, lockfileBefore, filesystem)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+    for (const dir of [...createdDirs].reverse()) {
+      try {
+        await filesystem.remove(dir)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+  }
+
+  try {
+    /* Step 1 — Copy the managed runtime into the repository. */
+    try {
+      await filesystem.mkdir(path.dirname(targetPath))
+      await filesystem.copy(managedPath, targetPath)
+    } catch (error) {
+      throw new SkillboxError(
+        ErrorCode.LIFECYCLE_COPY_FAILED,
+        `Failed to copy "${alias}" from the managed library into the repository`,
+        { cause: error, context: { alias, source: managedPath, target: targetPath } },
+      )
+    }
+    createdDirs.push(targetPath)
+
+    /* Step 2 — Integrity of the repository copy. */
+    const integrity = await computeSkillIntegrity(targetPath)
+
+    /* Step 3 — Save the Base Snapshot (M17.4, git-trackable inside the repo). */
+    const baseSnapshotPath = baseSnapshotDir(repositoryRoot, alias, baseRevision)
+    // Tracked before the copy so a failed snapshot still gets cleaned up;
+    // the parent chain is only removed when this run created it.
+    createdDirs.push(baseSnapshotPath)
+    const baseParent = path.dirname(baseSnapshotPath)
+    const basesRoot = path.dirname(baseParent)
+    const [baseParentExisted, basesRootExisted] = await Promise.all([
+      filesystem.exists(baseParent),
+      filesystem.exists(basesRoot),
+    ])
+    if (!baseParentExisted) {
+      createdDirs.push(baseParent)
+    }
+    if (!basesRootExisted) {
+      createdDirs.push(basesRoot)
+    }
+    await saveBaseSnapshot({
       repositoryRoot,
-      ...(options.homeRoot !== undefined ? { homeRoot: options.homeRoot } : {}),
+      alias,
+      revision: baseRevision,
+      source: managedPath,
+      filesystem,
     })
-  const baseRoot = path.join(repositoryRoot, '.skillbox', 'bases', alias)
 
-  return (
-    await operationRuntime.runExclusive<ForkSkillResult>({
-      kind: 'fork',
-      targets: [manifestPath, lockfilePath, targetPath, baseRoot],
-      execute: async () => {
-        /* --- compatibility rollback bookkeeping --- */
-        const manifestBefore = await snapshotFileOrUndefined(manifestPath, filesystem)
-        const lockfileBefore = await snapshotFileOrUndefined(lockfilePath, filesystem)
-        const createdDirs: string[] = []
-        let manifestWritten = false
-        let lockfileWritten = false
-        let rollbackFailed = false
+    /* Step 4 — Manifest: source → local, mode → forked, record upstream. */
+    const localSource: ManifestSkillSource = { type: 'local', path: targetRel }
+    const nextManifest = updateSkill(manifest, alias, {
+      mode: 'forked',
+      source: localSource,
+      upstream: upstreamSource,
+    })
+    await writeManifest(repositoryRoot, nextManifest)
+    manifestWritten = true
 
-        const rollback = async (): Promise<void> => {
-          if (manifestWritten) {
-            try {
-              await restoreSnapshot(manifestPath, manifestBefore, filesystem)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-          if (lockfileWritten) {
-            try {
-              await restoreSnapshot(lockfilePath, lockfileBefore, filesystem)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-          for (const dir of [...createdDirs].reverse()) {
-            try {
-              await filesystem.remove(dir)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-        }
-
-        try {
-          /* Step 1 — Copy the managed runtime into the repository. */
-          try {
-            await filesystem.mkdir(path.dirname(targetPath))
-            await filesystem.copy(managedPath, targetPath)
-          } catch (error) {
-            throw new SkillboxError(
-              ErrorCode.LIFECYCLE_COPY_FAILED,
-              `Failed to copy "${alias}" from the managed library into the repository`,
-              { cause: error, context: { alias, source: managedPath, target: targetPath } },
-            )
-          }
-          createdDirs.push(targetPath)
-
-          /* Step 2 — Integrity of the repository copy. */
-          const integrity = await computeSkillIntegrity(targetPath)
-
-          /* Step 3 — Save the Base Snapshot (M17.4, git-trackable inside the repo). */
-          const baseSnapshotPath = baseSnapshotDir(repositoryRoot, alias, baseRevision)
-          // Tracked before the copy so a failed snapshot still gets cleaned up;
-          // the parent chain is only removed when this run created it.
-          createdDirs.push(baseSnapshotPath)
-          const baseParent = path.dirname(baseSnapshotPath)
-          const basesRoot = path.dirname(baseParent)
-          const [baseParentExisted, basesRootExisted] = await Promise.all([
-            filesystem.exists(baseParent),
-            filesystem.exists(basesRoot),
-          ])
-          if (!baseParentExisted) {
-            createdDirs.push(baseParent)
-          }
-          if (!basesRootExisted) {
-            createdDirs.push(basesRoot)
-          }
-          await saveBaseSnapshot({
-            repositoryRoot,
-            alias,
-            revision: baseRevision,
-            source: managedPath,
-            filesystem,
-          })
-
-          /* Step 4 — Manifest: source → local, mode → forked, record upstream. */
-          const localSource: ManifestSkillSource = { type: 'local', path: targetRel }
-          const nextManifest = updateSkill(manifest, alias, {
-            mode: 'forked',
-            source: localSource,
-            upstream: upstreamSource,
-          })
-          await writeManifest(repositoryRoot, nextManifest)
-          manifestWritten = true
-
-          /* Step 5 — Lockfile: forked entry with base revision / integrity (SPEC §53-54). */
-          const nextLocked: SkillboxLockfile['skills'][string] = {
-            ...locked,
-            mode: 'forked',
-            source: localSource,
-            integrity,
-            upstream: {
-              source: upstreamSource,
-              baseRevision,
-              baseIntegrity: integrity,
-              ...(locked.upstream?.latestRevision !== undefined
-                ? { latestRevision: locked.upstream.latestRevision }
-                : {}),
-            },
-          }
-          // Forked entries track the base through `upstream.baseRevision` instead.
-          delete nextLocked.revision
-          const nextLockfile: SkillboxLockfile = {
-            ...lockfile,
-            skills: { ...lockfile.skills, [alias]: nextLocked },
-          }
-          await writeLockfile(repositoryRoot, nextLockfile)
-          lockfileWritten = true
-
-          return {
-            alias,
-            mode: 'forked',
-            repositoryPath: targetRel,
-            absolutePath: targetPath,
-            integrity,
-            upstream: upstreamSource,
-            baseRevision,
-            baseIntegrity: integrity,
-            baseSnapshotPath,
-            agents: entry.agents ?? [],
-          }
-        } catch (error) {
-          await rollback()
-          if (rollbackFailed) {
-            throw new SkillboxError(
-              ErrorCode.LIFECYCLE_ROLLBACK_FAILED,
-              `Fork of "${alias}" failed and rollback was incomplete`,
-              {
-                cause: error,
-                context: {
-                  alias,
-                  original: error instanceof Error ? error.message : String(error),
-                },
-              },
-            )
-          }
-          throw error
-        }
+    /* Step 5 — Lockfile: forked entry with base revision / integrity (SPEC §53-54). */
+    const nextLocked: SkillboxLockfile['skills'][string] = {
+      ...locked,
+      mode: 'forked',
+      source: localSource,
+      integrity,
+      upstream: {
+        source: upstreamSource,
+        baseRevision,
+        baseIntegrity: integrity,
+        ...(locked.upstream?.latestRevision !== undefined
+          ? { latestRevision: locked.upstream.latestRevision }
+          : {}),
       },
-    })
-  ).result
+    }
+    // Forked entries track the base through `upstream.baseRevision` instead.
+    delete nextLocked.revision
+    const nextLockfile: SkillboxLockfile = {
+      ...lockfile,
+      skills: { ...lockfile.skills, [alias]: nextLocked },
+    }
+    await writeLockfile(repositoryRoot, nextLockfile)
+    lockfileWritten = true
+
+    return {
+      alias,
+      mode: 'forked',
+      repositoryPath: targetRel,
+      absolutePath: targetPath,
+      integrity,
+      upstream: upstreamSource,
+      baseRevision,
+      baseIntegrity: integrity,
+      baseSnapshotPath,
+      agents: entry.agents ?? [],
+    }
+  } catch (error) {
+    await rollback()
+    if (rollbackFailed) {
+      throw new SkillboxError(
+        ErrorCode.LIFECYCLE_ROLLBACK_FAILED,
+        `Fork of "${alias}" failed and rollback was incomplete`,
+        {
+          cause: error,
+          context: { alias, original: error instanceof Error ? error.message : String(error) },
+        },
+      )
+    }
+    throw error
+  }
 }

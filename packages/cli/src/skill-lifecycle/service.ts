@@ -342,7 +342,6 @@ export class SkillLifecycleService {
       const result = await this.options.lifecycle.restoreManagedSkill({
         name,
         repositoryRoot: this.options.repositoryRoot,
-        homeRoot: this.options.homeRoot,
       })
       // The restored runtime is pristine managed again; direct editing of the
       // library copy is not supported — convert it to a fork to edit it.

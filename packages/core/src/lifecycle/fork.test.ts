@@ -6,7 +6,6 @@ import { ErrorCode } from '../errors.js'
 import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { readLockfile, writeLockfile } from '../lockfile/index.js'
 import { addSkill, emptyManifest, readManifest, writeManifest } from '../manifest/index.js'
-import { createOperationRuntime } from '../operations/index.js'
 import { baseSnapshotDir } from './bases.js'
 import { forkSkill } from './fork.js'
 import { FailingFilesystem, matches, seedManagedSkill } from './test-utils.js'
@@ -75,7 +74,7 @@ describe('forkSkill', () => {
       expect(await fs.readFile(path.join(expected, 'notes.md'), 'utf8')).toBe('original\n')
       expect(await computeSkillIntegrity(expected)).toBe(seed.lockedIntegrity)
     })
-  }, 15_000)
+  })
 
   it('preserves agents and lockfile security/metadata across the fork', async () => {
     await withTempDir(async (dir) => {
@@ -222,7 +221,7 @@ describe('forkSkill', () => {
     })
   })
 
-  it('uses the operation snapshot when compatibility rollback cleanup also fails', async () => {
+  it('surfaces LIFECYCLE_ROLLBACK_FAILED when rollback cleanup also fails', async () => {
     await withTempDir(async (dir) => {
       const seed = await seedManagedSkill(dir)
       const failing = new FailingFilesystem(
@@ -238,29 +237,10 @@ describe('forkSkill', () => {
         }),
       ).rejects.toMatchObject({ code: ErrorCode.LIFECYCLE_ROLLBACK_FAILED })
 
-      // The shared operation boundary restores its own snapshot even though the
-      // compatibility cleanup used the intentionally failing filesystem.
+      // The failed cleanup leaves the directory in place; manifest untouched.
       const manifest = await readManifest(seed.repositoryRoot)
       expect(manifest.skills.hello).toMatchObject({ mode: 'managed' })
-      await expect(fs.stat(path.join(seed.repositoryRoot, 'skills', 'hello'))).rejects.toThrow()
+      expect(await fs.stat(path.join(seed.repositoryRoot, 'skills', 'hello'))).toBeDefined()
     })
   })
-
-  it('records a fork snapshot that can be rolled back after success', async () => {
-    await withTempDir(async (dir) => {
-      const seed = await seedManagedSkill(dir)
-      await forkSkill(seed.alias, { repositoryRoot: seed.repositoryRoot, homeRoot: seed.homeRoot })
-
-      const rollback = await createOperationRuntime({
-        repositoryRoot: seed.repositoryRoot,
-        homeRoot: seed.homeRoot,
-      }).rollback()
-
-      expect(rollback.restoredTargets).toContain(path.join(seed.repositoryRoot, 'skillbox.yaml'))
-      expect((await readManifest(seed.repositoryRoot)).skills.hello).toMatchObject({
-        mode: 'managed',
-      })
-      await expect(fs.stat(path.join(seed.repositoryRoot, 'skills', 'hello'))).rejects.toThrow()
-    })
-  }, 15_000)
 })

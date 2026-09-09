@@ -15,7 +15,6 @@ import { readLockfile, writeLockfile, type SkillboxLockfile } from '../lockfile/
 import type { ManifestSkillSource } from '../manifest/schema.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
-import { createOperationRuntime } from '../operations/runtime.js'
 import { removeBaseSnapshot } from './bases.js'
 import { repositorySkillPath } from './fork.js'
 import { assertLegalTransition } from './transitions.js'
@@ -117,137 +116,118 @@ export async function vendorSkill(
     }
   }
 
+  /* --- rollback bookkeeping --- */
   const manifestPath = path.join(repositoryRoot, 'skillbox.yaml')
   const lockfilePath = path.join(repositoryRoot, 'skillbox.lock')
-  const operationRuntime =
-    options.operationRuntime ??
-    createOperationRuntime({
-      repositoryRoot,
-      ...(options.homeRoot !== undefined ? { homeRoot: options.homeRoot } : {}),
+  const manifestBefore = await snapshotFileOrUndefined(manifestPath, filesystem)
+  const lockfileBefore = await snapshotFileOrUndefined(lockfilePath, filesystem)
+  const createdDirs: string[] = []
+  let manifestWritten = false
+  let lockfileWritten = false
+  let rollbackFailed = false
+
+  const rollback = async (): Promise<void> => {
+    if (manifestWritten) {
+      try {
+        await restoreSnapshot(manifestPath, manifestBefore, filesystem)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+    if (lockfileWritten) {
+      try {
+        await restoreSnapshot(lockfilePath, lockfileBefore, filesystem)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+    for (const dir of [...createdDirs].reverse()) {
+      try {
+        await filesystem.remove(dir)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+  }
+
+  try {
+    /* Step 1 — Copy the managed runtime into the repo (Forked → Vendored keeps
+     * the repository copy it already has). */
+    if (!fromFork && managedPath !== undefined) {
+      try {
+        await filesystem.mkdir(path.dirname(targetPath))
+        await filesystem.copy(managedPath, targetPath)
+      } catch (error) {
+        throw new SkillboxError(
+          ErrorCode.LIFECYCLE_COPY_FAILED,
+          `Failed to copy "${alias}" from the managed library into the repository`,
+          { cause: error, context: { alias, source: managedPath, target: targetPath } },
+        )
+      }
+      createdDirs.push(targetPath)
+    }
+
+    /* Step 2 — Integrity of the vendored content. */
+    const integrity = await computeSkillIntegrity(targetPath)
+
+    /* Step 3 — Manifest: source → local, mode → vendored, drop upstream. */
+    const localSource: ManifestSkillSource = { type: 'local', path: targetRel }
+    const nextManifest = updateSkill(manifest, alias, {
+      mode: 'vendored',
+      source: localSource,
+      upstream: undefined,
     })
-  const baseRoot = path.join(repositoryRoot, '.skillbox', 'bases', alias)
+    await writeManifest(repositoryRoot, nextManifest)
+    manifestWritten = true
 
-  return (
-    await operationRuntime.runExclusive<VendorSkillResult>({
-      kind: 'vendor',
-      targets: [manifestPath, lockfilePath, targetPath, baseRoot],
-      execute: async () => {
-        /* --- compatibility rollback bookkeeping --- */
-        const manifestBefore = await snapshotFileOrUndefined(manifestPath, filesystem)
-        const lockfileBefore = await snapshotFileOrUndefined(lockfilePath, filesystem)
-        const createdDirs: string[] = []
-        let manifestWritten = false
-        let lockfileWritten = false
-        let rollbackFailed = false
+    /* Step 4 — Lockfile: vendored entry, upstream cleared (M18.1/M18.2). */
+    const nextLocked: SkillboxLockfile['skills'][string] = {
+      ...locked,
+      mode: 'vendored',
+      source: localSource,
+      integrity,
+      upstream: undefined,
+    }
+    if (options.keepProvenance === true) {
+      const originalSource = locked.upstream?.source ?? locked.source
+      nextLocked.metadata = { ...(locked.metadata ?? {}), originalSource }
+    }
+    delete nextLocked.revision
+    const nextLockfile: SkillboxLockfile = {
+      ...lockfile,
+      skills: { ...lockfile.skills, [alias]: nextLocked },
+    }
+    await writeLockfile(repositoryRoot, nextLockfile)
+    lockfileWritten = true
 
-        const rollback = async (): Promise<void> => {
-          if (manifestWritten) {
-            try {
-              await restoreSnapshot(manifestPath, manifestBefore, filesystem)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-          if (lockfileWritten) {
-            try {
-              await restoreSnapshot(lockfilePath, lockfileBefore, filesystem)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-          for (const dir of [...createdDirs].reverse()) {
-            try {
-              await filesystem.remove(dir)
-            } catch {
-              rollbackFailed = true
-            }
-          }
-        }
+    /* Step 5 — Optional: delete the Base Snapshot (Forked → Vendored only). */
+    let removedBaseSnapshot: string | undefined
+    if (fromFork && options.removeBaseSnapshot === true) {
+      removedBaseSnapshot = await removeBaseSnapshot({ repositoryRoot, alias, filesystem })
+    }
 
-        try {
-          /* Step 1 — Copy the managed runtime into the repo (Forked → Vendored keeps
-           * the repository copy it already has). */
-          if (!fromFork && managedPath !== undefined) {
-            try {
-              await filesystem.mkdir(path.dirname(targetPath))
-              await filesystem.copy(managedPath, targetPath)
-            } catch (error) {
-              throw new SkillboxError(
-                ErrorCode.LIFECYCLE_COPY_FAILED,
-                `Failed to copy "${alias}" from the managed library into the repository`,
-                { cause: error, context: { alias, source: managedPath, target: targetPath } },
-              )
-            }
-            createdDirs.push(targetPath)
-          }
-
-          /* Step 2 — Integrity of the vendored content. */
-          const integrity = await computeSkillIntegrity(targetPath)
-
-          /* Step 3 — Manifest: source → local, mode → vendored, drop upstream. */
-          const localSource: ManifestSkillSource = { type: 'local', path: targetRel }
-          const nextManifest = updateSkill(manifest, alias, {
-            mode: 'vendored',
-            source: localSource,
-            upstream: undefined,
-          })
-          await writeManifest(repositoryRoot, nextManifest)
-          manifestWritten = true
-
-          /* Step 4 — Lockfile: vendored entry, upstream cleared (M18.1/M18.2). */
-          const nextLocked: SkillboxLockfile['skills'][string] = {
-            ...locked,
-            mode: 'vendored',
-            source: localSource,
-            integrity,
-            upstream: undefined,
-          }
-          if (options.keepProvenance === true) {
-            const originalSource = locked.upstream?.source ?? locked.source
-            nextLocked.metadata = { ...(locked.metadata ?? {}), originalSource }
-          }
-          delete nextLocked.revision
-          const nextLockfile: SkillboxLockfile = {
-            ...lockfile,
-            skills: { ...lockfile.skills, [alias]: nextLocked },
-          }
-          await writeLockfile(repositoryRoot, nextLockfile)
-          lockfileWritten = true
-
-          /* Step 5 — Optional: delete the Base Snapshot (Forked → Vendored only). */
-          let removedBaseSnapshot: string | undefined
-          if (fromFork && options.removeBaseSnapshot === true) {
-            removedBaseSnapshot = await removeBaseSnapshot({ repositoryRoot, alias, filesystem })
-          }
-
-          return {
-            alias,
-            mode: 'vendored',
-            repositoryPath: targetRel,
-            absolutePath: targetPath,
-            integrity,
-            fromFork,
-            ...(removedBaseSnapshot !== undefined ? { removedBaseSnapshot } : {}),
-            agents: entry.agents ?? [],
-          }
-        } catch (error) {
-          await rollback()
-          if (rollbackFailed) {
-            throw new SkillboxError(
-              ErrorCode.LIFECYCLE_ROLLBACK_FAILED,
-              `Vendor of "${alias}" failed and rollback was incomplete`,
-              {
-                cause: error,
-                context: {
-                  alias,
-                  original: error instanceof Error ? error.message : String(error),
-                },
-              },
-            )
-          }
-          throw error
-        }
-      },
-    })
-  ).result
+    return {
+      alias,
+      mode: 'vendored',
+      repositoryPath: targetRel,
+      absolutePath: targetPath,
+      integrity,
+      fromFork,
+      ...(removedBaseSnapshot !== undefined ? { removedBaseSnapshot } : {}),
+      agents: entry.agents ?? [],
+    }
+  } catch (error) {
+    await rollback()
+    if (rollbackFailed) {
+      throw new SkillboxError(
+        ErrorCode.LIFECYCLE_ROLLBACK_FAILED,
+        `Vendor of "${alias}" failed and rollback was incomplete`,
+        {
+          cause: error,
+          context: { alias, original: error instanceof Error ? error.message : String(error) },
+        },
+      )
+    }
+    throw error
+  }
 }

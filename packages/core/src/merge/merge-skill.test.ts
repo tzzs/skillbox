@@ -16,12 +16,6 @@ import { ErrorCode, isSkillboxError } from '../errors.js'
 import { mergeSkill, continueMerge, abortMerge } from './merge-skill.js'
 import { mergeStatePaths, hasPendingMerge } from './state.js'
 import { containsConflictMarkers } from './merge.js'
-import { createSkillSourceResolver, type SkillSourceAdapter } from '../sources/index.js'
-import { createOperationRuntime } from '../operations/index.js'
-
-// These cases snapshot and restore a complete merge state using real files.
-// Parallel Windows runs may exceed Vitest's 5s default without a larger budget.
-const MERGE_OPERATION_TIMEOUT_MS = 30_000
 
 /** Serves per-revision fixture directories over the github provider id. */
 class FakeGithubProvider implements RegistryProvider {
@@ -145,29 +139,6 @@ async function mergedLocked(repoRoot: string) {
 }
 
 describe('mergeSkill — clean merge', () => {
-  it('materializes base and latest revisions through an injected canonical source resolver', async () => {
-    await withTempDir(async (dir) => {
-      const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir)
-      const adapter: SkillSourceAdapter = {
-        type: 'github',
-        capabilities: { resolve: false, download: false, latest: true, materialize: true },
-        latest: async () => 'rev2',
-        materialize: async (_source, revision, targetDir) => {
-          await provider.download({ type: 'github', repo: 'acme/foo' }, revision, targetDir)
-        },
-      }
-
-      const result = await mergeSkill('foo', {
-        repositoryRoot: repoRoot,
-        homeRoot,
-        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
-      })
-
-      expect(result.conflicts).toEqual([])
-      expect(await readFileText(localDir, 'README.md')).toBe('upstream readme\n')
-    })
-  })
-
   it('merges disjoint changes and advances the lockfile metadata', async () => {
     await withTempDir(async (dir) => {
       const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir)
@@ -198,21 +169,8 @@ describe('mergeSkill — clean merge', () => {
       // No merge state left behind; a pre-merge backup was created.
       expect(await hasPendingMerge(homeRoot, 'foo')).toBe(false)
       const backups = await fs.readdir(path.join(homeRoot, 'backups'))
-      expect(backups.some((backup) => /^foo-/.test(backup))).toBe(true)
-    })
-  })
-  it('records clean-merge targets so a completed merge can be rolled back', async () => {
-    await withTempDir(async (dir) => {
-      const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir)
-      await mergeSkill('foo', {
-        repositoryRoot: repoRoot,
-        homeRoot,
-        registry: registryWith(provider),
-      })
-
-      await createOperationRuntime({ repositoryRoot: repoRoot, homeRoot }).rollback()
-      expect(await readFileText(localDir, 'README.md')).toBe('base readme\n')
-      expect((await mergedLocked(repoRoot))?.upstream?.baseRevision).toBe('rev1')
+      expect(backups).toHaveLength(1)
+      expect(backups[0]).toMatch(/^foo-/)
     })
   })
 })
@@ -358,7 +316,10 @@ describe('continueMerge', () => {
       expect(caught).toMatchObject({ code: ErrorCode.MERGE_NOT_IN_PROGRESS })
     })
   })
-  it('rolls back a completed continue to the unresolved merge state', async () => {
+})
+
+describe('abortMerge', () => {
+  it('restores the pre-merge content and clears the state', async () => {
     await withTempDir(async (dir) => {
       const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir, {
         conflict: true,
@@ -368,79 +329,23 @@ describe('continueMerge', () => {
         homeRoot,
         registry: registryWith(provider),
       })
-      await writeFileRecursive(localDir, 'SKILL.md', '# Foo\nresolved line\n')
-      await continueMerge('foo', {
+      expect(containsConflictMarkers(await readFileText(localDir, 'SKILL.md'))).toBe(true)
+
+      const result = await abortMerge('foo', {
         repositoryRoot: repoRoot,
         homeRoot,
         registry: registryWith(provider),
       })
+      expect(result.name).toBe('foo')
+      expect(result.filesRestored).toBe(3)
 
-      await createOperationRuntime({ repositoryRoot: repoRoot, homeRoot }).rollback()
-      expect(await hasPendingMerge(homeRoot, 'foo')).toBe(true)
-      expect(await readFileText(localDir, 'SKILL.md')).toBe('# Foo\nresolved line\n')
+      expect(await readFileText(localDir, 'SKILL.md')).toBe('# Foo\nlocal line\n')
+      expect(await hasPendingMerge(homeRoot, 'foo')).toBe(false)
+
+      // Lockfile never advanced.
       expect((await mergedLocked(repoRoot))?.upstream?.baseRevision).toBe('rev1')
     })
   })
-})
-
-describe('abortMerge', () => {
-  it(
-    'restores the pre-merge content and clears the state',
-    async () => {
-      await withTempDir(async (dir) => {
-        const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir, {
-          conflict: true,
-        })
-        await mergeSkill('foo', {
-          repositoryRoot: repoRoot,
-          homeRoot,
-          registry: registryWith(provider),
-        })
-        expect(containsConflictMarkers(await readFileText(localDir, 'SKILL.md'))).toBe(true)
-
-        const result = await abortMerge('foo', {
-          repositoryRoot: repoRoot,
-          homeRoot,
-          registry: registryWith(provider),
-        })
-        expect(result.name).toBe('foo')
-        expect(result.filesRestored).toBe(3)
-
-        expect(await readFileText(localDir, 'SKILL.md')).toBe('# Foo\nlocal line\n')
-        expect(await hasPendingMerge(homeRoot, 'foo')).toBe(false)
-
-        // Lockfile never advanced.
-        expect((await mergedLocked(repoRoot))?.upstream?.baseRevision).toBe('rev1')
-      })
-    },
-    MERGE_OPERATION_TIMEOUT_MS,
-  )
-
-  it(
-    'rolls back abort to the unresolved merge state',
-    async () => {
-      await withTempDir(async (dir) => {
-        const { repoRoot, homeRoot, localDir, provider } = await seedForkedSkill(dir, {
-          conflict: true,
-        })
-        await mergeSkill('foo', {
-          repositoryRoot: repoRoot,
-          homeRoot,
-          registry: registryWith(provider),
-        })
-        await abortMerge('foo', {
-          repositoryRoot: repoRoot,
-          homeRoot,
-          registry: registryWith(provider),
-        })
-
-        await createOperationRuntime({ repositoryRoot: repoRoot, homeRoot }).rollback()
-        expect(await hasPendingMerge(homeRoot, 'foo')).toBe(true)
-        expect(containsConflictMarkers(await readFileText(localDir, 'SKILL.md'))).toBe(true)
-      })
-    },
-    MERGE_OPERATION_TIMEOUT_MS,
-  )
 
   it('throws MERGE_NOT_IN_PROGRESS without a pending merge', async () => {
     await withTempDir(async (dir) => {

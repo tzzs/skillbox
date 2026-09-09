@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import { atomicWriteFile } from '../fs/atomic-write.js'
 import { resolveInsideRoot } from '../fs/paths.js'
-import { repositoryKey } from '../operations/lock.js'
+import { repositoryKey } from '../operations/sync-runtime-lock.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
 
 const SNAPSHOT_VERSION = 1 as const

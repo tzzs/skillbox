@@ -118,6 +118,12 @@ export function parse(input: string): CanonicalSkillSource {
         package: legacy.package,
         ...(legacy.version === undefined ? {} : { version: legacy.version }),
       }
+    case 'git':
+      return {
+        type: 'git',
+        url: legacy.url,
+        ...(legacy.ref === undefined ? {} : { ref: legacy.ref }),
+      }
     case 'local':
       return { type: 'local', path: legacy.path }
   }

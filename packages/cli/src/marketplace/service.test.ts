@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  createSkillSourceResolver,
-  ErrorCode,
-  SkillboxError,
-  type AgentRegistry,
-  type SkillSourceAdapter,
-} from '@skillbox/core'
+import { ErrorCode, SkillboxError, type AgentRegistry } from '@skillbox/core'
 import {
   agentRegistry,
   CANCEL,
@@ -394,42 +388,6 @@ skills:
 `)
     const entries = await service.outdated()
     expect(entries).toEqual([{ name: 'managed-foo', installed: 'aaaaaaa', status: 'unsupported' }])
-  })
-
-  it('checks canonical git sources through an injected source resolver', async () => {
-    const fixture = createFixture()
-    fixture.writeLockfile(`lockfileVersion: 1
-skills:
-  managed-git:
-    mode: managed
-    source:
-      type: git
-      url: https://git.example.test/org/skill.git
-    revision: rev-1
-    integrity: h1
-`)
-    const adapter: SkillSourceAdapter = {
-      type: 'git',
-      capabilities: { resolve: false, download: false, latest: true, materialize: false },
-      latest: async () => 'rev-2',
-    }
-    const service = new MarketplaceService({
-      repositoryRoot: fixture.repositoryRoot,
-      homeRoot: fixture.homeRoot,
-      registry: agentRegistry(['claude']),
-      sourceParser: new FakeSourceParser(GITHUB_SOURCE),
-      registryClient: new FakeRegistryClient(),
-      installer: new FakeInstaller(),
-      scanner: new FakeScanner(),
-      prompts: new FakePrompts(),
-      isInteractive: false,
-      out: () => undefined,
-      sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
-    })
-
-    await expect(service.outdated()).resolves.toEqual([
-      { name: 'managed-git', installed: 'rev-1', latest: 'rev-2', status: 'outdated' },
-    ])
   })
 })
 

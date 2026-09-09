@@ -41,7 +41,8 @@ import {
   type ImportPlanItem,
 } from './import-plan.js'
 import { resolveEditorCommand } from './editor.js'
-import { startWebServer, type StartedWebServer, type WebServerOptions } from '@skillbox/web-server'
+import { startWebServer } from '../web/main.js'
+import type { StartedWebServer, WebServerOptions } from '../web/types.js'
 
 export const FIRST_RUN_FILE_NAME = 'first-run.json'
 

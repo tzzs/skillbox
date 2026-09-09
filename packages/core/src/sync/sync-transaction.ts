@@ -130,7 +130,7 @@ export class SyncTransaction {
         const session = {
           version: 1 as const,
           id,
-          repositoryId: (await import('../operations/lock.js')).repositoryKey(
+          repositoryId: (await import('../operations/sync-runtime-lock.js')).repositoryKey(
             path.resolve(repositoryRoot),
           ),
           baseRevision: base,

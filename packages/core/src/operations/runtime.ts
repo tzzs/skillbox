@@ -5,8 +5,8 @@ import { FilesystemService } from '../fs/filesystem-service.js'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
 import { BackupIndexStore, type StoredBackupIndexEntry } from './backup-index.js'
-import { acquireOperationLock, repositoryKey } from './lock.js'
-import { OperationJournal } from './journal.js'
+import { acquireOperationLock, repositoryKey } from './sync-runtime-lock.js'
+import { OperationJournal } from './sync-runtime-journal.js'
 import { captureSnapshot, restoreSnapshot, type OperationSnapshot } from './snapshot.js'
 import {
   systemOperationClock,

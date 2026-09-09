@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ErrorCode } from '../errors.js'
 import { withTempDir } from '../fs/test-utils.js'
-import { repositoryKey } from '../operations/lock.js'
+import { repositoryKey } from '../operations/sync-runtime-lock.js'
 import { GitClient } from '../git/index.js'
 import type {
   DeviceAuthorization,
