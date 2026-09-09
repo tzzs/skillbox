@@ -22,176 +22,172 @@
 :root {
   color-scheme: dark;
 
-  /* ---- surfaces (night-shift blue-black) ---- */
-  --bg: #0d1418;
-  --bg-grid: rgba(240, 160, 48, 0.028);
-  --surface: #151e25;
-  --surface-2: #1a252d;
-  --surface-3: #212e37;
-  --border: #26323c;
-  --border-strong: #3b4a56;
-  --sidebar-bg: #0a1014;
-  --hover-bg: rgba(255, 255, 255, 0.045);
-  --active-bg: rgba(240, 160, 48, 0.1);
-  --input-bg: #0f171c;
-  --th-bg: #111a20;
-  --code-bg: #0f171c;
-  --empty-bg: rgba(21, 30, 37, 0.6);
-  --selection-bg: rgba(240, 160, 48, 0.35);
-  --focus-ring: rgba(240, 160, 48, 0.12);
+  /* ---- surfaces (Vercel/Geist dark) ---- */
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-2: #111111;
+  --surface-3: #1a1a1a;
+  --border: #333333;
+  --border-strong: #454545;
+  --sidebar-bg: #000000;
+  --hover-bg: rgba(255, 255, 255, 0.06);
+  --active-bg: rgba(255, 255, 255, 0.08);
+  --input-bg: #0a0a0a;
+  --th-bg: #111111;
+  --code-bg: #0a0a0a;
+  --empty-bg: rgba(10, 10, 10, 0.6);
+  --selection-bg: rgba(0, 112, 243, 0.35);
+  --focus-ring: rgba(0, 112, 243, 0.35);
 
-  /* ---- ink (cold paper) ---- */
-  --text: #e8ece6;
-  --text-2: #93a0ab;
-  --text-3: #5d6a75;
+  /* ---- ink ---- */
+  --text: #ededed;
+  --text-2: #a1a1a1;
+  --text-3: #707070;
 
-  /* ---- signal family (the LED language) ---- */
-  --accent: #f0a030; /* amber — the primary signal */
-  --accent-hover: #ffb84d;
-  --accent-ink: #141d23; /* dark ink on amber */
-  --ok: #57d684; /* LED green */
-  --ok-bg: rgba(87, 214, 132, 0.12);
-  --ok-glow: rgba(87, 214, 132, 0.35);
-  --ok-line: rgba(87, 214, 132, 0.3);
-  --warn: #f0a030; /* LED amber */
-  --warn-bg: rgba(240, 160, 48, 0.12);
-  --warn-glow: rgba(240, 160, 48, 0.35);
-  --warn-line: rgba(240, 160, 48, 0.3);
-  --danger: #ff6b5e; /* LED red */
-  --danger-bg: rgba(255, 107, 94, 0.12);
-  --danger-glow: rgba(255, 107, 94, 0.35);
-  --danger-line: rgba(255, 107, 94, 0.35);
-  --info: #6fb3ff; /* LED blue */
-  --info-bg: rgba(111, 179, 255, 0.12);
-  --info-glow: rgba(111, 179, 255, 0.35);
-  --info-line: rgba(111, 179, 255, 0.3);
+  /* ---- signal family ---- */
+  --accent: #0070f3; /* Vercel Blue — the single accent */
+  --accent-hover: #3291ff;
+  --accent-ink: #ffffff; /* ink on accent */
+  --ok: #00c853;
+  --ok-bg: rgba(0, 200, 83, 0.12);
+  --ok-glow: rgba(0, 200, 83, 0.35);
+  --ok-line: rgba(0, 200, 83, 0.32);
+  --warn: #f5a623;
+  --warn-bg: rgba(245, 166, 35, 0.12);
+  --warn-glow: rgba(245, 166, 35, 0.35);
+  --warn-line: rgba(245, 166, 35, 0.32);
+  --danger: #ee0000;
+  --danger-bg: rgba(238, 0, 0, 0.12);
+  --danger-glow: rgba(238, 0, 0, 0.35);
+  --danger-line: rgba(238, 0, 0, 0.35);
+  --info: #0070f3;
+  --info-bg: rgba(0, 112, 243, 0.12);
+  --info-glow: rgba(0, 112, 243, 0.35);
+  --info-line: rgba(0, 112, 243, 0.32);
 
   /* ---- diff reader tints ---- */
-  --diff-add-bg: rgba(87, 214, 132, 0.1);
-  --diff-del-bg: rgba(255, 107, 94, 0.1);
-  --diff-hunk-bg: rgba(240, 160, 48, 0.08);
+  --diff-add-bg: rgba(0, 200, 83, 0.1);
+  --diff-del-bg: rgba(238, 0, 0, 0.1);
+  --diff-hunk-bg: rgba(0, 112, 243, 0.08);
 
   /* ---- shape ---- */
-  --radius: 4px;
-  --radius-sm: 2px;
-  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.28);
-  --shadow-2: 0 10px 28px rgba(0, 0, 0, 0.45);
+  --radius: 8px;
+  --radius-sm: 5px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.5);
 
-  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  --sans:
+    'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
 }
 
 /*
- * Daylight theme — "paper panel" tokens. Same signal family, tuned for light
- * backgrounds: the LEDs deepen (a lamp needs saturation to read as lit in the
- * day), the amber stays the primary signal at a print-ink strength, and the
- * perforated grid becomes a fainter print impression. Applied both when the OS
- * prefers light and the user has not forced dark, and when the user explicitly
- * chose light.
+ * Daylight theme — Vercel/Geist light tokens. Same signal family as dark,
+ * tuned for a white surface. Applied both when the OS prefers light and the
+ * user has not forced dark, and when the user explicitly chose light.
  */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
     color-scheme: light;
 
-    --bg: #e8ebee;
-    --bg-grid: rgba(181, 106, 0, 0.05);
+    --bg: #ffffff;
     --surface: #ffffff;
-    --surface-2: #f0f2f5;
-    --surface-3: #e6eaee;
-    --border: #d5dbe0;
-    --border-strong: #aab6bf;
-    --sidebar-bg: #e2e6ea;
-    --hover-bg: rgba(16, 29, 38, 0.05);
-    --active-bg: rgba(181, 106, 0, 0.1);
+    --surface-2: #fafafa;
+    --surface-3: #f2f2f2;
+    --border: #eaeaea;
+    --border-strong: #d4d4d4;
+    --sidebar-bg: #ffffff;
+    --hover-bg: rgba(0, 0, 0, 0.04);
+    --active-bg: rgba(0, 0, 0, 0.05);
     --input-bg: #ffffff;
-    --th-bg: #edf0f3;
-    --code-bg: #fbfcfd;
-    --empty-bg: rgba(255, 255, 255, 0.72);
-    --selection-bg: rgba(181, 106, 0, 0.22);
-    --focus-ring: rgba(181, 106, 0, 0.12);
+    --th-bg: #fafafa;
+    --code-bg: #fafafa;
+    --empty-bg: rgba(250, 250, 250, 0.72);
+    --selection-bg: rgba(0, 112, 243, 0.2);
+    --focus-ring: rgba(0, 112, 243, 0.25);
 
-    --text: #182127;
-    --text-2: #4d5a64;
-    --text-3: #6f7d87;
+    --text: #171717;
+    --text-2: #666666;
+    --text-3: #8f8f8f;
 
-    --accent: #b56a00;
-    --accent-hover: #945800;
+    --accent: #0070f3;
+    --accent-hover: #0761d1;
     --accent-ink: #ffffff;
-    --ok: #1f9d57;
-    --ok-bg: rgba(31, 157, 87, 0.1);
-    --ok-glow: rgba(31, 157, 87, 0.3);
-    --ok-line: rgba(31, 157, 87, 0.35);
-    --warn: #b56a00;
-    --warn-bg: rgba(181, 106, 0, 0.1);
-    --warn-glow: rgba(181, 106, 0, 0.3);
-    --warn-line: rgba(181, 106, 0, 0.35);
-    --danger: #d9493b;
-    --danger-bg: rgba(217, 73, 59, 0.1);
-    --danger-glow: rgba(217, 73, 59, 0.3);
-    --danger-line: rgba(217, 73, 59, 0.4);
-    --info: #2f74d6;
-    --info-bg: rgba(47, 116, 214, 0.1);
-    --info-glow: rgba(47, 116, 214, 0.3);
-    --info-line: rgba(47, 116, 214, 0.35);
+    --ok: #12805c;
+    --ok-bg: rgba(18, 128, 92, 0.1);
+    --ok-glow: rgba(18, 128, 92, 0.3);
+    --ok-line: rgba(18, 128, 92, 0.32);
+    --warn: #b5720a;
+    --warn-bg: rgba(181, 114, 10, 0.1);
+    --warn-glow: rgba(181, 114, 10, 0.3);
+    --warn-line: rgba(181, 114, 10, 0.32);
+    --danger: #ee0000;
+    --danger-bg: rgba(238, 0, 0, 0.1);
+    --danger-glow: rgba(238, 0, 0, 0.3);
+    --danger-line: rgba(238, 0, 0, 0.35);
+    --info: #0070f3;
+    --info-bg: rgba(0, 112, 243, 0.1);
+    --info-glow: rgba(0, 112, 243, 0.3);
+    --info-line: rgba(0, 112, 243, 0.32);
 
-    --diff-add-bg: rgba(31, 157, 87, 0.12);
-    --diff-del-bg: rgba(217, 73, 59, 0.12);
-    --diff-hunk-bg: rgba(181, 106, 0, 0.1);
+    --diff-add-bg: rgba(18, 128, 92, 0.1);
+    --diff-del-bg: rgba(238, 0, 0, 0.08);
+    --diff-hunk-bg: rgba(0, 112, 243, 0.08);
 
-    --shadow-1: 0 1px 2px rgba(16, 29, 38, 0.08);
-    --shadow-2: 0 10px 28px rgba(16, 29, 38, 0.12);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.12);
   }
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
 
-  --bg: #e8ebee;
-  --bg-grid: rgba(181, 106, 0, 0.05);
+  --bg: #ffffff;
   --surface: #ffffff;
-  --surface-2: #f0f2f5;
-  --surface-3: #e6eaee;
-  --border: #d5dbe0;
-  --border-strong: #aab6bf;
-  --sidebar-bg: #e2e6ea;
-  --hover-bg: rgba(16, 29, 38, 0.05);
-  --active-bg: rgba(181, 106, 0, 0.1);
+  --surface-2: #fafafa;
+  --surface-3: #f2f2f2;
+  --border: #eaeaea;
+  --border-strong: #d4d4d4;
+  --sidebar-bg: #ffffff;
+  --hover-bg: rgba(0, 0, 0, 0.04);
+  --active-bg: rgba(0, 0, 0, 0.05);
   --input-bg: #ffffff;
-  --th-bg: #edf0f3;
-  --code-bg: #fbfcfd;
-  --empty-bg: rgba(255, 255, 255, 0.72);
-  --selection-bg: rgba(181, 106, 0, 0.22);
-  --focus-ring: rgba(181, 106, 0, 0.12);
+  --th-bg: #fafafa;
+  --code-bg: #fafafa;
+  --empty-bg: rgba(250, 250, 250, 0.72);
+  --selection-bg: rgba(0, 112, 243, 0.2);
+  --focus-ring: rgba(0, 112, 243, 0.25);
 
-  --text: #182127;
-  --text-2: #4d5a64;
-  --text-3: #6f7d87;
+  --text: #171717;
+  --text-2: #666666;
+  --text-3: #8f8f8f;
 
-  --accent: #b56a00;
-  --accent-hover: #945800;
+  --accent: #0070f3;
+  --accent-hover: #0761d1;
   --accent-ink: #ffffff;
-  --ok: #1f9d57;
-  --ok-bg: rgba(31, 157, 87, 0.1);
-  --ok-glow: rgba(31, 157, 87, 0.3);
-  --ok-line: rgba(31, 157, 87, 0.35);
-  --warn: #b56a00;
-  --warn-bg: rgba(181, 106, 0, 0.1);
-  --warn-glow: rgba(181, 106, 0, 0.3);
-  --warn-line: rgba(181, 106, 0, 0.35);
-  --danger: #d9493b;
-  --danger-bg: rgba(217, 73, 59, 0.1);
-  --danger-glow: rgba(217, 73, 59, 0.3);
-  --danger-line: rgba(217, 73, 59, 0.4);
-  --info: #2f74d6;
-  --info-bg: rgba(47, 116, 214, 0.1);
-  --info-glow: rgba(47, 116, 214, 0.3);
-  --info-line: rgba(47, 116, 214, 0.35);
+  --ok: #12805c;
+  --ok-bg: rgba(18, 128, 92, 0.1);
+  --ok-glow: rgba(18, 128, 92, 0.3);
+  --ok-line: rgba(18, 128, 92, 0.32);
+  --warn: #b5720a;
+  --warn-bg: rgba(181, 114, 10, 0.1);
+  --warn-glow: rgba(181, 114, 10, 0.3);
+  --warn-line: rgba(181, 114, 10, 0.32);
+  --danger: #ee0000;
+  --danger-bg: rgba(238, 0, 0, 0.1);
+  --danger-glow: rgba(238, 0, 0, 0.3);
+  --danger-line: rgba(238, 0, 0, 0.35);
+  --info: #0070f3;
+  --info-bg: rgba(0, 112, 243, 0.1);
+  --info-glow: rgba(0, 112, 243, 0.3);
+  --info-line: rgba(0, 112, 243, 0.32);
 
-  --diff-add-bg: rgba(31, 157, 87, 0.12);
-  --diff-del-bg: rgba(217, 73, 59, 0.12);
-  --diff-hunk-bg: rgba(181, 106, 0, 0.1);
+  --diff-add-bg: rgba(18, 128, 92, 0.1);
+  --diff-del-bg: rgba(238, 0, 0, 0.08);
+  --diff-hunk-bg: rgba(0, 112, 243, 0.08);
 
-  --shadow-1: 0 1px 2px rgba(16, 29, 38, 0.08);
-  --shadow-2: 0 10px 28px rgba(16, 29, 38, 0.12);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.12);
 }
 
 * {
@@ -206,7 +202,7 @@ body,
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--sans);
   font-size: 14px;
   line-height: 1.55;
   color: var(--text);
@@ -265,21 +261,11 @@ code,
   position: relative;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border-strong);
-  border-radius: 50%;
-  background: var(--surface);
-}
-
-/* The brand lamp: amber beacon on the panel mark. */
-.brand-mark::after {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
+  box-shadow: 0 0 12px var(--info-glow);
 }
 
 .brand-name {
@@ -294,8 +280,23 @@ code,
 .nav-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 20px;
   flex: 1;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-label {
+  padding: 0 12px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .nav-item {
@@ -357,11 +358,11 @@ code,
   color: var(--text-2);
 }
 
-/* The health lamp: a square LED (lamps are square on the panel). */
+/* The health lamp: a small status dot. */
 .health-dot {
   width: 8px;
   height: 8px;
-  border-radius: 1px;
+  border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 6px var(--ok-glow);
   flex-shrink: 0;
@@ -384,10 +385,8 @@ code,
 .content {
   overflow-y: auto;
   padding: 36px 44px 72px;
-  background-image:
-    linear-gradient(var(--bg-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-image: radial-gradient(ellipse 900px 500px at 50% -10%, var(--focus-ring), transparent 70%);
+  background-repeat: no-repeat;
 }
 
 .page {
@@ -482,19 +481,19 @@ code,
   cursor: not-allowed;
 }
 
-/* The primary action is a signal button: amber face, dark ink. */
+/* The primary action is a monochrome invert: solid ink face. */
 .btn--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
   font-weight: 700;
 }
 
 .btn--primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: var(--accent-ink);
-  box-shadow: 0 0 14px var(--warn-glow);
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
+  opacity: 0.85;
 }
 
 .btn--danger {
@@ -687,7 +686,7 @@ code,
   content: '';
   width: 6px;
   height: 6px;
-  border-radius: 1px;
+  border-radius: 50%;
   background: var(--text-3);
   flex-shrink: 0;
 }
@@ -736,7 +735,6 @@ code,
 .pill--status.status-broken::before {
   background: var(--danger);
   box-shadow: 0 0 5px var(--danger-glow);
-  animation: lamp-blink 1s ease-in-out infinite;
 }
 
 .pill--status.status-missing {
@@ -1515,7 +1513,14 @@ code,
   }
   .nav-list {
     flex-direction: row;
+    gap: 2px;
     overflow-x: auto;
+  }
+  .nav-group {
+    flex-direction: row;
+  }
+  .nav-label {
+    display: none;
   }
   .nav-item--active::before {
     left: 8px;
