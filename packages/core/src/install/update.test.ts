@@ -57,9 +57,13 @@ class FakeGithubProvider implements RegistryProvider {
     return resolved
   }
 
-  async download(_source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
+  async download(source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
     this.downloads++
-    await fs.cp(this.seedDir, targetDir, { recursive: true })
+    // Real providers materialize the skill *subtree* into `targetDir`.
+    const subPath = source.type === 'github' ? source.path : undefined
+    const seedRoot =
+      subPath === undefined ? this.seedDir : path.join(this.seedDir, ...subPath.split('/'))
+    await fs.cp(seedRoot, targetDir, { recursive: true })
   }
 
   async getLatestRevision(): Promise<string> {

@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
-import { mkdir } from 'node:fs/promises'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
-import { createTempDir, removeTempDir } from './index.js'
 
 export interface CliRunResult {
   exitCode: number
@@ -10,73 +10,65 @@ export interface CliRunResult {
   stderr: string
 }
 
-export interface CliHarnessOptions {
-  /** A built CLI entrypoint. Defaults to Skillbox's package bin script. */
-  entrypoint?: string
+export interface CliRunOptions {
+  /** Working directory for the subprocess (defaults to the repository root). */
+  cwd?: string
+  /** Extra environment variables merged over the harness defaults. */
   env?: NodeJS.ProcessEnv
+  /** Kill the subprocess after this many milliseconds (default 30s). */
+  timeoutMs?: number
 }
 
 export interface CliHarness {
-  root: string
-  home: string
-  repository: string
-  entrypoint: string
-  /** Runs the packaged CLI in an isolated home and repository. */
-  run(args?: readonly string[], options?: { env?: NodeJS.ProcessEnv }): Promise<CliRunResult>
+  /** Temp SKILLBOX home passed to every subprocess (`SKILLBOX_HOME`). */
+  homeRoot: string
+  /** Temp working directory used as the repository by default. */
+  repositoryRoot: string
+  /** Absolute path of the CLI bin executed by {@link run}. */
+  cliBin: string
+  run(args: readonly string[], options?: CliRunOptions): Promise<CliRunResult>
+  /** Removes the temp home and repository. */
   cleanup(): Promise<void>
 }
 
-const defaultEntrypoint = fileURLToPath(new URL('../../cli/bin/skillbox.mjs', import.meta.url))
-
-/**
- * Creates an isolated process boundary for CLI end-to-end tests.  It never
- * inherits the developer's Skillbox or Git configuration: HOME, USERPROFILE,
- * XDG_CONFIG_HOME, and SKILLBOX_HOME all point into the disposable fixture.
- */
-export async function createCliHarness(options: CliHarnessOptions = {}): Promise<CliHarness> {
-  const root = await createTempDir('skillbox-cli-e2e-')
-  const home = join(root, 'home')
-  const repository = join(root, 'repository')
-  await Promise.all([mkdir(home, { recursive: true }), mkdir(repository, { recursive: true })])
-
-  const entrypoint = options.entrypoint ?? defaultEntrypoint
-  const isolatedEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...options.env,
-    HOME: home,
-    USERPROFILE: home,
-    XDG_CONFIG_HOME: join(home, '.config'),
-    SKILLBOX_HOME: join(home, '.skillbox'),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-    NO_PROXY: '*',
-    no_proxy: '*',
-  }
-
-  return {
-    root,
-    home,
-    repository,
-    entrypoint,
-    run: async (args = [], runOptions = {}) =>
-      runProcess(process.execPath, [entrypoint, ...args], repository, {
-        ...isolatedEnv,
-        ...runOptions.env,
-      }),
-    cleanup: () => removeTempDir(root),
-  }
+/** Workspace root, detected relative to this source file. */
+export function workspaceRootOf(importMetaUrl: string): string {
+  return path.resolve(path.dirname(fileURLToPath(importMetaUrl)), '..', '..', '..')
 }
 
-function runProcess(
-  command: string,
+/** Default CLI bin path for a workspace root (`packages/cli/bin/skillbox.mjs`). */
+export function defaultCliBin(workspaceRoot: string): string {
+  return path.join(workspaceRoot, 'packages', 'cli', 'bin', 'skillbox.mjs')
+}
+
+/** Whether the packaged CLI has been built (`dist` present). */
+export async function isCliBuilt(cliBin: string): Promise<boolean> {
+  return fs
+    .access(path.join(path.dirname(cliBin), '..', 'dist', 'index.js'))
+    .then(() => true)
+    .catch(() => false)
+}
+
+function runCli(
+  cliBin: string,
   args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
 ): Promise<CliRunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  return new Promise<CliRunResult>((resolve, reject) => {
+    const child = spawn(process.execPath, [cliBin, ...args], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        child.kill('SIGKILL')
+      }
+    }, options.timeoutMs)
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
@@ -85,7 +77,55 @@ function runProcess(
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk
     })
-    child.once('error', reject)
-    child.once('close', (exitCode) => resolve({ exitCode: exitCode ?? 1, stdout, stderr }))
+    child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on('close', (code, signal) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (signal !== null) {
+        resolve({ exitCode: 1, stdout, stderr: `${stderr}killed by signal ${signal}` })
+        return
+      }
+      resolve({ exitCode: code ?? 1, stdout, stderr })
+    })
   })
+}
+
+/**
+ * Hermetic CLI subprocess harness (roadmap 3.1): every run gets a fresh
+ * temp `SKILLBOX_HOME` and repository directory, executes the packaged CLI
+ * (`node packages/cli/bin/skillbox.mjs`) as a real child process, and returns
+ * stdout/stderr/exit code. Cross-platform temp dirs are cleaned up with retries.
+ */
+export async function createCliHarness(
+  options: {
+    workspaceRoot?: string
+    cliBin?: string
+  } = {},
+): Promise<CliHarness> {
+  const workspaceRoot = options.workspaceRoot ?? workspaceRootOf(import.meta.url)
+  const cliBin = options.cliBin ?? defaultCliBin(workspaceRoot)
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-e2e-'))
+  const homeRoot = path.join(base, 'home')
+  const repositoryRoot = path.join(base, 'repo')
+  await fs.mkdir(homeRoot, { recursive: true })
+  await fs.mkdir(repositoryRoot, { recursive: true })
+
+  const run = (args: readonly string[], runOptions: CliRunOptions = {}): Promise<CliRunResult> =>
+    runCli(cliBin, args, {
+      cwd: runOptions.cwd ?? repositoryRoot,
+      env: { ...process.env, SKILLBOX_HOME: homeRoot, ...runOptions.env },
+      timeoutMs: runOptions.timeoutMs ?? 30_000,
+    })
+
+  const cleanup = async (): Promise<void> => {
+    await fs.rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+
+  return { homeRoot, repositoryRoot, cliBin, run, cleanup }
 }

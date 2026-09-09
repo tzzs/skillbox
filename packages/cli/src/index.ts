@@ -1,5 +1,7 @@
 import { CommanderError } from 'commander'
 import {
+  defaultEventBus,
+  defaultLogFilePath,
   Logger,
   isSkillboxError,
   setGlobalVerbosity,
@@ -17,8 +19,6 @@ export type { CliContext, CliDeps } from './program.js'
 export { runInteractive, isInteractiveTTY } from './interactive/index.js'
 export { InteractiveSession } from './interactive/session.js'
 export type { InteractivePrompt } from './interactive/prompts.js'
-export { runFullscreenTui, NativeTuiTerminal, TuiSession } from './tui/index.js'
-export type { TuiService, TuiTerminal } from './tui/index.js'
 
 /**
  * Splits `--verbose` / `--debug` (and their `=true` forms) out of the argv.
@@ -74,11 +74,50 @@ export async function main(
   setGlobalVerbosity(verbosity)
   const ctx = buildContext(deps)
 
+  const logger = new Logger({
+    verbosity,
+    emit: (chunk) => ctx.err(chunk),
+    logFile: defaultLogFilePath(ctx.homeRoot),
+  })
   if (verbosity !== 'normal') {
-    const logger = new Logger({ verbosity, emit: (chunk) => ctx.err(chunk) })
     logger.verbose('skillbox CLI starting')
     logger.debug('resolved arguments', { args })
   }
+  // Core flows (install/update/reconcile) emit lifecycle events onto the
+  // default bus; mirror them into the audit log (phases at debug, outcomes
+  // at info/warn) so ~/.skillbox/logs/skillbox.log carries the timeline.
+  const subscription = defaultEventBus.on((event) => {
+    switch (event.type) {
+      case 'install:phase':
+        logger.debug('install:phase', { phase: event.phase, alias: event.alias })
+        return
+      case 'install:completed':
+        logger.info('install:completed', { alias: event.alias, revision: event.revision })
+        return
+      case 'install:failed':
+        logger.warn('install:failed', { alias: event.alias, error: event.error })
+        return
+      case 'reconcile:started':
+        logger.debug('reconcile:started')
+        return
+      case 'reconcile:completed':
+        logger.info('reconcile:completed', {
+          changed: event.changed,
+          skills: event.skills,
+          problems: event.problems,
+        })
+        return
+      case 'sync:step':
+        logger.debug('sync:step', { step: event.step, status: event.status })
+        return
+      case 'sync:completed':
+        logger.info('sync:completed', { committed: event.committed, pushed: event.pushed })
+        return
+      case 'security:finding':
+        logger.warn('security:finding', { severity: event.severity, count: event.count })
+        return
+    }
+  })
 
   if (args.length === 0) {
     const interactiveOptions: RunInteractiveOptions = {}
@@ -110,5 +149,7 @@ export async function main(
     }
     ctx.err(`skillbox: ${String(error)}\n`)
     return ExitCode.GENERIC
+  } finally {
+    subscription.unsubscribe()
   }
 }

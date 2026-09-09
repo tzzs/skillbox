@@ -1,57 +1,51 @@
-/** Severity emitted by a non-throwing environment diagnostic. */
-export type DiagnosticStatus = 'pass' | 'warn' | 'fail'
+/** Diagnostics domain types (roadmap 5.3): `skillbox doctor` + debug bundle. */
 
-/** The three diagnostic capabilities currently checked by Core. */
-export type DiagnosticCheckId = 'node' | 'git' | 'manifest' | 'lockfile'
-
-export interface NodeDiagnosticCheck {
-  id: 'node'
-  status: DiagnosticStatus
-  version: string
-  minimumMajor: number
-}
-
-export interface GitDiagnosticCheck {
-  id: 'git'
-  status: DiagnosticStatus
-  installed: boolean
-  version?: string
-  /** A safe, one-line reason when the probe itself could not run. */
+export interface ProbeResult {
+  name: string
+  ok: boolean
+  /** Human detail (version, counts) — shown when ok. */
   detail?: string
+  /** Failure message (already secret-scrubbed). */
+  error?: string
 }
 
-export interface RepositoryFileDiagnosticCheck {
-  id: 'manifest' | 'lockfile'
-  status: 'pass' | 'warn'
-  present: boolean
-  path: string
+export interface DoctorReport {
+  generatedAt: string
+  skillboxVersion: string
+  probes: ProbeResult[]
 }
 
-export type DiagnosticCheck =
-  NodeDiagnosticCheck | GitDiagnosticCheck | RepositoryFileDiagnosticCheck
-
-/** Stable, serializable result returned by {@link collectDiagnostics}. */
-export interface DiagnosticReport {
-  repositoryRoot: string
-  /** True when mandatory local capabilities (Node and Git) are available. */
-  ready: boolean
-  checks: readonly DiagnosticCheck[]
+/** A secret leak found while assembling a debug bundle. */
+export interface LeakFinding {
+  /** Pattern id, e.g. `github-token`. */
+  pattern: string
+  /** Where the leak was found, e.g. `config.json`. */
+  source: string
+  /** Number of matches (values are never included). */
+  count: number
 }
 
-/** Narrow filesystem seam used by repository-file diagnostics. */
-export interface DiagnosticFilesystem {
-  exists(target: string): Promise<boolean>
-}
-
-/** Narrow Git seam used by the capability probe. */
-export interface DiagnosticGit {
-  isInstalled(): Promise<boolean>
-  gitVersion(repositoryRoot?: string): Promise<string>
-}
-
-export interface CollectDiagnosticsOptions {
-  repositoryRoot: string
-  nodeVersion?: string
-  filesystem?: DiagnosticFilesystem
-  git?: DiagnosticGit
+export interface DebugBundle {
+  generatedAt: string
+  skillboxVersion: string
+  nodeVersion: string
+  platform: string
+  doctor: DoctorReport
+  /** Machine config, serialized through the redactor (no secret values). */
+  config: Record<string, unknown>
+  /** Tail of `~/.skillbox/logs/skillbox.log` (scrubbed lines). */
+  logTail: string[]
+  repository: {
+    root: string
+    manifest: 'present' | 'missing' | 'invalid'
+    lockfile: 'present' | 'missing' | 'invalid'
+    /** Locked skill aliases when the lockfile parses. */
+    skills: string[]
+  }
+  /** Result of the automatic leak scan over the assembled text. */
+  leakCheck: {
+    findings: LeakFinding[]
+    /** File names / sections scanned. */
+    checked: string[]
+  }
 }

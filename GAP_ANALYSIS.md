@@ -1,32 +1,14 @@
 # Skillbox 功能差距清单（Gap Analysis）
 
 > 对照 `PRD.md`、`SKILLBOX_SPEC.md`、`ARCHITECTURE.md`、`MVP_TASKS.md`、
-> `docs/superpowers/specs/2026-08-09-github-integration-design.md` 与当前代码。
+> `docs/superpowers/plans/2026-08-12-gap-optimization-roadmap.md` 与当前代码。
 >
-> 当前代码基线：`petrel`（2026-08-14）。本文件的历史分段保留了当时的差距判断；下列状态
-> 摘要是当前实现的权威口径。
+> 当前代码基线：`03a48f59`（master，2026-08-14 工作区）。上一版基线 `375411d`。
 >
-> 本次更新（2026-08-13）基于一次完整的 install / lint / typecheck / test / build 验证
-> （见 §10），已将 PR #2 落地的 GitHub 默认接线与仓库同步能力从 P0 清单移入
-> “已落地基线”，并核对了 Web / CLI 剩余缺口。
+> 本文只把当前代码中仍未闭环的能力列为缺口。旧版清单中已经实现的项目已移至“已落地基线”，
+> 避免将过时 TODO、历史注释或仅有测试替身的能力误判为当前状态。
 >
-> §3–§5 与 §7、§9 是 2026-08-13 的历史审计快照，保留以便追溯，不应用作当前待办。
-> 当前结论以 §0、§1.8 和 §6 为准，避免将过时 TODO、历史注释或仅有测试替身的能力
-> 误判为当前状态。
-
-## 0. 2026-08-13 交付状态
-
-| 领域                | 当前状态                                                                                                                                                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source 与 Lifecycle | 默认 Canonical `SkillSourceResolver` 已覆盖 GitHub、Git、skills.sh registry 与 Local，并接入 install/update/reconcile/diff/merge/restore/Marketplace；Web 与 CLI 都调用 Core lifecycle。                                                |
-| Recoverability      | `OperationRuntime` 已为 install/update/fork/vendor/restore/remove/merge/continue/abort 建立仓库级锁、journal、精确快照与保留的用户级 rollback；Sync 也通过运行时锁串行化，并保留 Git-aware restore point 用于 `HEAD`/merge-state 恢复。 |
-| Runtime config      | `web.host` / `port` / `open` 已被 Web 启动消费；Agent 既支持兼容的单一路径，也支持有序 `skillDirectories` 覆盖，并由默认 adapter registry 实际用于检测和扫描。                                                                          |
-| Sync 与验收         | 多设备语义合并、可恢复 conflict session、真实 bare-remote E2E fixture、打包 CLI journey 与 pack/install smoke 已在 CI 路径验证。                                                                                                        |
-| 入口与扩展          | Hono 已抽至 `@skillbox/web-server`；Web 已提供 lifecycle 与 rollback 确认入口；CLI 提供 fullscreen TUI、doctor、migrate、debug-bundle；Gemini、OpenCode、Windsurf、Copilot adapter 已通过共享 conformance suite。                       |
-| 仍需人工/外部授权   | npm scope ownership、发布版本与实际 publish、以及 Windows/macOS/Linux 的真实设备/Agent/credential-store 验收，不能由仓库测试替代。详见 `docs/release-readiness.md` 与 `docs/e2e-acceptance.md`。                                        |
-
-已验证的自动门禁：`pnpm lint`、`pnpm typecheck`、各包测试、`pnpm build`、`pnpm release:smoke`。
-平台人工证据仍应在完成后写入 `docs/e2e-evidence/`；在此之前不应宣称已完成跨平台发布验收。
+> 本文依据本次静态核对 + 真实执行（typecheck / lint / test / build）结果更新，结论见 §9。
 
 ---
 
@@ -48,24 +30,43 @@
 - Claude Code、Codex、Cursor adapters
 - Agent detect / scan / link / unlink 与 capability model
 - Basic CLI、Interactive CLI、Web UI 三种入口
-- 交互菜单的 “Open Web UI” 已接入真实 Web server，不再是占位项
-- Web Settings 已支持 link strategy、Web host/port、自动打开浏览器、兼容 Agent path 与多目录覆盖
-- Agents 页面可跳转到按 Agent 过滤的 Library
-- Create Skill 页面支持创建时分配多个已检测 Agent
+- 交互菜单的 “Open Web UI” 已接入真实 Web server
+- Web Settings 已支持 link strategy、Web port、自动打开浏览器、Agent path override
+- Agents 页面可跳转到按 Agent 过滤的 Library；Create Skill 支持分配多个已检测 Agent
 - CLI `--verbose` / `--debug` 与日志脱敏基础设施
 
-### 1.3 Git、Marketplace、安全与 Lifecycle 核心模块
+### 1.3 Git、GitHub、Marketplace、安全与 Lifecycle 核心模块
 
-- Core GitClient：init/status/pull/push/commit/diff/fetch/checkout/materialize
-- Core GitHub：Device Flow、TokenStore、跨平台 Credential Store、Repository create/select、Credential Bridge
+- Core GitClient：init/status/pull/push/commit/diff/fetch/checkout/materialize、gitVersion、isInstalled
+- **Git remote / upstream / ahead / behind 真实 introspection**（`trackingStatus`：`rev-list --left-right --count HEAD...@{upstream}`、
+  `configuredRemote` 优先 origin、`getRemote` / `addRemote` / `removeRemote`）
+- Git 错误映射：`GIT_NOT_FOUND`、`GIT_AUTH_FAILED`、`GIT_PUSH_REJECTED`、冲突态、detached HEAD
+- Core GitHubService：Device Flow、TokenStore、Credential Store、跨平台 Credential Store、Repository create/select、
+  Credential Bridge（`getGitTransportAuth`，token 不进 argv/env/remote URL/日志）
+- **GitHub production wiring**：`createProductionGitHubProvider` / `createDefaultGitHubProvider`
+  （`packages/cli/src/sync/loaders.ts`）强类型适配 `GitHubService.getConnectionState / startDeviceAuthorization /
+pollDeviceAuthorization / disconnect`；默认 wiring integration tests 已存在（`sync/pipeline.test.ts`）
+- **Core RepositorySync module**（`packages/core/src/sync/repository-sync.ts` + `factory.ts`）：
+  `connect`（Device Flow → 当前用户 → 创建/选择私仓 → 需要时 `git init` → 绑定/校验 origin → 持久化，失败回滚 remote add）、
+  `disconnect`、`pull` / `push`（注入 `GitTransportAuth`、首次 push `--set-upstream`）、`status` / `sync`
+- CLI `connect` / `disconnect` 已走 Core RepositorySync（无 provider override 时），Device Flow 交互输出正常
+- **CLI sync / pull / push 已接入 RepositorySync（Credential Bridge）**：`createSyncGitTransport` 把
+  `RepositorySync.pull/push` 适配为 CLI transport 契约并注入 `SyncService`；未连接 GitHub 时 pull 回退到
+  普通 git（公开 remote 可用），连接后私仓 fetch/pull/push 使用无落盘凭据
 - Secret Scan、`.skillboxignore`、安装前静态安全扫描与高风险确认
-- Registry framework：GitHub / skills.sh / Local providers
+- Registry framework：GitHub / skills.sh / Local providers；Marketplace 默认 provider 注册（update 不依赖 search/outdated 预热）
 - Managed cache、事务式 remote install、rollback-on-failure
 - CLI `search/add/outdated/update/cache clean`
 - Fork / Vendor / managed modification detection / Base Snapshot
-- Managed / Forked Diff
+- **Managed Restore（M17.3 `[Restore]`）**：`restoreManagedSkill`（`packages/core/src/lifecycle/restore.ts`）——
+  校验锁定的 pin → 恢复前 recovery snapshot（`~/.skillbox/state/backups/restore/`）→ 重新下载 pinned revision →
+  结构/integrity 校验（对照 lockfile）→ 原子替换 library 副本 → 刷新 Agent links（copy 策略 stale 项强制重建）→
+  失败完整回滚；`skillbox edit` 的 [Restore] 分支已接通（`LIFECYCLE_UNAVAILABLE` 不再触发）
 - 3-way Merge、冲突状态、`--continue`、`--abort`、merge 前备份
 - Web Explore、Install、Updates、Diff 页面
+- **Hermetic CLI E2E harness**（`packages/testing/src/cli-harness.ts`）：真实 CLI 子进程 + 临时
+  `SKILLBOX_HOME`/仓库；git-free 旅程（version / create→list→remove / install / 未知命令）已在
+  `packages/testing/src/e2e.test.ts` 通过；CI build 后运行 `pnpm test:e2e`
 
 ### 1.4 当前 CLI 命令面
 
@@ -74,368 +75,491 @@ list / agents / create / remove / enable / disable / install / status
 sync / pull / push / connect / disconnect
 search / add / outdated / update / cache clean
 fork / vendor / edit / diff / merge
+migrate / rollback / doctor
 web
 ```
 
-### 1.5 GitHub 默认接线与仓库同步闭环（PR #2，2026-08-12）
-
-- 默认 GitHub production factory：Client ID、GitHubApi、CredentialStore、TokenStore、
-  RuntimeConfigService 组装，`SKILLBOX_GITHUB_CLIENT_ID` 环境变量可覆盖 Client ID
-- CLI GitHub adapter 与 Core result shape 的映射（含 Device Flow 秒/毫秒换算、
-  slow-down / failed 状态透传）
-- GitClient remote introspection：`status()` 返回真实 `ahead` / `behind` / `remote`，
-  覆盖无 remote、detached HEAD、分支无 upstream 等边界
-- `RepositorySyncService`（Core）：authorize → repository → init → bind-remote →
-  persist → pull → push 全阶段编排；CLI `connect` / `disconnect` 已路由到 Core
-- 私仓 Git transport：Credential Bridge 无落盘凭据注入 + 禁止 hook 读取传输凭据
-- 默认 production wiring 集成测试（GitHub / Git / repository sync 错误码覆盖）
-
-### 1.6 多设备同步与语义冲突恢复（2026-08-13）
-
-- Repository 级 `SyncTransaction`：隔离 worktree 三方语义合并、验证、受管路径提交、
-  non-force push 与最多三次的 fetch/recompute retry；Repository 发布前 Runtime 保持不变。
-- 版本化 snapshot / conflict session 持久化：仅保留受管路径与 private ref，拒绝跨仓库、过期、
-  损坏记录和 credential/绝对路径泄漏。
-- Manifest 字段、agents 集合、metadata、delete/modify、mode/source/lifecycle 与二进制/内容冲突
-  均映射为用户可恢复的语义 conflict；lockfile 从合并后的状态重新生成，不做文本合并。
-- CLI 与本地 Web API/UI 已提供同步状态、持久冲突列表、local/remote/keep-both 决策和恢复点；
-  普通文案不展示 Git marker 或内部术语。
-- 真实 bare remote + 双 clone E2E 已覆盖完成态、持久冲突、非重叠自动合并、拒推重试和 resolution 发布；
-  Runtime reconcile 仅在 Repository 成功发布后执行，失败保留有效 Repository commit 并返回可重试状态。
-
-### 1.7 Managed Restore（工作区变更，2026-08-13）
-
-- Core `restoreManagedSkill()` 只接受 Managed skill，读取其锁定 revision 与 integrity，且不改写
-  Manifest / Lockfile
-- 从已验证的 managed cache 复制到同级 staging 目录，验证 canonical integrity 后替换 runtime；失败时
-  保留或恢复原 runtime，并返回稳定的 rollback 错误
-- CLI Lifecycle adapter 传递 `homeRoot`，交互式 `skillbox edit` 的已修改 Managed Skill 可以选择
-  **Restore**；恢复后回到 pristine managed 状态
-- 已有 Core Restore、CLI adapter 和 interactive service 的定向测试；当前实现暂只支持已缓存的
-  GitHub source，尚未成为统一 Source/下载恢复能力
-
-### 1.8 P1/P2 实施完成（2026-08-14）
-
-- `OperationRuntime` 现覆盖 install、update、create、local edit、fork、vendor、restore、remove、
-  merge / continue / abort 与 sync；每项均声明精确快照目标，提供同仓库、未过期记录的用户级
-  rollback。Sync 只使用 runtime 的锁与 journal，保持其 Git-aware restore point 为唯一的 Git 状态恢复机制。
-- `SkillSourceResolver` 已成为 GitHub、Git、Registry、Local 的默认生产边界。Install、Update、
-  Reconcile、Diff、Merge、Restore、Web lifecycle 以及 CLI Marketplace 都接入该边界；Restore cache miss
-  重新 materialize 锁定 revision 并验证 integrity，不会以 latest 替代 pin。
-- Web lifecycle/rollback API 与 UI、独立 `@skillbox/web-server`、fullscreen `skillbox tui`、
-  `doctor`、`migrate`、脱敏 `debug-bundle`、Event Bus、迁移 checkpoint store、release smoke 与
-  Gemini/OpenCode/Windsurf/Copilot conformance adapter 均已落地并有定向测试。
-- 当前自动化门禁已覆盖 lint、typecheck、单元/集成测试、build 与 packed-install smoke。实际 npm
-  发布与三平台人工验收仍需仓库所有者执行和记录，见 §6。
-
----
-
-## 2. 历史 P0 结论（2026-08-13，已由 §1.8 取代）
-
-此前唯一 P0（Managed Restore）已在当前工作区实现并通过定向验证，见 §1.6。该结论仅覆盖
-**已缓存的 GitHub Managed skill**：首次下载、其他 source 以及跨平台端到端验收仍属于后续 P1
-工作，不能据此宣称发布就绪。
-
----
-
-## 3. 历史 P1 — 产品能力未闭环（2026-08-13，已由 §1.8 取代）
-
-### 3.1 Marketplace 与 Manifest Source 模型不一致
-
-Manifest 支持：
+### 1.5 当前 Web API 面（M10 JSON API）
 
 ```text
-github / git / registry / local
-```
-
-Marketplace 的 `NormalizedSource` 当前只支持：
-
-```text
-github / skills-sh / local
-```
-
-已知限制：
-
-- `git:`、SSH、GitLab、Bitbucket source 被 `parseSource()` 明确拒绝
-- `outdated/update` 只映射 GitHub 和 Local lockfile source
-- `registry` source 不能通过 Reconcile Git engine materialize
-- `git` source 虽可由 Reconcile 克隆，但不能通过统一 `add/search/update` 流程安装和升级
-- CLI Marketplace 与 Web Registry 各自有 provider 注册/适配代码，尚未完全统一
-
-待实现：统一 Source Domain 与 Provider dispatch，使 add/install/reconcile/outdated/update/diff/merge
-对同一种 source 具有一致行为。
-
-### 3.2 Web 与 CLI Lifecycle 能力不对等
-
-Web 当前已提供 Skill Diff，但尚未提供以下操作：
-
-- Fork
-- Vendor
-- Edit / Restore
-- Merge
-- Merge Continue / Abort
-- Rollback
-
-需要补充 Core-backed Web APIs、风险确认、事务结果展示和对应 React UI。Web 层不应重新实现
-Lifecycle 逻辑。
-
-### 3.3 Rollback 用户功能未实现
-
-安装事务失败的内部 rollback 已存在，merge 也支持 abort；但 PRD Roadmap 中面向用户的通用
-rollback 尚无 Core service、CLI 命令或 Web UI。
-
-需要先定义 rollback 的对象和范围：
-
-- Skill 内容版本
-- Manifest / Lockfile
-- Agent assignment
-- Fork / Vendor / Restore 等生命周期操作
-
-### 3.4 配置模型仍与 SPEC 有差异
-
-当前 Runtime Config：
-
-- `web` 只有 `port` / `open`，缺 `web.host`
-- Agent override 使用单个 `path`，而 SPEC 规划 `skillDirectories: string[]`
-
-兼容性设计需要考虑现有 `config.json`：新增字段时应提供 schema migration 或向后兼容解析，
-不能直接破坏现有机器配置。
-
-### 3.5 Logging 尚未贯穿主要业务流水线
-
-Logger、verbosity level、脱敏与 CLI flags 已落地，但多数 Core/CLI 流程没有输出结构化 debug
-事件。当前日志更接近基础设施，而不是完整的诊断能力。
-
-待实现：
-
-- Sync / Install / Reconcile / Registry / Lifecycle 的关键步骤日志
-- 错误 context 的统一脱敏
-- 可导出的 debug bundle
-- debug bundle 中 token、authorization header、remote credential 的自动校验
-
----
-
-## 4. 历史 P1 — 可靠性与架构基础设施（2026-08-13，已由 §1.8 取代）
-
-### 4.1 `runtime.lock` 并发保护
-
-尚无进程级运行锁。多个 CLI/Web 操作同时写 Manifest、Lockfile、library 或 merge state 时，仍有
-相互覆盖风险。
-
-至少应覆盖：install、sync、add、update、fork、vendor、restore、merge、remove。
-
-### 4.2 Schema Migration
-
-Manifest / Lockfile 虽有版本字段，但没有：
-
-- migration registry
-- 自动迁移策略
-- `skillbox migrate`
-- 旧版 fixture 回归测试
-
-Runtime Config 的后续字段变化也应纳入迁移或兼容读取策略。
-
-### 4.3 Backup 机制只覆盖部分流程
-
-当前 merge 有 pre-merge backup，但以下场景尚无统一备份策略：
-
-- Remove modified skill
-- Vendor
-- Restore Managed（已有同级 backup，但尚未纳入统一 backup service）
-- 通用 Rollback
-- destructive migration
-
-需要建立统一 backup service、保留策略、清理策略与恢复命令。
-
-### 4.4 Event Bus / Progress Model
-
-架构规划的 Event Bus 尚未实现。当前 CLI/Web 主要直接调用服务并等待结果，缺统一的：
-
-- Download progress
-- Install lifecycle events
-- Git sync events
-- Security finding events
-- Web/TUI 实时进度订阅
-
-### 4.5 Doctor 与 Debug Bundle
-
-仍缺：
-
-- `skillbox doctor`
-- Git / Node / Agent / link capability 检查
-- Credential Store / Secret Service 可用性检查
-- Repository/Manifest/Lockfile/library/link state 一致性诊断
-- 脱敏 debug bundle
-
----
-
-## 5. 历史 P2 — Agent、交互与分发扩展（2026-08-13，已由 §1.8 取代）
-
-### 5.1 Agent 覆盖面
-
-已实现 Claude、Codex、Cursor；尚未实现：
-
-- Gemini CLI
-- OpenCode
-- Windsurf
-- GitHub Copilot
-
-新增 adapter 时应复用 capability model，并覆盖 detect/scan/link/unlink、path override 与 copy
-fallback 测试。
-
-### 5.2 Fullscreen TUI
-
-当前 `@clack/prompts` Interactive CLI 已满足 MVP；独立 Fullscreen TUI 仍未实现，但
-`MVP_TASKS.md` 明确允许 V0.1 不做复杂 TUI，因此不是近期发布阻断项。
-
-### 5.3 独立 Web Server package
-
-架构建议的 `packages/web-server` 尚未拆分，当前 Hono server 位于 CLI package。现状可用，只有在
-需要独立部署、复用或插件化时再拆分，不应优先于 P0 主流程。
-
----
-
-## 6. 当前发布与验收外部前置条件
-
-### 6.1 npm 发布配置
-
-Root、CLI、Core 等 package 仍设置 `"private": true`。正式发布前至少需要：
-
-- 明确公开包名与发布范围
-- 移除需要发布 package 的 `private`
-- workspace dependency 发布转换验证
-- `files` / bin / bundled Web assets 检查
-- provenance、repository、homepage、bugs、license metadata
-- `pnpm pack` 后的干净环境安装测试
-
-### 6.2 README / Release Metadata
-
-- README CI badge 仍使用 `OWNER/REPO` 占位
-- README 的 GitHub Sync 描述与代码已一致（connect 全链路已闭环，见 §1.5），
-  可将 README Roadmap 0.2 中的“依赖 GitHub Device Flow 后端落定”说明移除
-- `GAP_ANALYSIS.md` 更新后，README Roadmap 应同步使用相同状态口径
-
-### 6.3 E2E 验收与自动化
-
-`docs/e2e-acceptance.md` 的十步验收仍未记录完成结果，仓库也没有 Playwright/Cypress 或等价的
-端到端测试层。
-
-建议分为两层：
-
-1. Hermetic CLI E2E：临时 HOME、临时 Git remote、fake registry、真实进程执行。
-2. Manual platform acceptance：Windows/macOS/Linux 上真实 Agent 目录、link strategy、浏览器与
-   Credential Store。
-
-必须覆盖的真实主路径：
-
-```text
-detect → import → create → assign → reconcile → status
-connect → repository bind → sync → second-device clone → install
-search → security review → add → outdated → update
-managed edit → fork/restore → diff → merge/continue/abort
+GET  /api/health
+GET  /api/skills | /api/skills/:id | /api/skills/:id/content | /api/skills/:id/diff
+POST /api/skills | /api/skills/:id/enable | /api/skills/:id/disable | /api/reconcile
+POST /api/skills/:id/fork | /api/skills/:id/vendor | /api/skills/:id/restore | /api/skills/:id/merge
+PUT  /api/settings | /api/skills/:id/content
+DELETE /api/skills/:id
+GET  /api/registry/search | /api/registry/outdated
+POST /api/registry/install
+GET  /api/rollbacks | POST /api/rollbacks/:id/restore
 ```
 
 ---
 
-## 7. 历史文档与代码债务（2026-08-13，待后续维护窗口处理）
+## 2. P0 — 主流程阻断项
 
-### 7.1 过时注释
+### 2.1 ✅ Managed Restore 已实现（2026-08-14）
 
-代码中仍有多处 “agent N 尚未落地”“not landed yet” 注释，但对应 Core 模块已经存在，例如 Diff、
-Merge、GitClient、GitHubService、Registry 与 Security Scanner。
+`restoreManagedSkill`（`packages/core/src/lifecycle/restore.ts`，M17.3 `[Restore]`）已闭环并接入
+`skillbox edit` 的 Restore 分支：
 
-这些注释应在完成真实接线检查后清理，避免：
+- 前置校验：manifest 存在（`SKILL_NOT_FOUND`）、模式为 managed（`LIFECYCLE_ILLEGAL_TRANSITION`）、
+  lockfile 含 `revision` + `integrity`（`RESTORE_FAILED`）、source 有 registry 表示（`SOURCE_UNSUPPORTED`）
+- 已与 lockfile 一致时幂等 no-op（`unchanged: true`）
+- 恢复前 recovery snapshot → `~/.skillbox/state/backups/restore/<alias>-<ts>`（成功保留、失败清理）
+- 重新下载 **pinned revision**（provider.download(locked.revision)），结构校验（SKILL.md / skillbox.yaml）、
+  integrity 对照 lockfile（不一致 → 可恢复的 `INTEGRITY_MISMATCH`）
+- 原子替换 managed library 副本；刷新 Agent links（copy 策略 stale 项强制重建，blocked 外部条目报错）
+- 中途失败 rollback：恢复原 runtime、清理下载与备份
+- 测试：`restore.test.ts` 10 例（含 rollback / integrity / no-op / 缺 pin 等）；CLI loader 映射
+  `{ name, filesRestored }` 并更新过时注释
 
-- 将已实现能力误判为缺失
-- 掩盖“模块已存在但 adapter 不兼容”的真实问题
-- 让后续开发继续依赖过时的接口预期
+### 2.2 ✅ CLI sync / pull / push 已接入 RepositorySync（Credential Bridge）
 
-### 7.2 重复 Adapter 与动态导入
+`createSyncGitTransport`（`packages/cli/src/sync/loaders.ts`）把 Core `RepositorySync.pull/push`
+适配为 CLI `SyncGitTransport` 契约并注入 `SyncService`（`program.ts` 生产 wiring）：
 
-CLI Sync 已随 §2.1/§2.2 落地改为显式 typed factory，并补上默认 production wiring 测试；
-但 Marketplace 与 Lifecycle 仍使用动态导入和结构类型转换，Sync 中 Git / SecretScanner 的
-`loadCore` 兼容缝也仍保留。
+- `skillbox sync` / `pull` / `push` 的 git 传输现在经过 RepositorySync：已连接 GitHub 时
+  `getGitTransportAuth()` 注入 fetch/pull/push（私仓可用），未连接时 pull 回退到普通 git（公开 remote 行为不变）
+- 冲突仍以 `GitPullOutcome` 形状返回，pipeline 保持 typed `GIT_CONFLICT` 错误
+- 测试：`loaders.test.ts` 8 例（委托、冲突回读、GITHUB_NOT_CONNECTED 回退、SyncService 路由）
 
-建议在各模块稳定后：
+剩余小项（roadmap 1.1 未勾选项，低优先）：
 
-- 将 Marketplace / Lifecycle 改为显式 typed factory
-- 删除 runtime arity check 和宽泛 `Record<string, unknown>` 转换
-- 补齐 Marketplace / Lifecycle 的“默认 production wiring”测试
-- 保留依赖注入接口供测试使用
+- Interactive CLI（`interactive/session.ts`）仍直接用旧 `SyncService` 而非 RepositorySync interface
+- `SyncService.connect/disconnect` 保留为无 RepositorySync 注入时的 legacy fallback（生产默认路径已走 RepositorySync）
+
+### 2.3 Hermetic E2E 部分落地（git-free 旅程已跑通）
+
+`packages/testing/src/cli-harness.ts`：真实 CLI 子进程（`node packages/cli/bin/skillbox.mjs`）+ 临时
+`SKILLBOX_HOME`/仓库；`packages/testing/src/e2e.test.ts` 的 git-free 旅程已通过：
+`--version` / `create → list → remove` / `install` / 未知命令。根脚本 `pnpm test:e2e`，CI build 后执行；
+CLI 未构建时套件自跳过并提示。
+
+仍缺（roadmap 1.4 / 3.2 未勾选项）：
+
+- `connect → repository bind → sync → push`、`clone → connect/install → pull` 等 git/网络旅程
+- bare Git remote fixture、controlled GitHub/Registry HTTP server fixture
+- authorization timeout/cancel/retry、private remote auth failure 场景
+- 三平台 manual acceptance 证据（§6.3）
 
 ---
 
-## 8. 明确非近期范围
+## 3. P1 — 产品能力未闭环
 
-以下仍按 PRD Non-goals / 长期规划处理，不列为当前版本阻断项：
+### 3.1 Marketplace 与 Manifest Source 模型（部分统一，2026-08-14）
 
-- 自建中心化 Registry
-- SaaS 云盘 / Remote Dashboard
-- Team / Billing / RBAC / Cloud Database
-- 强制桌面客户端
-- 新 Skill 标准
-- MCP / Rules / Prompts / Hooks 统一管理
-- AI 自动生成 Skill
-- Plugin marketplace
+已落地：
+
+- **`git:` 与 scp-style（`git@host:path`）source 已支持**：`parseSource` 不再拒绝；`NormalizedSource`
+  新增 `git` 类型；`toManifestSource` / `fromManifestSource` 完整 round-trip（`git` 不再返回 `null`）
+- **新增 `GitSourceProvider`**（`packages/core/src/registry/git.ts`）：`git ls-remote` 把 ref/HEAD 钉到
+  commit SHA、clone-or-checkout 后把 skill 子树写入下载目录；已注册进默认 provider（CLI marketplace）
+  —— `add` / `install` / `update` / `restore` 对 `git:` source 走统一流程
+- **install 下载目录契约修复**：真实 provider（github / skills-sh / git / local）都把子树写入 `targetDir`，
+  install 不再二次解析 `source.path`（原实现与真实 provider 冲突，带 path 的 github source 实际会安装失败）；
+  source path 的 `../` 穿越改为在下载前做可移植性校验
+- **cache 条目纯净化**：`.integrity` 标记移到条目旁文件（`<revision>.integrity`），缓存内容可直接参与哈希
+- **转换统一**：install 用 `toManifestSource`、marketplace 用 `fromManifestSource`（删除重复实现）；
+  `git` source 的别名派生、描述、cache key、CLI 展示均已覆盖
+
+已补齐（2026-08-14 第六轮）：
+
+- **Reconcile 对 registry（skills.sh）source 回退 provider**：`ReconcileOptions.registry`（默认
+  process-wide `defaultRegistry`）——git engine 无法规划的 registry 条目经 `resolve → download`
+  物化（子树契约），fresh clone 上 skills.sh 技能不再被静默跳过；无 provider 时给出可操作的
+  `skillbox add` 提示（`skipped`）
+- **`gitlab:` / `bitbucket:` scheme 简写**：映射为 `git:` URL（`gitlab:org/repo` →
+  `https://gitlab.com/org/repo`），`ssh:` / `file:` 仍明确拒绝
+
+残余（债务类，非功能缺口）：
+
+- CLI Marketplace 与 Web Registry 的 provider 注册/适配代码仍未完全统一（共用 core
+  defaultRegistry，主要是 loader 层重复，roadmap 4.2 调用方迁移）
+
+### 3.2 ✅ Web 与 CLI Lifecycle 能力不对等（已闭环，2026-08-14）
+
+Web 已补齐全部 lifecycle 操作（§1.5 路由清单已更新）：
+
+- **API**：`POST /api/skills/:id/fork`（M17.1）、`/vendor`（M18）、`/restore`（M17.3）、
+  `/merge`（M20，body `{action: 'merge'|'continue'|'abort'}`）——全部走 Core 事务
+  （`forkSkill` / `vendorSkill` / `restoreManagedSkill` / `mergeSkill` / `continueMerge` / `abortMerge`），
+  错误经 M10.8 信封映射（`LIFECYCLE_ILLEGAL_TRANSITION` 等 → 409）
+- **Web mutation 锁**：全部 8 个 mutating 路由（create/content/delete/enable/disable/reconcile/
+  install/settings）与 4 个 lifecycle 路由都经 `mutation(services, …)` 走跨进程 `mutation` 锁（§4.1）
+- **UI**：Skill Detail 新增 Lifecycle 卡片——按 mode/status 状态机给出动作
+  （managed → Fork/Restore/Vendor/Merge；forked → Vendor/Merge；conflict → Continue/Abort），
+  确认后执行并渲染结果（合并冲突列出文件，提示继续/中止）
+- 测试：web/app.test.ts +5（真实 Core fork/vendor/restore 事务、merge 路由、错误信封）
+- 顺带：web services 注册 `GitSourceProvider`；web 错误映射补 lifecycle/merge/restore/lock 状态码
+
+### 3.3 ✅ 面向用户的 Rollback 已实现（2026-08-14）
+
+通用 backup/rollback 已闭环（roadmap 2.4）：
+
+- **统一 BackupService**（`packages/core/src/backup/`）：索引
+  `~/.skillbox/state/backups/index.json` + 独立备份目录；`record` / `list` / `get` / `forget` /
+  `rollback` / `prune`（保留策略：每个 operation+alias 保留最新 N 份，默认 10）
+- **rollback 语义**：`kind: 'runtime'`（恢复 library 副本）与 `kind: 'repo-dir'`（恢复仓库目录）；
+  拒绝未知 id（`BACKUP_NOT_FOUND`）、内容缺失（`BACKUP_INCOMPLETE`）、跨仓库（`BACKUP_REPOSITORY_MISMATCH`）
+- **接线**：`restoreManagedSkill` 的 recovery snapshot 纳入索引（operation `restore`）；
+  `removeSkill` 在删除前备份 library 副本（`runtime`）+ deleteFiles 时备份仓库目录（`repo-dir`）
+- **CLI `skillbox rollback [id]`**：无参列出备份表 / `--json`，带 id 恢复并输出结果
+- **Web API**：`GET /api/rollbacks`、`POST /api/rollbacks/:id/restore`（走 mutation 锁）
+- 测试：`backup/service.test.ts` 7 例、restore rollback-able 1 例、remove 备份 1 例、CLI rollback 1 例、web rollback 1 例
+
+✅ Web UI 已提供 Skill Detail rollback 入口（按 Skill 展示备份并确认恢复）。
+manifest/lockfile 快照级回滚仍属于后续增强；当前 Operation Journal 已记录写操作状态并支持崩溃恢复标记。
+
+### 3.4 配置模型已与 Web/CLI 基本统一（2026-08-17）
+
+- ✅ `web.host` 已进入 Runtime Config、Settings API/UI；CLI 参数优先于持久化配置
+- ✅ Agent override 已支持 `skillDirectories: string[]`，并保留旧 `path` / `executable` 兼容
+- 新增字段仍应继续提供 schema migration 或向后兼容解析（与 §4.2 联动）
+
+### 3.5 Logging 尚未贯穿主要业务流水线（未变）
+
+Logger、verbosity、脱敏与 CLI flags 已落地。**CLI mutation 审计日志已接入**：`CliContext.logger`
+（默认写 `~/.skillbox/logs/skillbox.log`）+ 13 个 mutation 命令 + connect/disconnect 记录
+`mutation:<op>:start/done/failed`（含错误 message，经 redactor 脱敏）；debug bundle 的 log tail 现在有真实内容。
+Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事件；registry/lifecycle 的专用结构化 debug 字段仍可继续细化。
 
 ---
 
-## 9. 历史建议实施顺序（2026-08-13，已完成的实现项见 §1.8）
+## 4. P1 — 可靠性与架构基础设施
 
-### Wave 1 — 恢复真实主流程
+### 4.1 ✅ `runtime.lock` 并发保护（2026-08-14）
 
-> 本波已完成：PR #2 的 GitHub/Git 主流程（§1.5）以及当前工作区的 Managed Restore（§1.6）。
-> Restore 仍需纳入统一事务与多 source 支持，见 Wave 3。
+`packages/core/src/operations/lock.ts`：跨进程 mutation 锁（`~/.skillbox/state/locks/<name>.lock`），
+原子创建（O_EXCL）+ owner 元数据（pid/hostname/createdAt）+ stale 检测（默认 10min，自动破除并重试）+
+安全释放（只删自己仍持有的锁）。CLI 全部 mutation 命令（create/remove/enable/disable/install/sync/pull/
+add/update/fork/vendor/edit/merge）已用 `mutation(ctx, …)` 包裹（同一个 `mutation` 锁）；**Interactive
+session** 的 create/import/sync 也已接入（`withMutation`，含审计日志）；Web 全部 mutating 路由同样接入
+（§3.2）。测试：`operations/lock.test.ts` 5 例 + CLI 锁冲突测试。
+
+### 4.2 ✅ Schema Migration（2026-08-14）
+
+`packages/core/src/migrations/`：`MigrationRegistry`（版本递增、幂等、`MIGRATION_MISSING`/
+`MIGRATION_FAILED`）、`migrateVersionedDocument`（读版本、拒绝新版本、迁移到当前、schema 校验）、
+按文档注册表：manifest / lockfile（v1 为首版，注册表为空，更旧版明确报 `MIGRATION_MISSING`）、
+config（真实 v0→v1：为无版本字段的旧 config 盖上 `version: 1`）。
+`migrateRepository` 落盘迁移；`readManifest` / `readLockfile` 读旧版本时内存自动迁移；
+runtime config schema 新增可选 `version` 字段。CLI 新增 `skillbox migrate` 命令。
+测试：`migrations/index.test.ts` 12 例 + CLI migrate 测试。
+
+### 4.3 ✅ 统一 Backup 机制（2026-08-14）
+
+`BackupService`（§3.3）统一了备份/保留/清理/恢复策略：索引 + 独立副本 + retention（每 operation+alias
+默认保留 10）+ `skillbox rollback` 恢复。已覆盖：Managed Restore 的 recovery snapshot、remove 的
+runtime/repo-dir 备份；merge 的 pre-merge backup（`merge/state.ts`）保持独立（与 merge state 强耦合）。
+仍缺：destructive migration 的备份（当前无 destructive 迁移，migration registry 为空）。
+
+### 4.4 ✅ Event Bus / Progress Model（部分落地，2026-08-15）
+
+`packages/core/src/events/`：进程内 `EventBus`（类型化 `SkillboxEvent`、同步 fire-and-forget、
+单个坏 listener 不影响 emit）+ `defaultEventBus`。**Install 事务**发 `install:phase/completed/failed`、
+**Reconcile** 发 `reconcile:started/completed`、**sync 管线**发 `sync:step/completed`、secret scan 发
+`security:finding`；CLI `main()` 订阅并镜像到审计日志（phase → debug，completed → info，
+failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推给前端，Library 页有实时活动指示器
+（`useEventStream`）。仍缺：TUI 实时订阅（roadmap 5.1 OperationRuntime 的 journal 部分未做）。
+
+### 4.5 ✅ Doctor 与 Debug Bundle（2026-08-14）
+
+`packages/core/src/diagnostics/`（roadmap 5.3）+ CLI `skillbox doctor`：
+
+- **probes**（`runDoctorProbes`，永不抛错，逐项报错）：git 二进制与版本、node、platform、home 可写、
+  config、manifest、lockfile、manifest⇄lockfile 一致性、agents 检测、library 物化数、links 状态、
+  credential store（set/get/delete 探针）
+- **debug bundle**（`createDebugBundle`）：doctor 报告 + 脱敏 config（scrubText）+ 日志尾部（逐行脱敏）+
+  仓库摘要（manifest/lockfile present/missing/invalid + skills 列表）+ **自动泄漏扫描**
+  （`scanForLeaks`：github token `ghp_` 等前缀、Authorization/Bearer 头、x-oauth-token/x-github-token；
+  命中只报 pattern+source+count，绝不包含值）
+- **CLI**：`skillbox doctor`（人类可读 / `--json` / `--bundle <path>`，泄漏命中时输出 WARNING；
+  探针失败时**退出码非零**，CI 可用 `skillbox doctor` 做门禁）
+- 测试：`diagnostics/doctor.test.ts` 4 例 + CLI doctor 1 例
+
+---
+
+## 5. P2 — Agent、交互与分发扩展
+
+- ✅ 全部六个 adapter 已实现：Claude / Codex / Cursor / **Gemini CLI** / **OpenCode** / **Windsurf** /
+  **GitHub Copilot**（2026-08-14；每个都通过共享 `runCliAdapterSuite` 一致性套件，已注册进
+  `createDefaultAgentRegistry`）
+- Fullscreen TUI 未实现，但 MVP_TASKS 允许 V0.1 不做，非阻断
+- 独立 `packages/web-server` 未拆分（Hono server 仍在 CLI package），按需再拆
+
+---
+
+## 6. 发布与验收缺口
+
+### 6.1 npm 发布配置（部分落地）
+
+- ✅ cli / core / shared / root 已补齐 `license`（MIT）/ `repository` / `homepage` / `bugs` metadata；
+  root 新增 `pnpm pack:verify`（`scripts/verify-package.mjs`：`npm pack --dry-run` 断言 bin/dist/
+  dist/web 完整，并报告 private/workspace 两个发布 blocker）
+- ✅ cli / core / shared 已移除 private blocker，CLI workspace 依赖已改为发布版本范围 `^0.1.0`；
+  `pack:verify` 已确认无 workspace blocker。仍需发布时配置 npm provenance 与实际 token。
+
+### 6.2 README / Release Metadata（部分修复）
+
+- ✅ README CI badge 已替换为 `tzzs/skillbox` 实际地址
+- ✅ README Roadmap 已更新：0.2/0.3 标记已落地、0.4 部分落地、E2E 状态、Git 运行时依赖；
+  `INSTALLATION.md` 系统要求同步
+- repository/homepage/bugs/license metadata 已补齐；provenance 需在真实 npm 发布环境中启用
+
+### 6.3 E2E 验收与自动化（大部分落地）
+
+- ✅ Hermetic CLI E2E：git-free 旅程 5 例、git 旅程 2 例（bare remote fixture）、**connect 旅程 2 例**
+  （本地假 GitHub API：Device Flow → 建私仓 → git init → 绑定 origin；另一例验证 `slow_down` 轮询重试）——
+  全部 9/9 通过，CI build 后跑 `pnpm test:e2e`
+- ✅ `docs/e2e-acceptance.md` 更新为「手工手册 + 自动化覆盖」双轨，并记录全绿测试基线
+- ✅ connect denied / expired 旅程（假服务器首个 poll 返回 access_denied / expired_token → CLI 干净退出 1）
+- ✅ **private remote auth failure 旅程**：`skillbox connect`（file store 跨进程持久化 token）→
+  二次进程 `skillbox push` 打到 401 git 远端 → 干净失败并报认证错误（证明 connection gate 通过、
+  credential bridge 到达传输层）
+- 仍缺：三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
+
+---
+
+## 7. 文档与代码债务
+
+### 7.1 过时注释（已清理一部分，仍有残留）
+
+- ✅ 已清理：`skill-lifecycle/service.ts` 的「`detectManagedModifications` has not landed」、
+  `skill-lifecycle/types.ts` / `loaders.ts` 的 `restoreManagedSkill` TODO（Restore 已实现）、
+  `sync/loaders.ts` 的旧 GitHub 构造器注释
+- ✅ 已清理：`install/transaction.ts` 的 provider TODO（registry 框架已落地，注释更新为现状描述）、
+  `marketplace/types.ts` 的 updateSkill TODO（已由 `@skillbox/core/install` 提供）
+- 仍准确：`exit-codes.ts`「until agent 2 lands `MERGE_CONFLICT`」（Core `ErrorCode` 确无
+  `MERGE_CONFLICT`，有 `MERGE_BINARY_CONFLICT` 等）、`marketplace/service.ts` 的 cache 公开 API TODO
+  （§4.2）
+
+### 7.2 重复 Adapter、动态导入与双 Orchestrator（部分缓解）
+
+- ✅ pull/push orchestration 已统一：`SyncService` 经 `SyncGitTransport` 走 Core `RepositorySync`
+  （Credential Bridge），不再自行实现 git pull/push
+- 残留：CLI Sync / Marketplace / Lifecycle 仍大量使用 `loadSkillboxCore()` 动态导入 +
+  `Record<string, unknown>` 结构转换 + runtime arity check；`SyncService.connect/disconnect` 保留为
+  legacy fallback（生产默认路径已走 RepositorySync）
+- 建议：各模块稳定后改为显式 typed factory、删除宽泛转换、保留 DI seam 供测试
+
+---
+
+## 8. 明确非近期范围（未变）
+
+- 自建中心化 Registry、SaaS 云盘 / Remote Dashboard、Team / Billing / RBAC / Cloud Database、
+  强制桌面客户端、新 Skill 标准、MCP / Rules / Prompts / Hooks 统一管理、AI 自动生成 Skill、
+  Plugin marketplace
+
+---
+
+## 9. 本次验证基线（2026-08-14，master `03a48f59`）
+
+### 9.1 执行结果
+
+| 命令                             | 结果                                                                                                                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile` | 首次失败（`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`），`CI=true` 后成功；**原 node_modules 不完整**（缺 `@rollup/rollup-linux-x64-gnu` 原生可选依赖，vitest/vite 无法启动） |
+| `pnpm typecheck`                 | ✅ 通过                                                                                                                                                                        |
+| `pnpm lint`                      | ESLint ✅；Prettier 首次失败——`pnpm install` 在工作区生成了 171MB `.pnpm-store/`，未被 `.prettierignore` 排除；**已修复**（见 §9.3）                                           |
+| `pnpm test`                      | 见 9.2                                                                                                                                                                         |
+| `pnpm build`                     | ✅ 通过（tsc -b + vite build + 前端资源复制进 `packages/cli/dist/web`）                                                                                                        |
+
+### 9.2 测试明细（最新：全绿基线 2026-08-14）
+
+> 本机已安装 git（2.47.3），**全部测试套件通过，无环境性失败**。
+
+- `packages/core`：**734/734 通过（71 文件）**——含此前因缺 git 而失败的
+  `git-client`（18）、`reconcile/engine`（2）、`status-service`（2）、`repository-sync`（1）共 23 例
+- `packages/cli`：**294/294 通过（18 文件）**——含生命周期 wiring（15s 超时配置后无偶发超时）
+- `packages/testing`：**7/7 通过**——git-free 旅程 5 例 + **git 旅程 2 例**
+  （bare remote fixture：create→commit→push→fresh-clone→pull→status）
+- `packages/shared`：1/1 通过；`apps/web`：8/8 通过
+
+### 9.3 本次修复的仓库卫生问题
+
+- `.prettierignore` / `.gitignore` 增加 `.pnpm-store`（pnpm 本地 store 会随 install 落在工作区，
+  导致 `pnpm lint` 失败且可能被误提交）
+
+### 9.4 环境前置与文档不符（已修复）
+
+- ✅ `INSTALLATION.md` 系统要求已把 Git 列为**运行时依赖**（`connect/sync/pull/push` 与 Reconcile 通过
+  系统 git 执行，缺失报 `GIT_NOT_FOUND`）；README 一句话版已同步
+- 本机未安装 git 二进制，core 的 24 个 git 依赖测试无法在此环境运行（CI ubuntu-latest 自带 git，可全绿）
+
+### 9.5 本轮（2026-08-14 第二次审查）交付
+
+- `restoreManagedSkill` Core transaction + CLI 接线 + 10 测试（§2.1）
+- `createSyncGitTransport` 接通 RepositorySync / Credential Bridge + 8 测试（§2.2）
+- `packages/testing` CLI harness + git-free E2E 旅程 + `pnpm test:e2e` + CI 步骤（§2.3）
+- README Roadmap / INSTALLATION.md 同步现状（§6.2、§9.4）
+- 过时注释清理（§7.1）、`.prettierignore`/`.gitignore` 补 `.pnpm-store`（§9.3）
+- `packages/testing/vitest.config.ts`：E2E 套件 30s 超时（慢机 flaky 策略，§9.2）
+
+### 9.6 本轮（2026-08-14 第三次审查，Wave 3.1）交付
+
+- install 下载目录契约修复（provider 子树契约；path 穿越改下载前校验）；cache 标记移至条目旁文件
+- 转换统一：install → `toManifestSource`、marketplace → `fromManifestSource`
+- `git:` / scp-style source 支持：`NormalizedSource` 新增 `git` 类型、`parseSource` / `toManifest` /
+  `fromManifest` round-trip、`GitSourceProvider`（ls-remote pin + 子树 materialize）注册进默认 provider、
+  别名/描述/cache key/CLI 展示覆盖
+- 测试：registry 88（+11 git/source 用例）、install 30（+git source 端到端）、CLI marketplace/sync 123 全通过
+- 验证：typecheck / lint / build ✅；core 663 通过 / 23 失败（仍全部为本机缺 git 二进制）；e2e 5/5 ✅
+
+### 9.7 本轮（2026-08-14 第四次审查，Wave 3.4）交付
+
+- `operations/lock.ts`：跨进程 mutation 锁（O_EXCL + owner 元数据 + stale 破除 + 安全释放）；
+  CLI 13 个 mutation 命令接入（`mutation(ctx, …)`）；`RUNTIME_LOCKED` 错误码
+- `migrations/`：`MigrationRegistry` + `migrateVersionedDocument` + manifest/lockfile/config 注册表
+  （config 真实 v0→v1）+ `migrateRepository` + `skillbox migrate` 命令 + readManifest/readLockfile
+  内存自动迁移 + config `version` 字段；`MIGRATION_MISSING` / `MIGRATION_FAILED` 错误码
+- 测试：`operations/lock.test.ts` 5 例、`migrations/index.test.ts` 12 例、CLI migrate + 锁冲突 2 例；
+  marketplace/skill-lifecycle/sync 193 例全通过（锁接线无回归）
+- 验证：typecheck / lint ✅；core/cli 全量见 §9.2（core 663/23 同前）
+
+### 9.8 本轮（2026-08-14 第五次审查，Wave 3.2）交付
+
+- Web lifecycle API：fork / vendor / restore / merge（含 continue/abort）4 个端点，全部 Core-backed
+- Web mutation 锁接入全部 mutating 路由（create/content/delete/enable/disable/reconcile/install/
+  settings + lifecycle）
+- Web 错误映射补 lifecycle/merge/restore/lock 状态码（409/500）；web services 注册 `GitSourceProvider`
+- 前端：api.ts 4 个 client 方法 + queries 2 个 hooks + SkillDetailPage Lifecycle 卡片
+  （状态机动作、确认、结果/冲突渲染）
+- 测试：web/app.test.ts +5（真实 Core fork/vendor/restore、merge 路由、错误信封）→ 41/41；
+  CLI 全量 291/291 ✅；e2e 5/5 ✅；typecheck / lint / build ✅
+
+### 9.9 本轮（2026-08-14 第六次审查，Wave 3.3）交付
+
+- `backup/`：`BackupService`（索引 `state/backups/index.json` + 独立副本 + retention 保留策略 +
+  record/list/get/forget/rollback/prune）；kind `runtime` | `repo-dir`；
+  错误码 `BACKUP_NOT_FOUND` / `BACKUP_INCOMPLETE` / `BACKUP_REPOSITORY_MISMATCH` / `ROLLBACK_FAILED`
+- 接线：`restoreManagedSkill` 的 recovery snapshot 入索引（可 rollback 撤销 restore）；
+  `removeSkill` 删除前备份 library + repo-dir（deleteFiles 时）
+- CLI `skillbox rollback [id]`（列表/JSON/恢复）；Web `GET /api/rollbacks` +
+  `POST /api/rollbacks/:id/restore`（mutation 锁）
+- 测试：backup 7 例、restore rollback-able 1 例、remove 备份 1 例、CLI rollback 1 例、web rollback 1 例
+- 验证：core 689 通过 / 23 失败（git 二进制环境问题）；CLI 293/293 ✅；e2e 5/5 ✅；typecheck/lint/build ✅
+
+### 9.10 本轮（2026-08-14 第七次审查，Wave 3.1 残余 + Wave 2 git 旅程 + 发布 metadata）交付
+
+- Reconcile registry（skills.sh）source 回退 provider：`ReconcileOptions.registry` + `resolveRegistrySource`
+  （resolve → download 子树 → materialize），fresh clone 可物化 registry 技能；无 provider 时可操作提示；
+  SkillService 注入 `defaultRegistry`；reconcile +2 测试
+- `gitlab:` / `bitbucket:` scheme 简写 → git URL（`ssh:` / `file:` 仍拒绝）；source 测试 +1
+- git 旅程 E2E：`packages/testing/src/git-fixture.ts`（bare remote fixture + runGit + isGitAvailable）+
+  `e2e-git.test.ts`（create→commit→push→clone→pull，git 缺失/CLI 未构建时自跳过，CI 执行）
+- npm 发布 metadata：cli/core/shared/root 补 `license`/`repository`/`homepage`/`bugs`；root 新增
+  `pnpm pack:verify`（`npm pack --dry-run` 断言 CLI 包内容，报告 private/workspace blocker）
+- 验证：core typecheck ✅、registry/source + reconcile 测试通过；testing 5 通过 / 2 跳过（git 缺失）
+
+### 9.11 本轮（2026-08-14 第八次审查，Wave 4：doctor + Gemini adapter）交付
+
+- `diagnostics/`：`runDoctorProbes`（12 项 probe）、`createDebugBundle`（脱敏 config + 日志尾 +
+  仓库摘要 + `scanForLeaks` 自动泄漏扫描）、CLI `skillbox doctor`（`--json` / `--bundle`）；
+  测试 +5
+- Gemini CLI adapter（`adapters/gemini.ts`，共享 conformance suite 14 例）注册进默认 registry；
+  `registry.test.ts` 期望更新
+- 验证：core 710 通过 / 23 失败（git 二进制环境问题）；CLI 294/294 ✅；e2e 5 通过 / 2 跳过；
+  typecheck / lint / build ✅
+
+### 9.13 本轮（git 就绪后第二批）交付
+
+- **OpenCode / Windsurf / GitHub Copilot adapters**：三个新 adapter 走同一 `CliAgentAdapter` 模板
+  （`.config/opencode/skills` / `.windsurf/skills` / `.copilot/skills` + 各自 BIN/CONFIG_DIR 环境变量），
+  通过共享 conformance suite；默认 registry 现注册全部 6 个 adapter
+- **doctor 退出码**：`skillbox doctor` 探针失败时抛 `SKILL_BROKEN`（退出 1），`--json` 同样生效
+- **logging 贯穿（CLI 层）**：`CliContext.logger` 默认写 `~/.skillbox/logs/skillbox.log`；13 个 mutation
+  命令 + connect/disconnect 记录 `mutation:<op>:start/done/failed` 审计日志（debug bundle 的 log tail
+  因此有真实内容）；测试 +1
+- 验证：core 776/776、CLI 295/295、e2e 7/7、typecheck / lint / build ✅
+
+### 9.14 本轮（git 就绪后第三批）交付
+
+- **Hermetic connect 旅程**（`e2e-connect.test.ts`）：本地假 GitHub API 服务器（device flow + user +
+  repo create）→ `skillbox connect` 完整跑通授权 → 建仓 → origin 绑定；为此给 production factory 增加
+  `SKILLBOX_GITHUB_API_BASE` / `SKILLBOX_GITHUB_LOGIN_BASE` env（企业/测试用途），`createCredentialStore`
+  增加 `memory` 选项 + `SKILLBOX_CREDENTIAL_STORE=memory` env seam（headless E2E）
+- `docs/e2e-acceptance.md` 结果化（§6.3）
+- 验证：e2e 8/8（+connect）、core 776/776、CLI 295/295、typecheck / lint ✅
+
+### 9.15 本轮（git 就绪后第四批）交付
+
+- **Event Bus（§4.4）**：`events/bus.ts`（类型化事件 + defaultEventBus + 隔离坏 listener）；
+  install 事务全程发 `install:phase/completed/failed` 事件；CLI `main()` 订阅并镜像到
+  `~/.skillbox/logs/skillbox.log`（phase→debug、completed→info、failed→warn，订阅随命令结束释放）
+- 测试：`events/bus.test.ts` 2 例 + install 事件 1 例
+- 验证：core 779/779、CLI 295/295、e2e 9/9、typecheck / lint / build ✅
+
+### 9.16 本轮（git 就绪后第五批）交付
+
+- **connect slow_down 重试旅程**（`e2e-connect.test.ts` 第二例）：假 GitHub 服务器首个 access_token
+  poll 返回 `slow_down`，CLI 按新 interval 重试后完成授权 → 建仓 → origin 绑定
+- 验证：e2e 9/9
+
+### 9.17 本轮（git 就绪后第六批）交付
+
+- **connect denied/expired 旅程**（e2e +2）：假服务器首个 access_token poll 返回 `access_denied` /
+  `expired_token`，CLI 分别干净退出 1 并提示 denied/expired
+- **Reconcile 事件**：`reconcile:started/completed` 接入 defaultEventBus
+- **Web SSE 实时订阅（§4.4）**：`GET /api/events`（hono streamSSE，客户端断开自动退订）+
+  前端 `useEventStream` hook + Library 页实时活动指示器；web 测试 +1
+- 验证：core 779/779、CLI 296/296、e2e 11/11、typecheck / lint / build ✅
+
+### 9.12 本轮（git 就绪后）交付
+
+- 本机安装 git（2.47.3）→ **全量测试全绿**：core 734/734、CLI 294/294、e2e 7/7（含 2 例 git 旅程）
+- **修复真实 bug**（git 旅程暴露）：无可用 Secret Service 的机器（headless Linux / WSL）上
+  `RepositorySync.pull` 因 `CREDENTIAL_STORE_UNAVAILABLE` 直接失败——`TokenStore.read()` 现在把
+  store 不可用视为 `not-connected`（无 token），`getGitTransportAuth` 走 `GITHUB_NOT_CONNECTED`
+  回退路径（公开 remote 用普通 git 传输继续可用）；token-store 测试 +1
+- `skillbox doctor` 实测：12 项探针正常输出，headless 机器上 credentials 探针如实报
+  "Linux Secret Service unavailable"（该机器 connect 需可用 keychain，属环境限制，非代码缺陷）
+
+---
+
+## 10. 建议实施顺序（状态更新：Wave 1 已完成）
+
+### Wave 1 — 恢复真实主流程 ✅ 已完成（2026-08-14）
+
+1. ✅ `restoreManagedSkill` Core transaction（§2.1）
+2. ✅ CLI sync/pull/push 迁入 RepositorySync / Credential Bridge（§2.2）
+3. ✅ pull/push orchestration 去重（SyncGitTransport，§7.2）
+4. ✅ Hermetic CLI E2E harness + git-free 旅程（§2.3）
 
 ### Wave 2 — 建立可信验收
 
-1. Hermetic CLI E2E
-2. 三平台 manual acceptance
-3. 更新 README 的功能状态
+1. ✅ git 旅程 E2E（bare remote fixture，CI 执行）；authorization timeout/cancel/retry、
+   private remote auth failure 待补
+2. 三平台 manual acceptance 记录；`docs/e2e-acceptance.md` 改为带证据的结果记录
+3. ✅ 更新 README Roadmap / INSTALLATION.md 与现状一致（§6.2、§9.4）
+4. ✅ flaky 超时策略：core/cli/testing 均配置 15–60s vitest 超时（roadmap 3.3；§9.2）
 
-### Wave 3 — 产品能力闭环
+### Wave 3 — 产品能力闭环 ✅ 全部完成
 
-1. 统一 Marketplace / Manifest Source 模型
-2. Web Fork/Vendor/Edit/Restore/Merge
-3. 通用 Backup / Rollback
-4. runtime lock 与 schema migration
+1. ✅ 统一 Marketplace / Manifest Source 模型（§3.1：git source、install 契约、转换统一；残余：Reconcile registry 回退、gitlab:/bitbucket: 简写）
+2. ✅ Web Fork/Vendor/Edit/Restore/Merge（§3.2：API + UI + mutation 锁）
+3. ✅ 通用 Backup / Rollback（§3.3、§4.3：BackupService + `skillbox rollback` + Web API）
+4. ✅ runtime lock 与 schema migration（§4.1、§4.2）
 
 ### Wave 4 — 发布与扩展
 
-1. npm pack / publish 配置
-2. doctor / debug bundle / Event Bus
-3. Gemini / OpenCode 等 Agent adapters
-4. 视需求拆分 Web Server 或实现 Fullscreen TUI
+1. npm pack / publish 配置（§6.1）
+2. doctor / debug bundle / Event Bus / logging 贯穿（§3.5、§4.4、§4.5）
+3. Gemini / OpenCode 等 Agent adapters（§5）
+4. 视需求拆分 Web Server 或实现 Fullscreen TUI（§5）
 
----
+### 9.19 本轮（git 就绪后第八批）交付
 
-## 10. 本次验证说明（2026-08-13）
+- **FileCredentialStore**（`SKILLBOX_CREDENTIAL_STORE=file` / `file: true`）：明文文件凭据存储
+  （`state/secrets/<service>.<account>.json`），用于 headless/嵌入式与跨进程 hermetc E2E——
+  明确标注"非加密、OS keychain 可用时禁用"；`createCredentialStore` seam 测试 +2、单元测试 +1
+- **private remote auth failure 旅程**（e2e +1）：connect（file store）→ 二次进程 push 到 401 远端 →
+  干净认证失败；证明 connect 的 token 跨进程持久化 + credential bridge 到达 git 传输层
+- 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅
 
-本次更新完成了完整验证链：
+### 9.20 本轮（git 就绪后第九批）交付
 
-```text
-pnpm install --frozen-lockfile   ✅ 227 packages
-pnpm lint                        ✅ eslint + prettier 全部通过
-pnpm typecheck                   ✅ tsc -b + web typecheck 通过
-pnpm test                        ✅ 947 tests（core 662 / cli 275 / web 8 / shared 1 / testing 1）
-pnpm build                       ✅ tsc + vite web bundle + web assets 打包
-```
-
-已知注意点：
-
-- `reconcile > reconciles a git source idempotently and refreshes when the remote
-advances`（`packages/core/src/reconcile/engine.test.ts:281`）在整仓并行跑测试时偶发
-  30s 超时；单独运行 3.4s 通过。原因是该用例串行执行 3 次真实 git clone/pull，在并行负载高
-  的环境（Windows）下容易超预算，属于环境抖动而非逻辑失败，复跑整仓测试全部通过。若 CI 仍
-  偶发，可考虑提高该用例 timeout 或将 git 类用例串行化。
-
-当前工作区的 Managed Restore 追加定向验证：
-
-```text
-pnpm --filter @skillbox/core test -- restore.test.ts                         ✅ 3 tests
-pnpm --filter @skillbox/cli test -- skill-lifecycle/loaders.test.ts \
-  skill-lifecycle/service.test.ts                                            ✅ 38 tests
-pnpm typecheck                                                               ✅
-```
-
-这些结果不替代首次下载、非 GitHub source、真实 Agent link 或三平台 E2E 验收。
+- **Interactive session mutation 锁（§4.1 收尾）**：`session.withMutation` 包裹 create / import /
+  sync 三个变更入口（跨进程 `mutation` 锁 + 审计日志），与 CLI 命令、Web 路由三端一致
+- **过时注释清理（§7.1）**：`install/transaction.ts` provider TODO、`marketplace/types.ts`
+  updateSkill TODO 更新为现状描述
+- 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅

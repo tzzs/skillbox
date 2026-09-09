@@ -1,5 +1,6 @@
 import * as path from 'node:path'
 import type { AgentAdapter, AgentRegistry } from '../agent/index.js'
+import { BackupService, backupDir } from '../backup/index.js'
 import type { LinkStrategy } from '../fs/links.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
 import { resolveInsideRoot } from '../fs/paths.js'
@@ -24,10 +25,10 @@ import {
   type SkillboxLockfile,
 } from '../lockfile/index.js'
 import { reconcile, type ReconcileOptions, type ReconcileResult } from '../reconcile/index.js'
+import { defaultRegistry } from '../registry/registry.js'
 import { RuntimeLibraryService, type MaterializeSkillResult } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
-import { createOperationRuntime, type OperationRuntime } from '../operations/runtime.js'
 import {
   importSkill as importSkillIntoRepository,
   type ImportDecision,
@@ -46,7 +47,6 @@ export interface SkillServiceOptions {
   registry?: AgentRegistry
   filesystem?: FilesystemService
   linkStrategy?: LinkStrategy
-  operationRuntime?: OperationRuntime
 }
 
 export interface CreateSkillResult {
@@ -100,7 +100,6 @@ export class SkillService {
   private readonly homeRoot: string
   private readonly registry: AgentRegistry | undefined
   private readonly linkStrategy: LinkStrategy | undefined
-  private readonly operationRuntime: OperationRuntime | undefined
 
   constructor(options: SkillServiceOptions) {
     this.filesystem = options.filesystem ?? new FilesystemService()
@@ -108,7 +107,6 @@ export class SkillService {
     this.homeRoot = options.homeRoot
     this.registry = options.registry
     this.linkStrategy = options.linkStrategy
-    this.operationRuntime = options.operationRuntime
   }
 
   private get homeLayout() {
@@ -144,6 +142,9 @@ export class SkillService {
       library: this.library(),
       linkState: this.linkState(),
       adapters: this.adapters(),
+      // Registry sources (skills.sh) materialize through the provider
+      // framework on fresh clones where the git engine has no plan.
+      registry: defaultRegistry,
     }
     if (this.linkStrategy !== undefined) {
       options.linkStrategy = this.linkStrategy
@@ -203,32 +204,10 @@ export class SkillService {
       )
     }
 
-    const operationRuntime =
-      this.operationRuntime ??
-      createOperationRuntime({ repositoryRoot: this.repositoryRoot, homeRoot: this.homeRoot })
-    const operation = await operationRuntime.runExclusive({
-      kind: 'add',
-      targets: [
-        skillDir,
-        path.join(this.repositoryRoot, 'skillbox.yaml'),
-        path.join(this.repositoryRoot, 'skillbox.lock'),
-        this.library().pathFor(alias, 'local'),
-      ],
-      execute: () => this.createSkillUnsafe(alias, skillDir, input.description),
-    })
-    return operation.result
-  }
-
-  private async createSkillUnsafe(
-    alias: string,
-    skillDir: string,
-    description: string | undefined,
-  ): Promise<CreateSkillResult> {
-    const manifest = await this.readManifestOrEmpty()
     await this.filesystem.mkdir(skillDir)
     await this.filesystem.writeFile(
       path.join(skillDir, 'SKILL.md'),
-      DEFAULT_SKILL_MARKDOWN(alias, description),
+      DEFAULT_SKILL_MARKDOWN(alias, input.description),
     )
 
     const integrity = await computeSkillIntegrity(skillDir)
@@ -279,35 +258,49 @@ export class SkillService {
     }
     const mode = deriveMode(entry)
 
-    const sourcePath =
-      input.deleteFiles === true
-        ? entry.source.type === 'local'
+    // Unified backups (roadmap 2.4): index independent copies of everything
+    // this removal destroys, so `skillbox rollback <id>` can undo it.
+    const backupService = new BackupService({
+      homeRoot: this.homeRoot,
+      filesystem: this.filesystem,
+    })
+    const libraryPath = this.library().pathFor(alias, mode)
+    if (await this.filesystem.exists(libraryPath)) {
+      const id = `remove-${alias}-${Date.now()}`
+      const target = backupDir(this.homeRoot, id)
+      await this.filesystem.mkdir(path.dirname(target))
+      await this.filesystem.copy(libraryPath, target)
+      await backupService.record({
+        id,
+        kind: 'runtime',
+        operation: 'remove',
+        alias,
+        path: target,
+        sourcePath: libraryPath,
+        repositoryRoot: this.repositoryRoot,
+      })
+    }
+    if (input.deleteFiles === true) {
+      const filesPath =
+        entry.source.type === 'local'
           ? resolveInsideRoot(this.repositoryRoot, entry.source.path)
           : resolveInsideRoot(this.repositoryRoot, `skills/${alias}`)
-        : undefined
-    const operationRuntime =
-      this.operationRuntime ??
-      createOperationRuntime({ repositoryRoot: this.repositoryRoot, homeRoot: this.homeRoot })
-    const operation = await operationRuntime.runExclusive({
-      kind: 'remove',
-      targets: [
-        path.join(this.repositoryRoot, 'skillbox.yaml'),
-        path.join(this.repositoryRoot, 'skillbox.lock'),
-        this.library().pathFor(alias, mode),
-        ...(sourcePath === undefined ? [] : [sourcePath]),
-      ],
-      execute: () => this.removeSkillUnsafe(alias, mode, input, sourcePath),
-    })
-    return operation.result
-  }
-
-  private async removeSkillUnsafe(
-    alias: string,
-    mode: ReturnType<typeof deriveMode>,
-    input: { name: string; deleteFiles?: boolean },
-    sourcePath: string | undefined,
-  ): Promise<RemoveSkillResult> {
-    const manifest = await this.readManifestRequired()
+      if (await this.filesystem.exists(filesPath)) {
+        const id = `remove-${alias}-files-${Date.now()}`
+        const target = backupDir(this.homeRoot, id)
+        await this.filesystem.mkdir(path.dirname(target))
+        await this.filesystem.copy(filesPath, target)
+        await backupService.record({
+          id,
+          kind: 'repo-dir',
+          operation: 'remove',
+          alias,
+          path: target,
+          sourcePath: filesPath,
+          repositoryRoot: this.repositoryRoot,
+        })
+      }
+    }
 
     const nextManifest = removeSkill(manifest, alias)
     await writeManifest(this.repositoryRoot, nextManifest)
@@ -321,7 +314,11 @@ export class SkillService {
     let filesRemoved = false
     let filesPath: string | undefined
     if (input.deleteFiles === true) {
-      if (sourcePath !== undefined && (await this.filesystem.exists(sourcePath))) {
+      const sourcePath =
+        entry.source.type === 'local'
+          ? resolveInsideRoot(this.repositoryRoot, entry.source.path)
+          : resolveInsideRoot(this.repositoryRoot, `skills/${alias}`)
+      if (await this.filesystem.exists(sourcePath)) {
         await this.filesystem.remove(sourcePath)
         filesRemoved = true
         filesPath = sourcePath
@@ -505,29 +502,7 @@ export class SkillService {
   }> {
     const alias = validateSkillAlias(input.name)
     const sourcePath = await this.resolveLocalSkillDirectory(alias)
-    const operationRuntime =
-      this.operationRuntime ??
-      createOperationRuntime({ repositoryRoot: this.repositoryRoot, homeRoot: this.homeRoot })
-    const operation = await operationRuntime.runExclusive({
-      kind: 'custom',
-      targets: [sourcePath],
-      execute: () => this.writeSkillMarkdownUnsafe(alias, sourcePath, input.content),
-    })
-    return operation.result
-  }
-
-  private async writeSkillMarkdownUnsafe(
-    alias: string,
-    sourcePath: string,
-    content: string,
-  ): Promise<{
-    name: string
-    path: string
-    integrity: string
-    lockIntegrity?: string
-    status: 'ready' | 'modified'
-  }> {
-    await this.filesystem.writeFile(path.join(sourcePath, 'SKILL.md'), content)
+    await this.filesystem.writeFile(path.join(sourcePath, 'SKILL.md'), input.content)
 
     const integrity = await computeSkillIntegrity(sourcePath)
     const lockfile = await this.readLockfileOrEmpty()

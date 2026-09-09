@@ -3,7 +3,7 @@ import { parse as parseYaml } from 'yaml'
 import { ErrorCode, SkillboxError, isSkillboxError, type SkillboxErrorCode } from '../errors.js'
 import { atomicWriteFile } from '../fs/atomic-write.js'
 import { FilesystemService } from '../fs/filesystem-service.js'
-import { resolveInsideRoot } from '../fs/paths.js'
+import { validateRelativePath } from '../fs/paths.js'
 import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { createDefaultAgentRegistry } from '../agent/index.js'
 import { MANIFEST_FILE_NAME } from '../manifest/schema.js'
@@ -15,7 +15,6 @@ import {
   validateSkillAlias,
   writeManifest,
   type ManifestSkillInput,
-  type ManifestSkillSource,
   type SkillboxManifest,
 } from '../manifest/index.js'
 import {
@@ -27,20 +26,14 @@ import {
   type SkillboxLockfile,
 } from '../lockfile/index.js'
 import { resolveProvider } from '../registry/registry.js'
-import type { NormalizedSource, RegistryProvider } from '../registry/types.js'
+import type { NormalizedSource } from '../registry/types.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
 import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
-import { createOperationRuntime } from '../operations/runtime.js'
 import { scanSkillForSecurity } from '../security/index.js'
-import { createSkillSourceResolver } from '../sources/resolver.js'
-import type {
-  CanonicalSkillSource,
-  SkillSourceAdapter,
-  SkillSourceResolver,
-} from '../sources/types.js'
+import { emitSkillboxEvent } from '../events/index.js'
 import { ManagedCache, type CacheEntry } from './cache.js'
 import type { InstallResult, InstallSkillOptions, UpdateSkillOptions } from './types.js'
 
@@ -61,6 +54,12 @@ export function describeSource(source: NormalizedSource): string {
     }
     case 'skills-sh':
       return `skills-sh:${source.package}`
+    case 'git': {
+      let description = `git:${source.url}`
+      if (source.path !== undefined) description += `@${source.path}`
+      if (source.ref !== undefined) description += `#${source.ref}`
+      return description
+    }
     case 'local':
       return `local:${source.path}`
   }
@@ -79,6 +78,9 @@ export function defaultAliasFor(source: NormalizedSource): string {
     case 'skills-sh':
       raw = source.package.split('/').pop() ?? source.package
       break
+    case 'git':
+      raw = source.path?.split('/').pop() ?? path.basename(source.url.replace(/\.git$/, ''))
+      break
     case 'local':
       raw = path.basename(source.path)
       break
@@ -96,119 +98,13 @@ export function sanitizeAlias(raw: string): string {
 }
 
 /**
- * Stopgap mapping from the registry framework's `NormalizedSource` onto the
- * Manifest/Lockfile `ManifestSkillSource` shape. TODO(agent-1): replace with
- * the canonical conversion once the registry framework finalizes its mapping.
+ * Canonical mapping from the registry framework's `NormalizedSource` onto the
+ * Manifest/Lockfile `ManifestSkillSource` shape — lives in
+ * `packages/core/src/registry/source.ts`; re-exported here under the legacy
+ * name the install transaction used.
  */
-export function normalizedSourceToManifestSource(source: NormalizedSource): ManifestSkillSource {
-  switch (source.type) {
-    case 'github': {
-      const node: ManifestSkillSource = { type: 'github', repo: source.repo }
-      if (source.path !== undefined) node.path = source.path
-      const ref = source.ref ?? source.branch
-      if (ref !== undefined) node.ref = ref
-      return node
-    }
-    case 'skills-sh': {
-      const node: ManifestSkillSource = {
-        type: 'registry',
-        registry: 'skills.sh',
-        package: source.package,
-      }
-      if (source.version !== undefined) node.version = source.version
-      return node
-    }
-    case 'local':
-      return { type: 'local', path: source.path }
-  }
-}
-
-/**
- * Temporary compatibility adapter for callers which still pass a legacy
- * RegistryProvider. Install/update themselves only dispatch through the
- * canonical SkillSourceResolver boundary.
- */
-function legacyProviderAdapter(
-  source: NormalizedSource,
-  provider: RegistryProvider,
-): SkillSourceAdapter {
-  const canonicalType = normalizedSourceToManifestSource(source).type
-  return {
-    type: canonicalType,
-    capabilities: { resolve: true, download: true, latest: true, materialize: false },
-    async resolve(canonical) {
-      const resolved = await provider.resolve(toLegacyNormalizedSource(canonical))
-      return {
-        source: canonical,
-        revision: resolved.revision,
-        ...(resolved.integrity === undefined ? {} : { integrity: resolved.integrity }),
-      }
-    },
-    async download(canonical, revision, targetDir) {
-      await provider.download(toLegacyNormalizedSource(canonical), revision, targetDir)
-    },
-    async latest(canonical) {
-      return provider.getLatestRevision(toLegacyNormalizedSource(canonical))
-    },
-  }
-}
-
-function toLegacyNormalizedSource(source: CanonicalSkillSource): NormalizedSource {
-  switch (source.type) {
-    case 'github':
-      return {
-        type: 'github',
-        repo: source.repo,
-        ...(source.path === undefined ? {} : { path: source.path }),
-        ...(source.ref === undefined ? {} : { ref: source.ref }),
-      }
-    case 'registry':
-      if (source.registry === 'skills.sh') {
-        return {
-          type: 'skills-sh',
-          package: source.package,
-          ...(source.version === undefined ? {} : { version: source.version }),
-        }
-      }
-      break
-    case 'local':
-      return { type: 'local', path: source.path }
-    case 'git':
-      break
-  }
-  throw new SkillboxError(
-    ErrorCode.SOURCE_UNSUPPORTED,
-    `Legacy registry providers cannot handle ${source.type} sources`,
-    { context: { source } },
-  )
-}
-
-function resolverForInstall(
-  source: NormalizedSource,
-  options: Pick<InstallSkillOptions, 'provider' | 'sourceResolver'>,
-): { resolver: SkillSourceResolver; canonicalSource: CanonicalSkillSource } {
-  const resolver = options.sourceResolver
-  if (resolver !== undefined) {
-    return {
-      resolver,
-      canonicalSource: resolver.fromManifest(normalizedSourceToManifestSource(source)),
-    }
-  }
-  if (options.provider === undefined) {
-    throw new SkillboxError(
-      ErrorCode.INSTALL_SOURCE_UNRESOLVED,
-      `No SkillSourceResolver or registry provider is wired for "${source.type}" sources`,
-      { context: { source } },
-    )
-  }
-  const canonicalSource = normalizedSourceToManifestSource(source)
-  return {
-    resolver: createSkillSourceResolver({
-      adapters: [legacyProviderAdapter(source, options.provider)],
-    }),
-    canonicalSource,
-  }
-}
+import { toManifestSource as normalizedSourceToManifestSource } from '../registry/source.js'
+export { normalizedSourceToManifestSource }
 
 function rethrowOrWrap(error: unknown, code: SkillboxErrorCode, message: string): never {
   if (isSkillboxError(error)) {
@@ -264,14 +160,22 @@ async function restoreSnapshot(
   }
 }
 
-/** Resolves the skill subtree inside the downloaded directory (Path Validate). */
-async function validateSkillRoot(downloadRoot: string, source: NormalizedSource): Promise<string> {
+/**
+ * Validates the source sub-path expression (Path Validate). Registry
+ * providers materialize the skill *subtree* of the source directly into the
+ * download directory (the path prefix is stripped, see `github.ts` /
+ * `skills-sh.ts` / `local.ts`), so the download root already is the skill
+ * root — there is nothing to re-resolve. The source path itself must still be
+ * a portable relative path: `../` escapes and absolute segments are refused
+ * before the download is trusted.
+ */
+async function validateSkillSourcePath(source: NormalizedSource): Promise<void> {
   const subPath = 'path' in source ? source.path : undefined
   if (subPath === undefined) {
-    return downloadRoot
+    return
   }
   try {
-    return resolveInsideRoot(downloadRoot, subPath)
+    validateRelativePath(subPath)
   } catch (error) {
     throw new SkillboxError(
       ErrorCode.INSTALL_INVALID_PATH,
@@ -316,7 +220,7 @@ async function validateSkillStructure(
 /**
  * M15.1 Remote Install transaction.
  *
- * Ten steps — Resolve → Materialize source (with the M15.3 managed cache) → Path
+ * Ten steps — Resolve → Download (with the M15.3 managed cache) → Path
  * Validate → Structure Validate → Integrity → Security → Materialize →
  * Manifest → Lock → Agents. Any failure triggers a rollback that removes the
  * temporary download, the materialized library copy, any agent links created
@@ -329,7 +233,7 @@ async function validateSkillStructure(
  *
  * Throws on failure:
  * - `SOURCE_UNSUPPORTED` for local sources (use the import flow instead)
- * - `INSTALL_SOURCE_UNRESOLVED` when no source resolver is wired / resolution fails
+ * - `INSTALL_SOURCE_UNRESOLVED` when no provider is wired / resolution fails
  * - `INSTALL_DOWNLOAD_FAILED`, `INSTALL_INVALID_PATH`,
  *   `INSTALL_INVALID_STRUCTURE`, `INTEGRITY_MISMATCH` (M15.5),
  *   `INSTALL_SECURITY_BLOCKED`, `INSTALL_MATERIALIZE_FAILED`,
@@ -349,41 +253,6 @@ export async function installSkill(
  * its agents" (M16.2 update).
  */
 async function runInstallTransaction(
-  source: NormalizedSource,
-  options: InstallSkillOptions,
-  extras: { replacing?: boolean } = {},
-): Promise<InstallResult> {
-  // Preserve the public precondition: unsupported local sources must fail
-  // before the runtime creates its backup/journal directories.
-  if (source.type === 'local') {
-    throw new SkillboxError(
-      ErrorCode.SOURCE_UNSUPPORTED,
-      'installSkill targets remote sources; local skills use the import flow (runtime/import.ts)',
-      { context: { source } },
-    )
-  }
-  const repositoryRoot = path.resolve(options.repositoryRoot)
-  const layout = buildSkillboxHomeLayout(options.homeRoot ?? resolveSkillboxHome())
-  const alias =
-    options.alias !== undefined ? validateSkillAlias(options.alias) : defaultAliasFor(source)
-  const operationRuntime =
-    options.operationRuntime ??
-    createOperationRuntime({ repositoryRoot, homeRoot: options.homeRoot ?? resolveSkillboxHome() })
-  const operation = await operationRuntime.runExclusive({
-    kind: extras.replacing === true ? 'update' : 'install',
-    targets: [
-      path.join(repositoryRoot, MANIFEST_FILE_NAME),
-      path.join(repositoryRoot, LOCKFILE_FILE_NAME),
-      new RuntimeLibraryService(layout.library).pathFor(alias, 'managed'),
-      layout.linksFile,
-      layout.cache,
-    ],
-    execute: () => runInstallTransactionUnsafe(source, options, extras),
-  })
-  return operation.result
-}
-
-async function runInstallTransactionUnsafe(
   source: NormalizedSource,
   options: InstallSkillOptions,
   extras: { replacing?: boolean } = {},
@@ -408,7 +277,6 @@ async function runInstallTransactionUnsafe(
     options.alias !== undefined ? validateSkillAlias(options.alias) : defaultAliasFor(source)
   const targetAgents = options.targetAgents ?? []
   const allowHighRisk = options.allowPolicy?.allowHighRisk ?? false
-  const { resolver, canonicalSource } = resolverForInstall(source, options)
 
   const linkState = new RuntimeLinkState({ filePath: layout.linksFile, filesystem })
   const ownership = new RuntimeOwnershipResolver({ managedRoot: layout.library, links: linkState })
@@ -470,17 +338,19 @@ async function runInstallTransactionUnsafe(
   let revision: string | undefined
   try {
     /* Step 1 — Resolve: pin the source to a concrete revision. */
-    const resolved = await resolver
-      .adapterFor(canonicalSource, 'resolve')
-      .resolve?.(canonicalSource)
-    if (resolved === undefined) {
+    if (options.provider === undefined) {
+      // Callers resolve the provider through the registry framework
+      // (`packages/core/src/registry/`) before invoking the transaction —
+      // `updateSkill` falls back to `resolveProvider(source.type)`.
       throw new SkillboxError(
         ErrorCode.INSTALL_SOURCE_UNRESOLVED,
-        `Source resolver could not resolve ${describeSource(source)}`,
+        `No registry provider is wired for "${source.type}" sources`,
         { context: { source } },
       )
     }
+    const resolved = await options.provider.resolve(source)
     revision = resolved.revision
+    emitSkillboxEvent({ type: 'install:phase', phase: 'resolve', alias, revision })
     if (revision === '') {
       throw new SkillboxError(
         ErrorCode.INSTALL_SOURCE_UNRESOLVED,
@@ -490,7 +360,13 @@ async function runInstallTransactionUnsafe(
     }
     let expectedIntegrity = resolved.integrity
 
-    /* Step 2 — Download to tmp (skipped on a managed-cache hit, M15.3). */
+    /* Step 2 — Path Validate: the source sub-path must be a portable relative
+       path (providers materialize the subtree into the download, so there is
+       nothing to re-resolve — but `../` escapes are refused before any
+       download happens). */
+    await validateSkillSourcePath(source)
+
+    /* Step 3 — Download to tmp (skipped on a managed-cache hit, M15.3). */
     let skillRoot: string
     let downloadUsed = false
     let cacheEntry: CacheEntry | null = null
@@ -516,21 +392,7 @@ async function runInstallTransactionUnsafe(
       await filesystem.mkdir(downloadDir)
       tmpDirs.push(tmpRoot)
       try {
-        const capability = resolver.capabilitiesFor(canonicalSource).materialize
-          ? 'materialize'
-          : 'download'
-        const adapter = resolver.adapterFor(canonicalSource, capability)
-        if (adapter.materialize !== undefined) {
-          await adapter.materialize(canonicalSource, revision, downloadDir)
-        } else if (adapter.download !== undefined) {
-          await adapter.download(canonicalSource, revision, downloadDir)
-        } else {
-          throw new SkillboxError(
-            ErrorCode.INSTALL_DOWNLOAD_FAILED,
-            `Source resolver could not materialize ${describeSource(source)}@${revision}`,
-            { context: { source, revision } },
-          )
-        }
+        await options.provider.download(source, revision, downloadDir)
       } catch (error) {
         throw rethrowOrWrap(
           error,
@@ -541,15 +403,14 @@ async function runInstallTransactionUnsafe(
       downloadUsed = true
       skillRoot = downloadDir
     }
-
-    /* Step 3 — Path Validate: the source sub-path must stay inside the download. */
-    const skillRootDir = await validateSkillRoot(skillRoot, source)
+    emitSkillboxEvent({ type: 'install:phase', phase: 'download', alias, revision })
 
     /* Step 4 — Structure Validate: SKILL.md (and optional skillbox.yaml). */
-    await validateSkillStructure(skillRootDir, filesystem)
+    await validateSkillStructure(skillRoot, filesystem)
+    emitSkillboxEvent({ type: 'install:phase', phase: 'validate', alias, revision })
 
     /* Step 5 — Integrity: hash must equal the source/lockfile expectation (M15.5). */
-    const integrity = await computeSkillIntegrity(skillRootDir)
+    const integrity = await computeSkillIntegrity(skillRoot)
     if (expectedIntegrity !== undefined && integrity !== expectedIntegrity) {
       throw new SkillboxError(
         ErrorCode.INTEGRITY_MISMATCH,
@@ -561,7 +422,7 @@ async function runInstallTransactionUnsafe(
     }
 
     /* Step 6 — Security: static scan; high risk is rejected by default. */
-    const securityScan = await scanSkillForSecurity(skillRootDir)
+    const securityScan = await scanSkillForSecurity(skillRoot)
     if (securityScan.block && !allowHighRisk) {
       throw new SkillboxError(
         ErrorCode.INSTALL_SECURITY_BLOCKED,
@@ -578,6 +439,13 @@ async function runInstallTransactionUnsafe(
       )
     }
     const security = { risk: securityScan.risk, scannedAt: new Date().toISOString() }
+    emitSkillboxEvent({
+      type: 'install:phase',
+      phase: 'security',
+      alias,
+      revision,
+      detail: security.risk,
+    })
 
     // Cache the verified + accepted download (M15.3). Placed after the security
     // gate so a blocked install never leaves content behind.
@@ -592,7 +460,7 @@ async function runInstallTransactionUnsafe(
       materialized = await library.materializeSkill({
         alias,
         mode: 'managed',
-        source: skillRootDir,
+        source: skillRoot,
       })
     } catch (error) {
       throw rethrowOrWrap(
@@ -602,10 +470,17 @@ async function runInstallTransactionUnsafe(
       )
     }
     materializedPath = materialized.path
+    emitSkillboxEvent({
+      type: 'install:phase',
+      phase: 'materialize',
+      alias,
+      revision,
+      detail: materialized.status,
+    })
 
     /* Step 8 — Manifest: the repository gains only a Manifest entry (M15.3);
        the update flow replaces the existing entry instead (M16.2). */
-    const manifestSource = resolver.toManifest(canonicalSource)
+    const manifestSource = normalizedSourceToManifestSource(source)
     const manifest = await readManifestOrEmpty(repositoryRoot)
     if (manifest.skills[alias] !== undefined && !replacing) {
       throw new SkillboxError(
@@ -627,6 +502,7 @@ async function runInstallTransactionUnsafe(
         : updateManifestSkill(manifest, alias, manifestPatch)
     await writeManifest(repositoryRoot, nextManifest)
     manifestWritten = true
+    emitSkillboxEvent({ type: 'install:phase', phase: 'manifest', alias, revision })
 
     /* Step 9 — Lock: revision / integrity / security / upstream (SPEC §117). */
     const lockfile = await readLockfileOrEmpty(repositoryRoot)
@@ -646,6 +522,7 @@ async function runInstallTransactionUnsafe(
     }
     await writeLockfile(repositoryRoot, nextLockfile)
     lockfileWritten = true
+    emitSkillboxEvent({ type: 'install:phase', phase: 'lockfile', alias, revision })
 
     /* Step 10 — Agents: link the materialized skill to each target agent. */
     for (const agentId of targetAgents) {
@@ -687,6 +564,7 @@ async function runInstallTransactionUnsafe(
       }
     }
 
+    emitSkillboxEvent({ type: 'install:completed', alias, revision, integrity })
     return {
       alias,
       mode: 'managed',
@@ -712,6 +590,11 @@ async function runInstallTransactionUnsafe(
         // best effort
       }
     }
+    emitSkillboxEvent({
+      type: 'install:failed',
+      alias,
+      error: error instanceof Error ? error.message : String(error),
+    })
     try {
       await rollback()
     } catch (rollbackError) {
@@ -739,9 +622,9 @@ async function runInstallTransactionUnsafe(
  * links recorded in the manifest. When the locked revision is already the
  * latest, the call is a no-op that returns the current state.
  *
- * The canonical source resolver comes from `options.sourceResolver`. Existing
- * `provider` callers are supported through a temporary adapter; when omitted,
- * update resolves the legacy provider from the default registry.
+ * The provider comes from `options.provider` or, when omitted, from the
+ * default registry (`resolveProvider(source.type)`); callers that never
+ * registered providers surface `SOURCE_UNSUPPORTED`.
  *
  * Throws on failure:
  * - `SKILL_NOT_FOUND` when the alias has no lockfile entry (or no lockfile)
@@ -788,23 +671,10 @@ export async function updateSkill(
     )
   }
 
-  const sourceResolver =
-    options.sourceResolver ??
-    createSkillSourceResolver({
-      adapters: [legacyProviderAdapter(source, options.provider ?? resolveProvider(source.type))],
-    })
-  const canonicalSource = sourceResolver.fromManifest(normalizedSourceToManifestSource(source))
+  const provider = options.provider ?? resolveProvider(source.type)
 
   /* Latest vs locked (M16.2): equal → no-op, return the current state. */
-  const latestAdapter = sourceResolver.adapterFor(canonicalSource, 'latest')
-  const latest = await latestAdapter.latest?.(canonicalSource)
-  if (latest === undefined) {
-    throw new SkillboxError(
-      ErrorCode.INSTALL_SOURCE_UNRESOLVED,
-      `Source resolver could not determine the latest revision for ${describeSource(source)}`,
-      { context: { source } },
-    )
-  }
+  const latest = await provider.getLatestRevision(source)
   if (latest === locked.revision) {
     const filesystem = options.filesystem ?? new FilesystemService()
     const layout = buildSkillboxHomeLayout(options.homeRoot ?? resolveSkillboxHome())
@@ -829,9 +699,9 @@ export async function updateSkill(
   const targetAgents = manifest.skills[alias]?.agents ?? []
   const transactionOptions: InstallSkillOptions = {
     repositoryRoot,
+    provider,
     alias,
     targetAgents,
-    sourceResolver,
   }
   if (options.allowPolicy !== undefined) {
     transactionOptions.allowPolicy = options.allowPolicy
@@ -844,9 +714,6 @@ export async function updateSkill(
   }
   if (options.filesystem !== undefined) {
     transactionOptions.filesystem = options.filesystem
-  }
-  if (options.operationRuntime !== undefined) {
-    transactionOptions.operationRuntime = options.operationRuntime
   }
   return runInstallTransaction(source, transactionOptions, { replacing: true })
 }

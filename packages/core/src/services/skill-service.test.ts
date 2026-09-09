@@ -1,56 +1,43 @@
+import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { describe, expect, it } from 'vitest'
 import { withTempDir } from '../fs/test-utils.js'
-import { createOperationRuntime } from '../operations/runtime.js'
+import { BackupService } from '../backup/index.js'
 import { SkillService } from './skill-service.js'
 
-describe('SkillService.createSkill', () => {
-  it('records every created repository and runtime target for user rollback', async () => {
-    await withTempDir(async (root) => {
-      const repositoryRoot = path.join(root, 'repository')
-      const homeRoot = path.join(root, 'home')
+describe('SkillService.removeSkill with unified backups', () => {
+  it('records runtime + repo-dir backups and rollback restores the deleted files', async () => {
+    await withTempDir(async (dir) => {
+      const repositoryRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repositoryRoot, { recursive: true })
-      const runtime = createOperationRuntime({ repositoryRoot, homeRoot })
-      const service = new SkillService({ repositoryRoot, homeRoot, operationRuntime: runtime })
+      const skills = new SkillService({ repositoryRoot, homeRoot })
 
-      await service.createSkill({ name: 'hello', description: 'A rollback test.' })
+      await skills.createSkill({ name: 'hello', description: 'demo' })
       await expect(
         fs.readFile(path.join(repositoryRoot, 'skills', 'hello', 'SKILL.md'), 'utf8'),
-      ).resolves.toContain('A rollback test.')
+      ).resolves.toContain('# hello')
 
-      await expect(runtime.rollback()).resolves.toMatchObject({
-        restoredTargets: expect.arrayContaining([
-          path.join(repositoryRoot, 'skills', 'hello'),
-          path.join(repositoryRoot, 'skillbox.yaml'),
-          path.join(repositoryRoot, 'skillbox.lock'),
-        ]),
-      })
-      await expect(fs.stat(path.join(repositoryRoot, 'skills', 'hello'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      })
-      await expect(fs.stat(path.join(repositoryRoot, 'skillbox.yaml'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      })
-    })
-  })
+      // Remove with --delete-files: the repo dir + library copy are destroyed.
+      const removed = await skills.removeSkill({ name: 'hello', deleteFiles: true })
+      expect(removed.filesRemoved).toBe(true)
+      await expect(fs.stat(path.join(repositoryRoot, 'skills', 'hello'))).rejects.toThrow()
 
-  it('records a local markdown edit so the previous content can be restored', async () => {
-    await withTempDir(async (root) => {
-      const repositoryRoot = path.join(root, 'repository')
-      const homeRoot = path.join(root, 'home')
-      await fs.mkdir(repositoryRoot, { recursive: true })
-      const runtime = createOperationRuntime({ repositoryRoot, homeRoot })
-      const service = new SkillService({ repositoryRoot, homeRoot, operationRuntime: runtime })
-      await service.createSkill({ name: 'hello', description: 'Before.' })
+      // The unified backup index holds both captured pieces.
+      const backups = new BackupService({ homeRoot })
+      const records = await backups.list()
+      expect(records.map((record) => record.kind).sort()).toEqual(['repo-dir', 'runtime'])
+      expect(records.every((record) => record.operation === 'remove')).toBe(true)
+      expect(records.every((record) => record.alias === 'hello')).toBe(true)
 
-      await service.writeSkillMarkdown({ name: 'hello', content: '# hello\n\nAfter.\n' })
-      await expect(runtime.rollback()).resolves.toMatchObject({
-        restoredTargets: [path.join(repositoryRoot, 'skills', 'hello')],
-      })
+      // Rolling back the repo-dir backup restores the deleted skill files.
+      const repoDir = records.find((record) => record.kind === 'repo-dir')
+      expect(repoDir).toBeDefined()
+      const result = await backups.rollback(repoDir?.id ?? '', { repositoryRoot })
+      expect(result.filesRestored).toBeGreaterThan(0)
       await expect(
         fs.readFile(path.join(repositoryRoot, 'skills', 'hello', 'SKILL.md'), 'utf8'),
-      ).resolves.toContain('Before.')
+      ).resolves.toContain('# hello')
     })
   })
 })

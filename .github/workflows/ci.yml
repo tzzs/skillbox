@@ -63,5 +63,8 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: E2E (hermetic CLI journeys)
+        run: pnpm test:e2e
+
       - name: Packed install smoke test
         run: pnpm release:smoke

@@ -1,239 +1,412 @@
 import * as path from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import { FilesystemService } from '../fs/filesystem-service.js'
-import { ErrorCode, SkillboxError } from '../errors.js'
+import { scanSkillDirectory } from '../fs/scanner.js'
+import { ErrorCode, isSkillboxError, SkillboxError } from '../errors.js'
 import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
-import { ManagedCache, CACHE_INTEGRITY_MARKER } from '../install/cache.js'
-import { readLockfile } from '../lockfile/index.js'
 import { deriveMode, readManifest, validateSkillAlias } from '../manifest/index.js'
-import type { NormalizedSource } from '../registry/types.js'
+import { readLockfile } from '../lockfile/index.js'
+import { fromManifestSource } from '../registry/source.js'
+import { resolveProvider } from '../registry/registry.js'
+import { isRegistryError } from '../registry/errors.js'
+import type { NormalizedSource, RegistryProvider } from '../registry/types.js'
+import { createDefaultAgentRegistry } from '../agent/index.js'
+import { BackupService, backupDir } from '../backup/index.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
+import { RuntimeLinkState } from '../runtime/links.js'
+import { RuntimeOwnershipResolver } from '../runtime/ownership.js'
+import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
-import { createOperationRuntime } from '../operations/runtime.js'
-import type { CanonicalSkillSource } from '../sources/types.js'
 import type { RestoreManagedSkillOptions, RestoreManagedSkillResult } from './types.js'
 
-function cacheSource(source: { type: string; [key: string]: unknown }): NormalizedSource {
-  if (source.type === 'github' && typeof source.repo === 'string') {
-    const result: Extract<NormalizedSource, { type: 'github' }> = {
-      type: 'github',
-      repo: source.repo,
-    }
-    if (typeof source.path === 'string') result.path = source.path
-    if (typeof source.ref === 'string') result.ref = source.ref
-    return result
-  }
-  throw new SkillboxError(
-    ErrorCode.SOURCE_UNSUPPORTED,
-    `Restore supports cached github sources; "${source.type}" will be supported by SkillSourceResolver`,
-    { recoverable: true, context: { sourceType: source.type } },
-  )
-}
-
-async function payloadFileCount(root: string, filesystem: FilesystemService): Promise<number> {
-  let count = 0
-  for (const entry of await filesystem.readDir(root)) {
-    if (entry.name === CACHE_INTEGRITY_MARKER) continue
-    if (entry.isDirectory) count += await payloadFileCount(entry.fullPath, filesystem)
-    else if (entry.isFile) count += 1
-  }
-  return count
-}
-
-async function materializePinnedCacheEntry(input: {
-  alias: string
-  source: CanonicalSkillSource
-  revision: string
-  integrity: string
-  cache: ManagedCache
-  cacheSource: NormalizedSource
-  resolver: NonNullable<RestoreManagedSkillOptions['sourceResolver']>
-  filesystem: FilesystemService
-  temporaryRoot: string
-}): Promise<void> {
-  const adapter = input.resolver.adapterFor(input.source, 'materialize')
-  if (adapter.materialize === undefined) {
-    throw new SkillboxError(
-      ErrorCode.SOURCE_UNSUPPORTED,
-      `Skill source type "${input.source.type}" does not support materialize`,
-      { context: { sourceType: input.source.type, capability: 'materialize' }, recoverable: true },
-    )
-  }
-
-  await input.filesystem.remove(input.temporaryRoot)
-  try {
-    // The lockfile revision is the sole revision passed to the adapter. In
-    // particular, restore must not resolve or otherwise advance a pin.
-    await adapter.materialize(input.source, input.revision, input.temporaryRoot)
-    const integrity = await computeSkillIntegrity(input.temporaryRoot)
-    if (integrity !== input.integrity) {
-      throw new SkillboxError(
-        ErrorCode.INTEGRITY_MISMATCH,
-        `Downloaded content integrity ${integrity} does not match locked integrity for "${input.alias}"`,
-        { context: { alias: input.alias, expected: input.integrity, actual: integrity } },
-      )
-    }
-    await input.cache.put(input.cacheSource, input.revision, input.integrity, input.temporaryRoot)
-  } finally {
-    await input.filesystem.remove(input.temporaryRoot)
-  }
-}
-
 /**
- * Restores a Managed runtime from the exact revision and integrity already
- * pinned in `skillbox.lock`. The cache entry is validated before any runtime
- * mutation, copied into a sibling staging directory, then activated with the
- * previous runtime retained as a rollback backup. Manifest and lockfile are
- * deliberately read-only: Restore clears local drift, never advances a pin.
+ * M17.3 Restore Upstream transaction ("[Restore]" in the edit flow).
+ *
+ * Re-materializes the pinned upstream revision of a *modified managed* skill
+ * into the managed runtime copy (`~/.skillbox/library/managed/<alias>`), so
+ * the runtime matches the integrity recorded in `skillbox.lock` again and the
+ * `modified` status clears.
+ *
+ * Steps — Verify the locked pin → backup the modified runtime (recovery
+ * snapshot) → download the pinned revision through the registry provider →
+ * path + structure validate → integrity check against the lockfile →
+ * atomically replace the library copy → refresh the agent links.
+ *
+ * The repository Manifest / Lockfile are never touched: restore only repairs
+ * the runtime to the state the lockfile already promises.
+ *
+ * Any failure rolls the transaction back: the fresh download is removed and
+ * the pre-restore runtime (from the backup) is put back, so a failed restore
+ * never leaves a half-restored skill.
+ *
+ * Preconditions (checked before anything is written):
+ * - the skill exists in the manifest → else `SKILL_NOT_FOUND`
+ * - the skill is currently `managed` → else `LIFECYCLE_ILLEGAL_TRANSITION`
+ * - a locked entry with `revision` and `integrity` exists → else `RESTORE_FAILED`
+ * - the locked source has a registry representation → else `SOURCE_UNSUPPORTED`
+ *
+ * Errors during download/validation/materialize are wrapped in `RESTORE_FAILED`
+ * (with the failing phase in context); an integrity mismatch surfaces the
+ * recoverable `INTEGRITY_MISMATCH` so the user learns the pinned revision no
+ * longer resolves to the locked hash.
  */
 export async function restoreManagedSkill(
   aliasInput: string,
   options: RestoreManagedSkillOptions,
 ): Promise<RestoreManagedSkillResult> {
   const alias = validateSkillAlias(aliasInput)
-  const repositoryRoot = path.resolve(options.repositoryRoot)
-  const homeRoot = options.homeRoot ?? resolveSkillboxHome()
-  const layout = buildSkillboxHomeLayout(homeRoot)
-  const runtimePath = new RuntimeLibraryService(layout.library).pathFor(alias, 'managed')
-  const operationRuntime =
-    options.operationRuntime ?? createOperationRuntime({ repositoryRoot, homeRoot })
-  const operation = await operationRuntime.runExclusive({
-    kind: 'restore',
-    targets: [runtimePath, layout.cache],
-    execute: () => restoreManagedSkillUnsafe(alias, options),
-  })
-  return operation.result
-}
-
-async function restoreManagedSkillUnsafe(
-  aliasInput: string,
-  options: RestoreManagedSkillOptions,
-): Promise<RestoreManagedSkillResult> {
-  const alias = validateSkillAlias(aliasInput)
   const filesystem = options.filesystem ?? new FilesystemService()
-  const repositoryRoot = path.resolve(options.repositoryRoot)
   const layout = buildSkillboxHomeLayout(options.homeRoot ?? resolveSkillboxHome())
   const library = new RuntimeLibraryService(layout.library, filesystem)
+  const repositoryRoot = path.resolve(options.repositoryRoot)
+  const backupService = new BackupService({ homeRoot: layout.root, filesystem })
 
+  /* --- preconditions (read-only, nothing written yet) --- */
   const manifest = await readManifest(repositoryRoot)
-  const skill = manifest.skills[alias]
-  if (skill === undefined) {
+  const entry = manifest.skills[alias]
+  if (entry === undefined) {
     throw new SkillboxError(ErrorCode.SKILL_NOT_FOUND, `Skill "${alias}" is not in the manifest`, {
       context: { alias },
     })
   }
-  if (deriveMode(skill) !== 'managed') {
+  if (deriveMode(entry) !== 'managed') {
     throw new SkillboxError(
       ErrorCode.LIFECYCLE_ILLEGAL_TRANSITION,
-      `Cannot restore "${alias}": only managed skills have a pinned runtime`,
-      { context: { alias, from: deriveMode(skill), to: 'managed' } },
+      `Skill "${alias}" is not managed; only managed skills can be restored to their pinned upstream`,
+      { context: { alias, mode: deriveMode(entry) } },
     )
   }
-  const locked = (await readLockfile(repositoryRoot)).skills[alias]
-  if (locked === undefined || locked.mode !== 'managed' || !locked.revision || !locked.integrity) {
+
+  const lockfile = await readLockfile(repositoryRoot)
+  const locked = lockfile.skills[alias]
+  if (locked === undefined) {
     throw new SkillboxError(
       ErrorCode.RESTORE_FAILED,
-      `Cannot restore "${alias}": skillbox.lock has no managed revision and integrity pin`,
-      { recoverable: true, context: { alias } },
+      `Cannot restore "${alias}": no locked entry in skillbox.lock`,
+      { context: { alias } },
+    )
+  }
+  if (locked.revision === undefined || locked.revision === '') {
+    throw new SkillboxError(
+      ErrorCode.RESTORE_FAILED,
+      `Cannot restore "${alias}": no pinned revision recorded in skillbox.lock`,
+      { context: { alias } },
+    )
+  }
+  if (locked.integrity === undefined || locked.integrity === '') {
+    throw new SkillboxError(
+      ErrorCode.RESTORE_FAILED,
+      `Cannot restore "${alias}": no integrity recorded in skillbox.lock`,
+      { context: { alias } },
     )
   }
 
-  const runtimePath = library.pathFor(alias, 'managed')
-  const normalizedCacheSource = cacheSource(locked.source)
-  const cache = new ManagedCache(layout.cache, filesystem)
-  let cached = await cache.get(normalizedCacheSource, locked.revision, locked.integrity)
-  if (cached === null) {
-    if (options.sourceResolver === undefined) {
-      throw new SkillboxError(
-        ErrorCode.CACHE_MISS,
-        `No cache entry for "${alias}" at locked revision ${locked.revision}; a source resolver is required to restore it`,
-        { recoverable: true, context: { alias, revision: locked.revision } },
-      )
-    }
-    const token = `${process.pid}-${Date.now()}`
-    await materializePinnedCacheEntry({
-      alias,
-      source: options.sourceResolver.fromManifest(locked.source),
-      revision: locked.revision,
-      integrity: locked.integrity,
-      cache,
-      cacheSource: normalizedCacheSource,
-      resolver: options.sourceResolver,
-      filesystem,
-      temporaryRoot: `${runtimePath}.cache-${token}`,
-    })
-    cached = await cache.requireEntry(normalizedCacheSource, locked.revision, locked.integrity)
+  const normalized = fromManifestSource(locked.source)
+  if (normalized === null) {
+    throw new SkillboxError(
+      ErrorCode.SOURCE_UNSUPPORTED,
+      `Cannot restore "${alias}": source type "${locked.source.type}" has no registry representation yet`,
+      { context: { alias, source: locked.source } },
+    )
   }
-  if (
-    (await filesystem.exists(runtimePath)) &&
-    (await computeSkillIntegrity(runtimePath)) === locked.integrity
-  ) {
-    return { alias, filesRestored: 0, integrity: locked.integrity, materializedPath: runtimePath }
+  const provider = options.provider ?? restoreProvider(alias, normalized)
+
+  const managedPath = library.pathFor(alias, 'managed')
+  const agents = entry.agents ?? []
+
+  /* Early no-op: the runtime already matches the lockfile integrity. */
+  if (await filesystem.exists(managedPath)) {
+    const current = await computeSkillIntegrity(managedPath)
+    if (current === locked.integrity) {
+      return {
+        alias,
+        mode: 'managed',
+        filesRestored: 0,
+        integrity: current,
+        revision: locked.revision,
+        unchanged: true,
+        materializedPath: managedPath,
+        agents,
+      }
+    }
   }
 
-  const token = `${process.pid}-${Date.now()}`
-  const staging = `${runtimePath}.restore-${token}`
-  const backup = `${runtimePath}.backup-${token}`
-  let movedExisting = false
-  let activated = false
+  /* --- rollback bookkeeping --- */
+  const createdDirs: string[] = []
+  let backupId = ''
+  let backupPath: string | undefined
+  let backupRecorded = false
+  let libraryTouched = false
+  let rollbackFailed = false
+
+  const rollback = async (): Promise<void> => {
+    if (backupRecorded) {
+      try {
+        await backupService.forget(backupId)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+    // Remove the fresh library copy and put the pre-restore runtime back.
+    if (libraryTouched) {
+      try {
+        await filesystem.remove(managedPath)
+      } catch {
+        rollbackFailed = true
+      }
+      if (backupPath !== undefined) {
+        try {
+          await filesystem.copy(backupPath, managedPath)
+        } catch {
+          rollbackFailed = true
+        }
+      }
+    }
+    for (const dir of [...createdDirs].reverse()) {
+      try {
+        await filesystem.remove(dir)
+      } catch {
+        rollbackFailed = true
+      }
+    }
+  }
+
   try {
-    await filesystem.remove(staging)
-    await filesystem.copy(cached.path, staging)
-    await filesystem.remove(path.join(staging, CACHE_INTEGRITY_MARKER))
-    const stagedIntegrity = await computeSkillIntegrity(staging)
-    if (stagedIntegrity !== locked.integrity) {
-      throw new SkillboxError(
-        ErrorCode.INTEGRITY_MISMATCH,
-        `Cached content integrity ${stagedIntegrity} does not match locked integrity for "${alias}"`,
-        { context: { alias, expected: locked.integrity, actual: stagedIntegrity } },
-      )
+    /* Step 1 — Recovery snapshot of the modified runtime (kept on success,
+       indexed by the unified BackupService so `skillbox rollback` can undo
+       the restore). */
+    if (await filesystem.exists(managedPath)) {
+      backupId = `restore-${alias}-${Date.now()}`
+      backupPath = backupDir(layout.root, backupId)
+      createdDirs.push(backupPath)
+      try {
+        await filesystem.mkdir(path.dirname(backupPath))
+        await filesystem.copy(managedPath, backupPath)
+      } catch (error) {
+        throw new SkillboxError(
+          ErrorCode.RESTORE_FAILED,
+          `Failed to snapshot the current runtime of "${alias}" before restoring`,
+          { cause: error, context: { alias, phase: 'backup', target: backupPath } },
+        )
+      }
+      backupRecorded = true
+      await backupService.record({
+        id: backupId,
+        kind: 'runtime',
+        operation: 'restore',
+        alias,
+        path: backupPath,
+        sourcePath: managedPath,
+        repositoryRoot,
+      })
     }
-    if (await filesystem.exists(runtimePath)) {
-      await filesystem.move(runtimePath, backup)
-      movedExisting = true
+
+    /* Step 2 — Download the pinned revision (never the latest). */
+    const tmpRoot = path.join(layout.tmp, `restore-${alias}-${Date.now()}-${process.pid}`)
+    const downloadDir = path.join(tmpRoot, 'download')
+    createdDirs.push(tmpRoot)
+    await filesystem.mkdir(downloadDir)
+    try {
+      await provider.download(normalized, locked.revision, downloadDir)
+    } catch (error) {
+      throw wrapRestoreFailure(error, `Failed to download the pinned revision of "${alias}"`, {
+        alias,
+        phase: 'download',
+        revision: locked.revision,
+        source: normalized,
+      })
     }
-    await filesystem.move(staging, runtimePath)
-    activated = true
-    const integrity = await computeSkillIntegrity(runtimePath)
+
+    /* Step 3 — Path: registry providers materialize the skill *subtree* of the
+       source directly into `downloadDir` (the path prefix is stripped), so the
+       download root already is the skill root. Nothing to re-resolve here. */
+
+    /* Step 4 — Structure Validate: SKILL.md (and optional skillbox.yaml). */
+    await validateSkillStructure(downloadDir, alias, filesystem)
+
+    /* Step 5 — Integrity: must equal the lockfile expectation (M17.3). */
+    const integrity = await computeSkillIntegrity(downloadDir)
     if (integrity !== locked.integrity) {
       throw new SkillboxError(
         ErrorCode.INTEGRITY_MISMATCH,
-        `Restore verification failed for "${alias}"`,
+        `Restored content of "${alias}"@${locked.revision} has integrity ${integrity}, which does not match the lockfile (${locked.integrity}) — the pinned revision may have changed upstream`,
         {
-          context: { alias, expected: locked.integrity, actual: integrity },
+          recoverable: true,
+          context: {
+            alias,
+            revision: locked.revision,
+            expected: locked.integrity,
+            actual: integrity,
+          },
         },
       )
     }
-    await filesystem.remove(backup)
+
+    /* Step 6 — Materialize: replace the managed runtime copy atomically. */
+    libraryTouched = true
+    try {
+      if (await filesystem.exists(managedPath)) {
+        await filesystem.remove(managedPath)
+      }
+      await filesystem.mkdir(path.dirname(managedPath))
+      await filesystem.copy(downloadDir, managedPath)
+    } catch (error) {
+      throw wrapRestoreFailure(error, `Failed to materialize "${alias}" into the managed library`, {
+        alias,
+        phase: 'materialize',
+        target: managedPath,
+      })
+    }
+
+    /* Step 7 — Refresh the agent links (reconcile copy-style entries too). */
+    const linkState = new RuntimeLinkState({ filePath: layout.linksFile, filesystem })
+    const ownership = new RuntimeOwnershipResolver({
+      managedRoot: layout.library,
+      links: linkState,
+    })
+    const agentRegistry = options.agentRegistry ?? createDefaultAgentRegistry()
+    const linksDatabase = await linkState.load()
+    for (const agentId of agents) {
+      const adapter = agentRegistry.get(agentId)
+      if (adapter === undefined) {
+        throw new SkillboxError(
+          ErrorCode.RESTORE_FAILED,
+          `Cannot refresh the link of "${alias}": unknown target agent "${agentId}"`,
+          { context: { alias, phase: 'agent-link', agentId } },
+        )
+      }
+      const strategy = linksDatabase[agentId]?.[alias]?.strategy ?? 'auto'
+      let result = await linkSkillToAgent({
+        adapter,
+        agentId,
+        alias,
+        source: managedPath,
+        strategy,
+        ownership,
+        links: linkState,
+        filesystem,
+      })
+      if (result.action === 'kept_modified' && result.path !== undefined) {
+        // A copy-style link holds stale content; restoring refreshes it.
+        await filesystem.remove(result.path)
+        result = await linkSkillToAgent({
+          adapter,
+          agentId,
+          alias,
+          source: managedPath,
+          strategy,
+          ownership,
+          links: linkState,
+          filesystem,
+        })
+      }
+      if (result.action === 'blocked') {
+        throw new SkillboxError(
+          ErrorCode.RESTORE_FAILED,
+          `Cannot refresh the link of "${alias}" for agent "${agentId}": the skills-directory entry is owned by something else`,
+          { context: { alias, phase: 'agent-link', agentId, path: result.path } },
+        )
+      }
+    }
+
+    /* Success: drop the temporary download, keep the recovery snapshot. */
+    try {
+      await filesystem.remove(tmpRoot)
+    } catch {
+      // best effort: a stale tmp dir must not fail a completed restore
+    }
+    createdDirs.length = 0
+
+    const scan = await scanSkillDirectory(managedPath)
     return {
       alias,
-      filesRestored: await payloadFileCount(runtimePath, filesystem),
+      mode: 'managed',
+      filesRestored: scan.files.length,
       integrity,
-      materializedPath: runtimePath,
+      revision: locked.revision,
+      unchanged: false,
+      ...(backupPath !== undefined ? { backupPath } : {}),
+      materializedPath: managedPath,
+      agents,
     }
   } catch (error) {
-    let rollbackFailed = false
-    try {
-      if (activated) await filesystem.remove(runtimePath)
-      if (movedExisting) await filesystem.move(backup, runtimePath)
-    } catch {
-      rollbackFailed = true
-    }
-    try {
-      await filesystem.remove(staging)
-      if (!movedExisting) await filesystem.remove(backup)
-    } catch {
-      rollbackFailed = true
-    }
+    await rollback()
     if (rollbackFailed) {
       throw new SkillboxError(
         ErrorCode.LIFECYCLE_ROLLBACK_FAILED,
         `Restore of "${alias}" failed and rollback was incomplete`,
         {
           cause: error,
-          context: { alias },
+          context: { alias, original: error instanceof Error ? error.message : String(error) },
         },
       )
     }
     throw error
   }
 }
+
+/** Resolves the registry provider, mapping registry errors onto RESTORE_FAILED. */
+function restoreProvider(alias: string, source: NormalizedSource): RegistryProvider {
+  try {
+    return resolveProvider(source.type)
+  } catch (error) {
+    if (isRegistryError(error)) {
+      throw new SkillboxError(
+        ErrorCode.RESTORE_FAILED,
+        `No registry provider is wired for "${source.type}" sources; restore of "${alias}" cannot download the pinned revision`,
+        { cause: error, context: { alias, source, phase: 'resolve-provider' } },
+      )
+    }
+    throw error
+  }
+}
+
+/** Wraps a download/validation/materialize failure in a RESTORE_FAILED error. */
+function wrapRestoreFailure(
+  error: unknown,
+  message: string,
+  context: Record<string, unknown>,
+): SkillboxError {
+  if (isSkillboxError(error)) {
+    return error
+  }
+  return new SkillboxError(ErrorCode.RESTORE_FAILED, message, { cause: error, context })
+}
+
+/** Structure Validate: SKILL.md required; an optional skillbox.yaml must parse. */
+async function validateSkillStructure(
+  skillRoot: string,
+  alias: string,
+  filesystem: FilesystemService,
+): Promise<void> {
+  if (!(await filesystem.exists(path.join(skillRoot, 'SKILL.md')))) {
+    throw new SkillboxError(
+      ErrorCode.RESTORE_FAILED,
+      `Restored skill "${alias}" is missing SKILL.md`,
+      { context: { alias, path: skillRoot, phase: 'validate-structure' } },
+    )
+  }
+  const skillManifestPath = path.join(skillRoot, 'skillbox.yaml')
+  if (await filesystem.exists(skillManifestPath)) {
+    let document: unknown
+    try {
+      document = parseYaml(await filesystem.readFile(skillManifestPath))
+    } catch (error) {
+      throw new SkillboxError(
+        ErrorCode.RESTORE_FAILED,
+        `Restored skill "${alias}" has an invalid skillbox.yaml`,
+        { cause: error, context: { alias, path: skillManifestPath, phase: 'validate-structure' } },
+      )
+    }
+    if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+      throw new SkillboxError(
+        ErrorCode.RESTORE_FAILED,
+        `Restored skill "${alias}" skillbox.yaml must be a YAML mapping`,
+        { context: { alias, path: skillManifestPath, phase: 'validate-structure' } },
+      )
+    }
+  }
+}
+
+/** Re-exported for consumers that only need the type. */
+export type { RestoreManagedSkillOptions, RestoreManagedSkillResult } from './types.js'

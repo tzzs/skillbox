@@ -19,9 +19,11 @@ export type GeminiAdapterOptions = Omit<
 >
 
 /**
- * Gemini CLI adapter. Gemini discovers user-level skills from
- * `~/.gemini/skills`; Skillbox can override that base directory through
- * `GEMINI_CONFIG_DIR` for portable installations and deterministic tests.
+ * Gemini CLI adapter (roadmap 6.3). Detects the Gemini CLI through its
+ * `gemini` executable or `~/.gemini/skills` (or `${GEMINI_CONFIG_DIR}/skills`),
+ * scans the installed skills and links/unlinks them. All paths are derived
+ * with `os.homedir()` + `node:path` and can be overridden with environment
+ * variables - no hard-coded user paths.
  */
 export class GeminiAdapter extends CliAgentAdapter {
   readonly id = 'gemini'

@@ -89,7 +89,7 @@ export interface ManagedModifications {
 /**
  * Restore of a modified managed runtime from the lockfile integrity
  * (M17.3 "[Restore]"). Satisfied at runtime by agent 1's
- * `restoreManagedSkill` — restores the pinned, verified managed cache entry.
+ * `restoreManagedSkill` (`@skillbox/core/lifecycle/restore`).
  */
 export interface RestoreResult {
   name: string
@@ -110,11 +110,7 @@ export interface LifecycleProvider {
     repositoryRoot: string
     homeRoot?: string
   }): Promise<ManagedModifications>
-  restoreManagedSkill(input: {
-    name: string
-    repositoryRoot: string
-    homeRoot?: string
-  }): Promise<RestoreResult>
+  restoreManagedSkill(input: { name: string; repositoryRoot: string }): Promise<RestoreResult>
 }
 
 /* ------------------------------------------------------------------ *

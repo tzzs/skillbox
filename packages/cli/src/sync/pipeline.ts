@@ -8,6 +8,7 @@ import {
   type SkillService,
 } from '@skillbox/core'
 import { renderTable } from '../table.js'
+import { emitSkillboxEvent } from '@skillbox/core'
 import type {
   DeviceFlowPollResult,
   GitHubProvider,
@@ -16,6 +17,7 @@ import type {
   GithubConnectionState,
   SecretFinding,
   SecretScanner,
+  SyncGitTransport,
   SyncStepId,
   SyncStepStatus,
 } from './types.js'
@@ -48,6 +50,13 @@ export interface SyncServiceOptions {
   out: (chunk: string) => void
   /** Poll sleep, injectable so tests don't wait real seconds. */
   sleep?: (ms: number) => Promise<void>
+  /**
+   * Auth-aware pull/push transport (production: Core `RepositorySync` with the
+   * Credential Bridge injected). When present it replaces
+   * `gitProvider.pull()/push()` in the pipeline; tests keep using the plain
+   * `gitProvider` by omitting it.
+   */
+  gitTransport?: SyncGitTransport
 }
 
 export interface SyncResult {
@@ -110,6 +119,7 @@ export class SyncService {
   private readonly skills: SkillService
   private readonly out: (chunk: string) => void
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly gitTransport: SyncGitTransport | undefined
 
   constructor(options: SyncServiceOptions) {
     this.repositoryRoot = options.repositoryRoot
@@ -120,6 +130,7 @@ export class SyncService {
     this.skills = options.skills
     this.out = options.out
     this.sleep = options.sleep ?? defaultSleep
+    this.gitTransport = options.gitTransport
   }
 
   /* ------------------------------------------------------------------ *
@@ -160,6 +171,17 @@ export class SyncService {
       const paths = changedFiles.length > 0 ? changedFiles : []
       const scan = await this.secretScanner.scanChangedFiles(paths)
       findings.push(...scan.findings)
+      if (scan.findings.length > 0) {
+        emitSkillboxEvent({
+          type: 'security:finding',
+          severity: scan.findings.some(
+            (finding) => finding.severity === 'critical' || finding.severity === 'high',
+          )
+            ? 'high'
+            : 'low',
+          count: scan.findings.length,
+        })
+      }
       if (scan.blocked) {
         const blockedPaths = scan.findings
           .filter(
@@ -191,7 +213,10 @@ export class SyncService {
     }
 
     /* 4. Pull — merge remote changes; conflicts abort without overwriting. */
-    const pull = await this.gitProvider.pull()
+    const pull =
+      this.gitTransport !== undefined
+        ? await this.gitTransport.pull()
+        : await this.gitProvider.pull()
     if (pull.conflicts.length > 0) {
       this.recordStep(steps, 'pull', 'warning', `conflicts in ${pull.conflicts.join(', ')}`)
       throw new SkillboxError(
@@ -253,9 +278,19 @@ export class SyncService {
         { context: { state } },
       )
     }
-    await this.gitProvider.push()
+    if (this.gitTransport !== undefined) {
+      await this.gitTransport.push()
+    } else {
+      await this.gitProvider.push()
+    }
     this.recordStep(steps, 'push', 'ok', 'pushed to remote')
 
+    emitSkillboxEvent({
+      type: 'sync:completed',
+      committed: commit.committed,
+      pushed: true,
+      problems: reconcile.problems.length,
+    })
     const result: SyncResult = {
       repository: this.repositoryRoot,
       steps,
@@ -296,7 +331,10 @@ export class SyncService {
         `No git remote configured — bind one with \`skillbox connect\` (or \`git remote add origin <url>\`).`,
       )
     }
-    const outcome = await this.gitProvider.pull()
+    const outcome =
+      this.gitTransport !== undefined
+        ? await this.gitTransport.pull()
+        : await this.gitProvider.pull()
     if (outcome.conflicts.length > 0) {
       throw new SkillboxError(
         ErrorCode.GIT_CONFLICT,
@@ -336,7 +374,11 @@ export class SyncService {
         { context: { state } },
       )
     }
-    await this.gitProvider.push()
+    if (this.gitTransport !== undefined) {
+      await this.gitTransport.push()
+    } else {
+      await this.gitProvider.push()
+    }
     return { repository: this.repositoryRoot, pushed: true, connected: true }
   }
 
@@ -433,6 +475,7 @@ export class SyncService {
     detail: string,
   ): void {
     steps.push({ step, status, detail })
+    emitSkillboxEvent({ type: 'sync:step', step, status, detail })
     this.out(`  ${step.padEnd(13)} ${status.padEnd(9)} ${detail}\n`)
   }
 }

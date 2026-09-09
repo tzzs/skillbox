@@ -30,6 +30,12 @@ export function canonicalSourceString(source: NormalizedSource): string {
       if (source.version !== undefined) canonical += `@${source.version}`
       return canonical
     }
+    case 'git': {
+      let canonical = `git:${source.url}`
+      if (source.path !== undefined) canonical += `@${source.path}`
+      if (source.ref !== undefined) canonical += `#${source.ref}`
+      return canonical
+    }
     case 'local':
       return `local:${source.path}`
   }
@@ -56,10 +62,13 @@ function assertSafeRevision(revision: string): void {
  *
  * Layout: `cache/<source-key>/<revision>/` — the source key is derived from
  * the canonical source expression, the revision is the pinned commit/version.
- * Each entry carries a `.integrity` marker so a hit is only trusted when the
- * recorded integrity matches the expected one; entries without a valid marker
- * are treated as corrupt (`CACHE_INVALID`). The cache is disposable by
- * design: it can be deleted at any time (`clear()` / `clearCache()`).
+ * The entry directory holds the *pure* skill content (so a cached copy can be
+ * hashed or materialized like any fresh download); the integrity marker lives
+ * in a sibling file `cache/<source-key>/<revision>.integrity`. A hit is only
+ * trusted when the recorded integrity matches the expected one; entries
+ * without a valid marker are treated as corrupt (`CACHE_INVALID`). The cache
+ * is disposable by design: it can be deleted at any time (`clear()` /
+ * `clearCache()`).
  */
 export class ManagedCache {
   private readonly filesystem: FilesystemService
@@ -75,6 +84,11 @@ export class ManagedCache {
   entryDir(source: NormalizedSource, revision: string): string {
     assertSafeRevision(revision)
     return path.join(this.cacheRoot, cacheSourceKey(source), revision)
+  }
+
+  /** Sibling marker file of an entry dir (kept outside the content). */
+  private markerPathFor(dir: string): string {
+    return `${dir}${CACHE_INTEGRITY_MARKER}`
   }
 
   /**
@@ -93,7 +107,7 @@ export class ManagedCache {
     if (!(await this.filesystem.exists(dir))) {
       return null
     }
-    const markerPath = path.join(dir, CACHE_INTEGRITY_MARKER)
+    const markerPath = this.markerPathFor(dir)
     if (!(await this.filesystem.exists(markerPath))) {
       throw this.invalidEntryError(dir, 'missing integrity marker')
     }
@@ -135,9 +149,9 @@ export class ManagedCache {
   }
 
   /**
-   * Writes `sourceDir` into the cache as `<revision>` with an integrity
-   * marker. The copy is staged under a `.partial-*` sibling first and moved
-   * into place, so a crash never leaves a marker-less half entry.
+   * Writes `sourceDir` into the cache as `<revision>` with a sibling
+   * integrity marker. The copy is staged under a `.partial-*` sibling first
+   * and moved into place, so a crash never leaves a marker-less half entry.
    */
   async put(
     source: NormalizedSource,
@@ -150,9 +164,9 @@ export class ManagedCache {
     await this.filesystem.remove(partial)
     await this.filesystem.mkdir(path.dirname(dir))
     await this.filesystem.copy(sourceDir, partial)
-    await this.filesystem.writeFile(path.join(partial, CACHE_INTEGRITY_MARKER), `${integrity}\n`)
     await this.filesystem.remove(dir)
     await this.filesystem.move(partial, dir)
+    await this.filesystem.writeFile(this.markerPathFor(dir), `${integrity}\n`)
     return { path: dir, integrity }
   }
 

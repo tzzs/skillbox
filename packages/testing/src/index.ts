@@ -7,23 +7,8 @@ export async function createTempDir(prefix = 'skillbox-test-'): Promise<string> 
 }
 
 export async function removeTempDir(dir: string): Promise<void> {
-  // Windows can keep a just-exited child process' cwd or stream handle open
-  // briefly. Bounded native retries avoid turning a successful E2E assertion
-  // into an unrelated ENOTEMPTY/EBUSY cleanup failure.
-  await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  await rm(dir, { recursive: true, force: true })
 }
 
-export {
-  createCliHarness,
-  type CliHarness,
-  type CliHarnessOptions,
-  type CliRunResult,
-} from './cli-harness.js'
-export { createBareGitRemoteFixture, type BareGitRemoteFixture } from './git-fixture.js'
-export {
-  createHttpFixture,
-  type HttpFixture,
-  type HttpFixtureHandler,
-  type HttpFixtureRequest,
-  type HttpFixtureResponse,
-} from './http-fixture.js'
+export * from './cli-harness.js'
+export * from './git-fixture.js'

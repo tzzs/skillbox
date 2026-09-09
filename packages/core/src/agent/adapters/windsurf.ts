@@ -1,13 +1,13 @@
 import type { AgentCapabilities } from '../../domain/agent.js'
 import { CliAgentAdapter, type CliAgentAdapterConfig } from '../adapter.js'
 
-export const WINDSURF_EXECUTABLE_ENV = 'WINDSURF_BIN'
-export const WINDSURF_CONFIG_DIR_ENV = 'WINDSURF_CONFIG_DIR'
-export const WINDSURF_DEFAULT_SKILLS_SUBDIR = '.codeium/windsurf/skills'
+export const WINDSURF_BIN = 'WINDSURF_BIN'
+export const WINDSURF_CONFIG_DIR = 'WINDSURF_CONFIG_DIR'
+export const WINDSURF_DEFAULT_SKILLS_SUBDIR = '.windsurf/skills'
 
 const windsurfCapabilities: AgentCapabilities = {
   supportsGlobalSkills: true,
-  supportsProjectSkills: true,
+  supportsProjectSkills: false,
   supportsSymlinks: true,
   supportsNestedSkillDirectories: false,
   requiresRestartAfterChange: false,
@@ -19,10 +19,10 @@ export type WindsurfAdapterOptions = Omit<
 >
 
 /**
- * Windsurf Cascade adapter. Windsurf discovers global skills at
- * `~/.codeium/windsurf/skills` and project skills at `.windsurf/skills`.
- * Skillbox manages the global location; `WINDSURF_CONFIG_DIR` overrides the
- * `~/.codeium/windsurf` base directory for portable installs and tests.
+ * Windsurf adapter (roadmap 6.3). Detects the Windsurf CLI through its
+ * `windsurf` executable or `~/.windsurf/skills` (override via
+ * `WINDSURF_CONFIG_DIR`), scans the installed skills and links/unlinks them. All
+ * paths derive from `os.homedir()` + `node:path` with environment overrides.
  */
 export class WindsurfAdapter extends CliAgentAdapter {
   readonly id = 'windsurf'
@@ -33,8 +33,8 @@ export class WindsurfAdapter extends CliAgentAdapter {
     super({
       ...options,
       executableName: 'windsurf',
-      executableEnv: WINDSURF_EXECUTABLE_ENV,
-      configDirEnv: WINDSURF_CONFIG_DIR_ENV,
+      executableEnv: WINDSURF_BIN,
+      configDirEnv: WINDSURF_CONFIG_DIR,
       defaultSkillsSubdir: WINDSURF_DEFAULT_SKILLS_SUBDIR,
     })
   }

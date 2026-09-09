@@ -259,9 +259,10 @@ export class SkillLifecycleService {
    * ------------------------------------------------------------------ */
 
   /**
-   * M17.2 — local-modification detection. While agent 1's
-   * `detectManagedModifications` has not landed, edit degrades to the
-   * unmodified path (safe: the fork-conversion prompt keeps local changes).
+   * M17.2 — local-modification detection via the lifecycle provider
+   * (`detectManagedModifications` in `@skillbox/core/lifecycle`). When the
+   * provider is unavailable the flow degrades to the unmodified path (safe:
+   * the fork-conversion prompt keeps local changes).
    */
   private async detectModifications(name: string): Promise<ManagedModifications> {
     try {

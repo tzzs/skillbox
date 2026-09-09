@@ -12,6 +12,7 @@ import {
   type LockedUpstream,
   type SkillboxLockfile,
 } from './schema.js'
+import { lockfileMigrations } from '../migrations/lockfile.js'
 
 function sourceToNode(source: ManifestSkillSource): Record<string, unknown> {
   switch (source.type) {
@@ -133,15 +134,22 @@ export async function readLockfile(repositoryRoot: string): Promise<SkillboxLock
       { context: { path: filePath, version } },
     )
   }
-  if (version !== LOCKFILE_VERSION) {
+  if (version > LOCKFILE_VERSION) {
     throw new SkillboxError(
       ErrorCode.UNSUPPORTED_LOCKFILE_VERSION,
       `Unsupported lockfile version ${version} (supported: ${LOCKFILE_VERSION})`,
       { context: { path: filePath, version } },
     )
   }
+  // Older lockfiles are migrated in memory (roadmap 5.2); an unregistered
+  // older version surfaces MIGRATION_MISSING instead of guessing.
+  const migrated = lockfileMigrations.apply(
+    version,
+    LOCKFILE_VERSION,
+    document as Record<string, unknown>,
+  )
 
-  const result = skillboxLockfileSchema.safeParse(document)
+  const result = skillboxLockfileSchema.safeParse(migrated.document)
   if (!result.success) {
     const issues = result.error.issues.map((issue) => ({
       path: issue.path.join('.'),

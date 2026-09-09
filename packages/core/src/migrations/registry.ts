@@ -1,79 +1,54 @@
 import { ErrorCode, SkillboxError } from '../errors.js'
-import type {
-  MigrationDefinition,
-  MigrationProgressEvent,
-  MigrationRunResult,
-  RunMigrationsOptions,
-} from './types.js'
+import type { Migration, MigrationOutcome } from './types.js'
 
-/** Ordered registry that executes every not-yet-checkpointed migration exactly once. */
-export class MigrationRegistry {
-  private readonly migrations: readonly MigrationDefinition[]
+/**
+ * Ordered migration registry: applies `from → from+1 → … → targetVersion`
+ * with no branching, so the outcome is deterministic and idempotent
+ * (re-running an already-migrated document is a no-op).
+ */
+export class MigrationRegistry<Document> {
+  constructor(private readonly migrations: readonly Migration<Document>[] = []) {}
 
-  constructor(migrations: readonly MigrationDefinition[]) {
-    const ids = new Set<string>()
-    for (const migration of migrations) {
-      if (migration.id.trim().length === 0) {
-        throw new SkillboxError(
-          ErrorCode.MIGRATION_INVALID,
-          'Migration identifiers cannot be empty',
-        )
-      }
-      if (ids.has(migration.id)) {
-        throw new SkillboxError(
-          ErrorCode.MIGRATION_INVALID,
-          `Migration identifier "${migration.id}" is duplicate`,
-        )
-      }
-      ids.add(migration.id)
-    }
-    this.migrations = [...migrations]
+  /** Human labels of every registered migration (for `skillbox migrate`). */
+  labels(): string[] {
+    return this.migrations.map((migration) => migration.label)
   }
 
-  list(): readonly MigrationDefinition[] {
-    return this.migrations
-  }
-
-  async run(options: RunMigrationsOptions): Promise<MigrationRunResult> {
-    const completed = new Set(await options.store.listCompleted(options.repositoryRoot))
+  /**
+   * Migrates `document` from `currentVersion` to `targetVersion`.
+   *
+   * Throws:
+   * - `MIGRATION_MISSING` when a version has no registered migration
+   * - `MIGRATION_FAILED` when a migration produces a non-consecutive version
+   */
+  apply(
+    currentVersion: number,
+    targetVersion: number,
+    document: Document,
+  ): MigrationOutcome<Document> {
+    let version = currentVersion
+    let current = document
     const applied: string[] = []
-    const skipped: string[] = []
-    const now = options.now ?? (() => new Date())
-
-    for (const migration of this.migrations) {
-      if (completed.has(migration.id)) {
-        skipped.push(migration.id)
-        continue
+    while (version < targetVersion) {
+      const next = this.migrations.find((migration) => migration.from === version)
+      if (next === undefined) {
+        throw new SkillboxError(
+          ErrorCode.MIGRATION_MISSING,
+          `No migration registered from version ${version} to ${version + 1}`,
+          { context: { from: version, to: targetVersion, registered: this.labels() } },
+        )
       }
-      this.publish(options, now, { phase: 'started', migrationId: migration.id })
-      try {
-        await migration.run({ repositoryRoot: options.repositoryRoot })
-        await options.store.markCompleted(migration.id, options.repositoryRoot)
-      } catch (error) {
-        this.publish(options, now, {
-          phase: 'failed',
-          migrationId: migration.id,
-          error: { message: error instanceof Error ? error.message : String(error) },
-        })
-        throw error
+      if (next.to <= version) {
+        throw new SkillboxError(
+          ErrorCode.MIGRATION_FAILED,
+          `Migration "${next.label}" must bump the version forward (${next.from} → ${next.to})`,
+          { context: { label: next.label, from: next.from, to: next.to } },
+        )
       }
-      applied.push(migration.id)
-      completed.add(migration.id)
-      this.publish(options, now, { phase: 'completed', migrationId: migration.id })
+      current = next.migrate(current)
+      applied.push(next.label)
+      version = next.to
     }
-    return { applied, skipped }
-  }
-
-  private publish(
-    options: RunMigrationsOptions,
-    now: () => Date,
-    event: Omit<MigrationProgressEvent, 'type' | 'repositoryRoot' | 'occurredAt'>,
-  ): void {
-    options.events?.emit({
-      type: 'migration',
-      repositoryRoot: options.repositoryRoot,
-      occurredAt: now().toISOString(),
-      ...event,
-    })
+    return { document: current, applied, changed: applied.length > 0 }
   }
 }

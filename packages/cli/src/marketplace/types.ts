@@ -43,12 +43,23 @@ export interface LocalNormalizedSource {
   path: string
 }
 
+/** Generic git remote (GitLab / Bitbucket / self-hosted) — mirrors core types. */
+export interface GitNormalizedSource {
+  type: 'git'
+  /** Clone URL (https / ssh / scp-style). */
+  url: string
+  /** Repo-relative skill directory inside the checkout. */
+  path?: string
+  /** Branch / tag / commit pin. */
+  ref?: string
+}
+
 /**
  * Canonical form of a skill source (SPEC §23) — mirrors agent 1's
  * `NormalizedSource` in `packages/core/src/registry/types.ts`.
  */
 export type NormalizedSource =
-  GithubNormalizedSource | SkillsShNormalizedSource | LocalNormalizedSource
+  GithubNormalizedSource | SkillsShNormalizedSource | GitNormalizedSource | LocalNormalizedSource
 
 /** One search hit from the aggregated registry (skills.sh + GitHub). */
 export interface RegistrySearchResult {
@@ -221,13 +232,10 @@ export interface InstallResult {
 }
 
 /**
- * CLI-side update request for `skillbox update <name>` (M16.2).
- *
- * TODO(marketplace, agent 2): satisfied at runtime by agent 2's `updateSkill`
- * export from `@skillbox/core/install` once it lands; until then the loader
- * adapter surfaces a "not available in this build yet" error. The core
- * transaction must preserve the existing agent links (MVP #136) and bump the
- * lockfile `revision` / `integrity`.
+ * CLI-side update request for `skillbox update <name>` (M16.2). Satisfied at
+ * runtime by `updateSkill` from `@skillbox/core/install`, which preserves the
+ * existing agent links (MVP #136) and bumps the lockfile `revision` /
+ * `integrity`.
  */
 export interface UpdateSkillInput {
   /** Skill alias recorded in the manifest/lockfile. */

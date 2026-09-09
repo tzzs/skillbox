@@ -59,6 +59,20 @@ export interface GitProvider {
   push(): Promise<void>
 }
 
+/**
+ * Auth-aware git transport used by the sync pipeline's pull/push steps.
+ *
+ * Production wiring routes these through Core's `RepositorySyncService`, which
+ * injects the Credential Bridge (`getGitTransportAuth()`) into every
+ * fetch/pull/push — so a private `skillbox-skills` repository syncs without
+ * relying on OS git credential helpers. The pull outcome carries conflicts so
+ * the pipeline keeps its typed `GIT_CONFLICT` errors.
+ */
+export interface SyncGitTransport {
+  pull(): Promise<GitPullOutcome>
+  push(): Promise<void>
+}
+
 export interface DeviceFlowStart {
   userCode: string
   verificationUri: string

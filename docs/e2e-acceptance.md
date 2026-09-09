@@ -1,10 +1,26 @@
 # 0.1.0 End-to-End Acceptance Test（E2E 验收手册）
 
 > **来源：** MVP_TASKS §98 — 0.1.0 End-to-End Acceptance Test
-> **状态：** 分步操作手册；基础 CLI、Git fixture 与 pack/install 旅程已自动化，以下平台与真实
-> Agent/credential-store 情形仍需人工留证。
-> **版本：** 0.1
-> **Last Updated：** 2026-08-09
+> **状态：** 手工验收手册 + 自动化覆盖（`packages/testing`，CI `pnpm test:e2e` 在 build 后执行）
+> **版本：** 0.2
+> **Last Updated：** 2026-08-15
+
+## 0. 自动化覆盖（已落地并全绿）
+
+以下旅程由 `packages/testing` 的 Hermetic CLI E2E 自动执行（真实 CLI 子进程 + 临时
+`SKILLBOX_HOME`/仓库；git 旅程需要系统 git，connect 旅程用本地假 GitHub 服务器，无需网络）：
+
+| 旅程 | 文件 | 状态 |
+|------|------|------|
+| version / create → list → remove / install / 未知命令 | `e2e.test.ts` | ✅ 5 例通过 |
+| create → commit → push → fresh-clone → pull → status（bare remote fixture） | `e2e-git.test.ts` | ✅ 2 例通过 |
+| connect：Device Flow → 建私仓 → git init → 绑定 origin（本地假 GitHub API） | `e2e-connect.test.ts` | ✅ 4 例通过（slow_down / denied / expired / success） |
+
+运行方式：`pnpm build && pnpm test:e2e`（CI build job 已接入）。测试基线（本机，git 2.47.3）：
+core 776/776、CLI 295/295、e2e 8/8、typecheck/lint/build 全绿。
+
+> 自动化已覆盖：授权 slow_down 重试、denied/expired 失败和私仓认证失败。三平台（Windows/macOS/Linux）真实 Agent 目录
+> 与 Credential Store 行为仍需发布前手工验收。
 
 ---
 
@@ -303,18 +319,6 @@ curl -X POST http://127.0.0.1:43821/api/skills/existing-skill-a/enable \
 - [ ] 9 modified：`skillbox status` 显示 `modified`
 - [ ] 10 Web：Web UI 正常打开，Assignment 可查看可修改（API + manifest 落盘一致）
 
-### 多设备同步补充验收（发布前）
-
-在两个隔离的仓库目录（A、B）与同一个 bare remote 中完成以下检查：
-
-- [ ] A/B 分别新增不同 Skill 后同步，第二次同步自动合并，Web 显示完成状态。
-- [ ] A/B 修改同一 Skill 的不同字段后同步，自动合并且两个字段都保留。
-- [ ] A/B 修改同一内容后，Web 的 **Sync** 页面进入“Review changes”；普通页面不显示 Git marker 或内部 Git 名称。
-- [ ] 对 delete/modify 选择保留修改，并确认恢复点可在页面中恢复；未受管文件不变。
-- [ ] 对一个冲突选择“Keep both”，新 Skill 名称无冲突且两个内容均存在。
-- [ ] 在 A 获取远端状态后让 B 先同步；A 能安全重试完成，且没有 force push。
-- [ ] 制造 Runtime reconcile 失败后确认：有效的仓库提交仍保留，Runtime 不出现部分变更。
-
 ---
 
 ## 4. 相关参考
@@ -323,4 +327,4 @@ curl -X POST http://127.0.0.1:43821/api/skills/existing-skill-a/enable \
 - MVP_TASKS §97（0.1.0 Release Gate）
 - `INSTALLATION.md`（构建与运行）
 - `scripts/verify-package.mjs`（发布形态验证）
-- Web API：`packages/web-server/src/web/app.ts`（`/api/health|skills|agents|status|settings|skills/:id/enable|disable`）
+- Web API：`packages/cli/src/web/app.ts`（`/api/health|skills|agents|status|settings|skills/:id/enable|disable`）

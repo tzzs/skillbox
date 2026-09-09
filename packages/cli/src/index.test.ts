@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { ConflictSession, RepositorySync } from '@skillbox/core'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { acquireRuntimeLock, FleetService, SshClient, type FleetHostConfig } from '@skillbox/core'
+import type { RepositorySync } from '@skillbox/core'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
 /**
@@ -51,7 +55,7 @@ describe('cli', () => {
     const exit = await main(['list', '--json'], io)
     expect(exit).toBe(0)
     expect(io.out()).toContain('"skills"')
-  }, 15_000)
+  })
 
   it('refuses the interactive mode without a TTY instead of crashing', async () => {
     const io = capture()
@@ -96,20 +100,7 @@ describe('cli', () => {
       },
       pull: async () => undefined,
       push: async () => undefined,
-      sync: async () => ({
-        kind: 'completed' as const,
-        summary: { automaticallyMerged: 0, retriedPushes: 0 },
-      }),
-      listConflicts: async () => [],
-      getConflict: async () => {
-        throw new Error('not used')
-      },
-      resolveConflicts: async () => ({
-        kind: 'blocked' as const,
-        reason: 'recovery-required' as const,
-        recovery: { message: 'not used', retryable: true },
-      }),
-      restoreSnapshot: async () => undefined,
+      sync: async () => undefined,
     } satisfies RepositorySync
 
     expect(await main(['connect'], { ...io, repositorySync })).toBe(0)
@@ -118,69 +109,260 @@ describe('cli', () => {
     expect(disconnects).toBe(1)
   })
 
-  it('lists and resolves a durable conflict session across CLI invocations', async () => {
-    const io = capture()
-    const session: ConflictSession = {
-      version: 1,
-      id: 'session-1',
-      repositoryId: 'repo-1',
-      baseRevision: 'base',
-      localRevision: 'local',
-      remoteRevision: 'remote',
-      snapshotId: 'snapshot-1',
-      createdAt: '2026-08-13T00:00:00.000Z',
-      expiresAt: '2026-08-14T00:00:00.000Z',
-      conflicts: [
-        {
-          id: 'conflict-1',
-          type: 'content',
-          skillAlias: 'example',
-          path: 'SKILL.md',
-          allowedResolutions: ['local', 'remote', 'keep-both'],
-          destructive: false,
-        },
-      ],
-    }
-    let resolutions: Record<string, string> | undefined
-    const repositorySync = {
-      connect: async () => {
-        throw new Error('not used')
-      },
-      disconnect: async () => undefined,
-      status: async () => {
-        throw new Error('not used')
-      },
-      pull: async () => undefined,
-      push: async () => undefined,
-      sync: async () => ({
-        kind: 'completed' as const,
-        summary: { automaticallyMerged: 0, retriedPushes: 0 },
-      }),
-      listConflicts: async () => [session],
-      getConflict: async (id: string) => {
-        expect(id).toBe(session.id)
-        return session
-      },
-      resolveConflicts: async (input: { resolutions: Record<string, string> }) => {
-        resolutions = input.resolutions
-        return {
-          kind: 'completed' as const,
-          summary: { automaticallyMerged: 0, retriedPushes: 0 },
-        }
-      },
-      restoreSnapshot: async () => undefined,
-    } as unknown as RepositorySync
+  it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-migrate-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(path.join(home, 'state'), { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      await fs.writeFile(path.join(home, 'config.json'), JSON.stringify({ linkStrategy: 'copy' }))
+      await fs.writeFile(path.join(repo, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
+      await fs.writeFile(path.join(repo, 'skillbox.lock'), 'lockfileVersion: 1\nskills: {}\n')
 
-    expect(await main(['conflicts'], { ...io, repositorySync })).toBe(0)
-    expect(io.out()).toContain('example')
-    expect(io.out()).toContain('conflicts resolve session-1')
-    expect(
-      await main(['conflicts', 'resolve', session.id, '--conflict=local'], {
+      const io = capture()
+      const exit = await main(['migrate'], { ...io, homeRoot: home, repositoryRoot: repo })
+
+      expect(exit).toBe(0)
+      expect(io.out()).toContain('config v0 → v1 (add version field)')
+      expect(io.out()).toContain('up to date')
+      const persisted = JSON.parse(await fs.readFile(path.join(home, 'config.json'), 'utf8')) as {
+        version?: number
+      }
+      expect(persisted.version).toBe(1)
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a mutation while another process holds the runtime lock', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-lock-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const handle = await acquireRuntimeLock('mutation', { homeRoot: home })
+      const io = capture()
+      const exit = await main(['create', 'hello'], {
         ...io,
-        repositorySync,
-      }),
-    ).toBe(0)
-    expect(resolutions).toEqual({ 'conflict-1': 'local' })
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(ExitCode.GENERIC)
+      expect(io.err()).toContain('Another skillbox process')
+      await handle.release()
+
+      // After release the mutation succeeds.
+      const second = capture()
+      const retry = await main(['create', 'hello'], {
+        ...second,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(retry).toBe(0)
+      expect(second.out()).toContain('Created skill "hello"')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('lists backups and rolls back a removed skill via `skillbox rollback <id>`', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-rollback-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+
+      expect(await main(['create', 'hello'], deps(capture()))).toBe(0)
+      expect(await main(['remove', 'hello', '--delete-files'], deps(capture()))).toBe(0)
+      await expect(fs.stat(path.join(repo, 'skills', 'hello'))).rejects.toThrow()
+
+      const listIo = capture()
+      expect(await main(['rollback', '--json'], deps(listIo))).toBe(0)
+      const body = JSON.parse(listIo.out()) as {
+        backups: Array<{ id: string; operation: string; alias: string; kind: string }>
+      }
+      expect(
+        body.backups.some((backup) => backup.operation === 'remove' && backup.alias === 'hello'),
+      ).toBe(true)
+      const repoDir = body.backups.find((backup) => backup.kind === 'repo-dir')
+      expect(repoDir).toBeDefined()
+
+      const rollbackIo = capture()
+      expect(await main(['rollback', repoDir?.id ?? ''], deps(rollbackIo))).toBe(0)
+      expect(rollbackIo.out()).toContain('Rolled back "hello"')
+      await expect(
+        fs.readFile(path.join(repo, 'skills', 'hello', 'SKILL.md'), 'utf8'),
+      ).resolves.toContain('# hello')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('writes structured mutation logs to the home log file', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-log-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const io = capture()
+      const exit = await main(['create', 'hello'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(0)
+
+      const log = await fs.readFile(path.join(home, 'logs', 'skillbox.log'), 'utf8')
+      expect(log).toContain('mutation:create:start')
+      expect(log).toContain('mutation:create:done')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('runs doctor, writes a redacted debug bundle and exits non-zero on problems', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-doctor-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      // A repository without a manifest fails the manifest probe: the command
+      // still prints the report and the bundle, but exits non-zero.
+      const io = capture()
+      const exit = await main(['doctor', '--json'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(exit).toBe(1)
+      const report = JSON.parse(io.out()) as { probes: Array<{ name: string; ok: boolean }> }
+      const manifestProbe = report.probes.find((probe) => probe.name === 'manifest')
+      expect(manifestProbe?.ok).toBe(false)
+
+      const bundlePath = path.join(base, 'bundle.json')
+      const bundleIo = capture()
+      const bundleExit = await main(['doctor', '--bundle', bundlePath], {
+        ...bundleIo,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      expect(bundleExit).toBe(1)
+      const bundle = JSON.parse(await fs.readFile(bundlePath, 'utf8')) as {
+        leakCheck: { findings: unknown[] }
+      }
+      expect(bundle.leakCheck.findings).toEqual([])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('runs `fleet list`/`fleet install` through FleetService and exits non-zero on a host failure', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(path.join(repo, '.skillbox'), { recursive: true })
+      await fs.writeFile(
+        path.join(repo, '.skillbox', 'fleet.yaml'),
+        'version: 1\nhosts:\n  - name: web-1\n    host: 10.0.0.11\n  - name: web-2\n    host: 10.0.0.12\n',
+        'utf8',
+      )
+
+      const ssh = new SshClient({
+        spawn: async (args) => {
+          if (args[0] === '-V') {
+            return { exitCode: 0, stdout: '', stderr: '' }
+          }
+          const destination = args.at(-2)
+          return destination === '10.0.0.11'
+            ? { exitCode: 0, stdout: 'ok\n', stderr: '' }
+            : { exitCode: 1, stdout: '', stderr: 'boom\n' }
+        },
+      })
+      const fleet = new FleetService({
+        configPath: path.join(repo, '.skillbox', 'fleet.yaml'),
+        ssh,
+      })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+
+      const listIo = capture()
+      expect(await main(['fleet', 'list', '--json'], deps(listIo))).toBe(0)
+      const listed = JSON.parse(listIo.out()) as { hosts: FleetHostConfig[] }
+      expect(listed.hosts.map((host) => host.name)).toEqual(['web-1', 'web-2'])
+
+      const installIo = capture()
+      const exit = await main(['fleet', 'install', '--json'], deps(installIo))
+      expect(exit).toBe(1)
+      const result = JSON.parse(installIo.out()) as {
+        results: Array<{ host: string; ok: boolean }>
+      }
+      expect(result.results.find((entry) => entry.host === 'web-1')?.ok).toBe(true)
+      expect(result.results.find((entry) => entry.host === 'web-2')?.ok).toBe(false)
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('selects fleet hosts ad-hoc via --ssh without needing fleet.yaml', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-adhoc-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const ssh = new SshClient({
+        spawn: async (args) =>
+          args[0] === '-V'
+            ? { exitCode: 0, stdout: '', stderr: '' }
+            : { exitCode: 0, stdout: 'status ok\n', stderr: '' },
+      })
+      const fleet = new FleetService({
+        configPath: path.join(repo, '.skillbox', 'fleet.yaml'),
+        ssh,
+      })
+
+      const io = capture()
+      const exit = await main(['fleet', 'status', '--ssh', 'deploy@10.0.0.9', '--json'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+      expect(exit).toBe(0)
+      const result = JSON.parse(io.out()) as { results: Array<{ host: string; ok: boolean }> }
+      expect(result.results).toEqual([
+        {
+          host: 'deploy@10.0.0.9',
+          ok: true,
+          exitCode: 0,
+          stdout: 'status ok\n',
+          stderr: '',
+          durationMs: expect.any(Number),
+        },
+      ])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
   })
 })
 

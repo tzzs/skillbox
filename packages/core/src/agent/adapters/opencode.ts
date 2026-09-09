@@ -1,8 +1,8 @@
 import type { AgentCapabilities } from '../../domain/agent.js'
 import { CliAgentAdapter, type CliAgentAdapterConfig } from '../adapter.js'
 
-export const OPENCODE_EXECUTABLE_ENV = 'OPENCODE_BIN'
-export const OPENCODE_CONFIG_DIR_ENV = 'OPENCODE_CONFIG_DIR'
+export const OPENCODE_BIN = 'OPENCODE_BIN'
+export const OPENCODE_CONFIG_DIR = 'OPENCODE_CONFIG_DIR'
 export const OPENCODE_DEFAULT_SKILLS_SUBDIR = '.config/opencode/skills'
 
 const opencodeCapabilities: AgentCapabilities = {
@@ -19,15 +19,10 @@ export type OpenCodeAdapterOptions = Omit<
 >
 
 /**
- * OpenCode adapter. OpenCode discovers global skills from
- * `~/.config/opencode/skills` and accepts `OPENCODE_CONFIG_DIR` as its
- * configuration-directory override. Project-local `.opencode/skills` are
- * discovered relative to an OpenCode working directory, which this
- * user-global adapter intentionally does not manage.
- *
- * `OPENCODE_BIN` is a Skillbox test/deployment seam for selecting the CLI
- * executable; it is separate from OpenCode's own configuration environment.
- * See https://opencode.ai/docs/skills and https://opencode.ai/docs/config.
+ * OpenCode adapter (roadmap 6.3). Detects the OpenCode CLI through its
+ * `opencode` executable or `~/.config/opencode/skills` (override via
+ * `OPENCODE_CONFIG_DIR`), scans the installed skills and links/unlinks them. All
+ * paths derive from `os.homedir()` + `node:path` with environment overrides.
  */
 export class OpenCodeAdapter extends CliAgentAdapter {
   readonly id = 'opencode'
@@ -38,8 +33,8 @@ export class OpenCodeAdapter extends CliAgentAdapter {
     super({
       ...options,
       executableName: 'opencode',
-      executableEnv: OPENCODE_EXECUTABLE_ENV,
-      configDirEnv: OPENCODE_CONFIG_DIR_ENV,
+      executableEnv: OPENCODE_BIN,
+      configDirEnv: OPENCODE_CONFIG_DIR,
       defaultSkillsSubdir: OPENCODE_DEFAULT_SKILLS_SUBDIR,
     })
   }

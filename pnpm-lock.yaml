@@ -76,10 +76,10 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0
       '@skillbox/core':
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../core
       '@skillbox/shared':
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../shared
       '@skillbox/web-server':
         specifier: workspace:*

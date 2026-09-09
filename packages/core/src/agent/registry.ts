@@ -8,18 +8,10 @@ import type { AgentAdapter } from './adapter.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { CursorAdapter } from './adapters/cursor.js'
-import { CopilotAdapter } from './adapters/copilot.js'
 import { GeminiAdapter } from './adapters/gemini.js'
 import { OpenCodeAdapter } from './adapters/opencode.js'
 import { WindsurfAdapter } from './adapters/windsurf.js'
-import type { RuntimeConfig } from '../runtime/config.js'
-
-type RuntimeAgentOverride = NonNullable<RuntimeConfig['agents']>[string]
-
-export interface DefaultAgentRegistryOptions {
-  /** Machine-local agent directory overrides from RuntimeConfig. */
-  overrides?: Record<string, RuntimeAgentOverride>
-}
+import { CopilotAdapter } from './adapters/copilot.js'
 
 /** Detection status of one agent, enriched with its installed skills. */
 export interface AgentDetectionSummary {
@@ -122,25 +114,13 @@ export class AgentRegistry {
 }
 
 /** Registry with the first-party adapters pre-registered. */
-export function createDefaultAgentRegistry(
-  options: DefaultAgentRegistryOptions = {},
-): AgentRegistry {
-  const adapterOptions = (id: string) => {
-    const override = options.overrides?.[id]
-    if (override === undefined) return {}
-    return {
-      ...(override.path === undefined ? {} : { skillsDir: override.path }),
-      ...(override.skillDirectories === undefined
-        ? {}
-        : { skillDirectories: override.skillDirectories }),
-    }
-  }
+export function createDefaultAgentRegistry(): AgentRegistry {
   return new AgentRegistry()
-    .register(new ClaudeAdapter(adapterOptions('claude')))
-    .register(new CodexAdapter(adapterOptions('codex')))
-    .register(new CursorAdapter(adapterOptions('cursor')))
-    .register(new CopilotAdapter(adapterOptions('copilot')))
-    .register(new GeminiAdapter(adapterOptions('gemini')))
-    .register(new OpenCodeAdapter(adapterOptions('opencode')))
-    .register(new WindsurfAdapter(adapterOptions('windsurf')))
+    .register(new ClaudeAdapter())
+    .register(new CodexAdapter())
+    .register(new CursorAdapter())
+    .register(new GeminiAdapter())
+    .register(new OpenCodeAdapter())
+    .register(new WindsurfAdapter())
+    .register(new CopilotAdapter())
 }

@@ -3,6 +3,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   ErrorCode,
+  ManagedCache,
+  buildSkillboxHomeLayout,
+  fromManifestSource,
   isSkillboxError,
   readLockfile,
   readManifest,
@@ -11,7 +14,6 @@ import {
   type ManifestSkillSource,
   type SkillboxErrorCode,
   type SkillboxLockfile,
-  type SkillSourceResolver,
 } from '@skillbox/core'
 import { isCancelResult, type InteractivePrompt } from '../interactive/prompts.js'
 import { formatSource, progressStepLabel, renderSecurityReview, shortRevision } from './format.js'
@@ -55,8 +57,6 @@ export interface MarketplaceServiceOptions {
   /** True when the process is attached to a real interactive terminal. */
   isInteractive: boolean
   out: (chunk: string) => void
-  /** Canonical source boundary for source types beyond legacy registry providers. */
-  sourceResolver?: SkillSourceResolver
 }
 
 /** Wraps non-Skillbox failures with a typed code while passing errors through. */
@@ -71,32 +71,13 @@ function asSkillboxError(error: unknown, code: SkillboxErrorCode, fallback: stri
 /**
  * Maps a lockfile/manifest source (SPEC §23, `github|git|registry|local`)
  * onto the registry framework's `NormalizedSource` so `outdated` / `update`
- * can ask the providers for the latest revision.
- *
- * Newer production entry points provide a canonical `SkillSourceResolver`,
- * which handles Git and registry sources directly. This mapping remains for
- * compatibility with older injected registry clients.
+ * can ask the providers for the latest revision. Delegates to Core's
+ * canonical `fromManifestSource` (`packages/core/src/registry/source.ts`);
+ * returns `undefined` for source types without a registry representation yet
+ * (non-skills.sh registries).
  */
 export function normalizeLockedSource(source: ManifestSkillSource): NormalizedSource | undefined {
-  switch (source.type) {
-    case 'github': {
-      const normalized: NormalizedSource = {
-        type: 'github',
-        repo: source.repo,
-      }
-      if (source.path !== undefined) {
-        normalized.path = source.path
-      }
-      if (source.ref !== undefined) {
-        normalized.ref = source.ref
-      }
-      return normalized
-    }
-    case 'local':
-      return { type: 'local', path: source.path }
-    default:
-      return undefined
-  }
+  return fromManifestSource(source) ?? undefined
 }
 
 export class MarketplaceService {
@@ -122,10 +103,10 @@ export class MarketplaceService {
    * the target agent → install transaction → summary.
    *
    * The security review runs BEFORE anything is written: the pinned revision
-   * is downloaded into a temp dir, scanned with agent 2's static scanner, and
-   * HIGH-risk skills are gated on explicit confirmation (`--yes` or an
-   * interactive prompt). The temp download is discarded after the scan; the
-   * install transaction downloads again through the managed cache (M15.3).
+   * is read from the managed cache when available, otherwise downloaded into
+   * a temp dir and scanned. HIGH-risk skills are gated on explicit confirmation
+   * (`--yes` or an interactive prompt); cache misses are populated by the
+   * install transaction (M15.3).
    */
   async add(input: {
     source: string
@@ -238,16 +219,17 @@ export class MarketplaceService {
         continue
       }
       entry.installed = locked.revision
+      const normalized = normalizeLockedSource(locked.source)
+      if (normalized === undefined) {
+        entry.status = 'unsupported'
+        entries.push(entry)
+        continue
+      }
       try {
-        const latest = await this.latestRevision(locked.source)
+        const latest = await this.options.registryClient.getLatestRevision(normalized)
         entry.latest = latest
         entry.status = latest === locked.revision ? 'up-to-date' : 'outdated'
-      } catch (error) {
-        if (isSkillboxError(error) && error.code === ErrorCode.SOURCE_UNSUPPORTED) {
-          entry.status = 'unsupported'
-          entries.push(entry)
-          continue
-        }
+      } catch {
         // A per-skill failure only degrades that row (registry hiccup on one
         // repo must not abort the whole listing).
         entry.status = 'unknown'
@@ -346,6 +328,12 @@ export class MarketplaceService {
     source: NormalizedSource,
     revision: string,
   ): Promise<SecurityScanResult> {
+    const cache = new ManagedCache(buildSkillboxHomeLayout(this.options.homeRoot).cache)
+    const cached = await cache.get(source, revision).catch(() => null)
+    if (cached !== null) {
+      return await this.options.scanner.scan(cached.path)
+    }
+
     let provider: RegistryProvider
     try {
       provider = await this.options.registryClient.providerFor(source)
@@ -513,33 +501,5 @@ export class MarketplaceService {
     } catch {
       return []
     }
-  }
-
-  /**
-   * Uses canonical source adapters when supplied; otherwise retains the
-   * existing registry-only compatibility path.
-   */
-  private async latestRevision(source: ManifestSkillSource): Promise<string> {
-    if (this.options.sourceResolver !== undefined) {
-      const canonical = this.options.sourceResolver.fromManifest(source)
-      const adapter = this.options.sourceResolver.adapterFor(canonical, 'latest')
-      if (adapter.latest === undefined) {
-        throw new SkillboxError(
-          ErrorCode.SOURCE_UNSUPPORTED,
-          `Skill source type "${canonical.type}" cannot determine its latest revision.`,
-          { context: { source: canonical } },
-        )
-      }
-      return adapter.latest(canonical)
-    }
-    const normalized = normalizeLockedSource(source)
-    if (normalized === undefined) {
-      throw new SkillboxError(
-        ErrorCode.SOURCE_UNSUPPORTED,
-        `Skill source type "${source.type}" has no legacy registry representation.`,
-        { context: { source } },
-      )
-    }
-    return this.options.registryClient.getLatestRevision(normalized)
   }
 }

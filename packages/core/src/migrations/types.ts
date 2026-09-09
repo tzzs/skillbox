@@ -1,43 +1,35 @@
-import type { EventPublisher } from '../events/types.js'
+/**
+ * Schema migration framework (roadmap 5.2): deterministic, idempotent,
+ * version-by-version document migrations for the Manifest, Lockfile and
+ * Runtime Config.
+ *
+ * A `Migration` rewrites one document from `from` to `to`; the registry
+ * applies them in order until the document reaches the current version.
+ * Running an up-to-date document is a no-op (`changed: false`), and a
+ * version with no registered migration fails with `MIGRATION_MISSING`
+ * instead of guessing.
+ */
 
-/** Durable checkpoint boundary for migrations. Implemented by a repository or home-state store. */
-export interface MigrationStore {
-  listCompleted(repositoryRoot: string): Promise<readonly string[]>
-  markCompleted(id: string, repositoryRoot: string): Promise<void>
+/** One version-bump of a persisted document. */
+export interface Migration<Document> {
+  /** Version this migration reads. */
+  from: number
+  /** Version this migration produces. */
+  to: number
+  /** Human label used in `skillbox migrate` output. */
+  label: string
+  migrate(document: Document): Document
 }
 
-/** Context available to each migration. It intentionally exposes no filesystem implementation details. */
-export interface MigrationContext {
-  repositoryRoot: string
+/** Result of running a migration registry over a document. */
+export interface MigrationOutcome<Document> {
+  document: Document
+  /** Labels of the migrations applied, in order. */
+  applied: string[]
+  /** True when at least one migration ran. */
+  changed: boolean
 }
 
-/** One idempotent, versioned upgrade step. IDs remain stable once released. */
-export interface MigrationDefinition {
-  id: string
-  description?: string
-  run(context: MigrationContext): Promise<void>
-}
-
-export type MigrationProgressPhase = 'started' | 'completed' | 'failed'
-
-/** Serializable lifecycle event consumable by CLI, web, TUI, and business logging sinks. */
-export interface MigrationProgressEvent {
-  type: 'migration'
-  phase: MigrationProgressPhase
-  migrationId: string
-  repositoryRoot: string
-  occurredAt: string
-  error?: { message: string }
-}
-
-export interface RunMigrationsOptions {
-  repositoryRoot: string
-  store: MigrationStore
-  events?: EventPublisher<MigrationProgressEvent>
-  now?: () => Date
-}
-
-export interface MigrationRunResult {
-  applied: readonly string[]
-  skipped: readonly string[]
-}
+export const CURRENT_MANIFEST_VERSION = 1
+export const CURRENT_LOCKFILE_VERSION = 1
+export const CURRENT_CONFIG_VERSION = 1

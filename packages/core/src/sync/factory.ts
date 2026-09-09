@@ -20,12 +20,28 @@ export interface CreateRepositorySyncOptions {
   clientId?: string
   credentialStore?: CredentialStore
   onEvent?: (event: RepositorySyncEvent) => void
+  /** GitHub API base (defaults to `SKILLBOX_GITHUB_API_BASE` / api.github.com). */
+  apiBaseUrl?: string
+  /** GitHub login base for the device flow (defaults to `SKILLBOX_GITHUB_LOGIN_BASE` / github.com). */
+  loginBaseUrl?: string
 }
 
 /** Constructs the production repository-sync dependency graph. */
 export function createRepositorySync(options: CreateRepositorySyncOptions): RepositorySyncService {
   const clientId = options.clientId ?? process.env.SKILLBOX_GITHUB_CLIENT_ID ?? ''
-  const api = new GitHubApi({ clientId })
+  const api = new GitHubApi({
+    clientId,
+    ...(options.apiBaseUrl !== undefined
+      ? { apiBaseUrl: options.apiBaseUrl }
+      : process.env.SKILLBOX_GITHUB_API_BASE !== undefined
+        ? { apiBaseUrl: process.env.SKILLBOX_GITHUB_API_BASE }
+        : {}),
+    ...(options.loginBaseUrl !== undefined
+      ? { loginBaseUrl: options.loginBaseUrl }
+      : process.env.SKILLBOX_GITHUB_LOGIN_BASE !== undefined
+        ? { loginBaseUrl: process.env.SKILLBOX_GITHUB_LOGIN_BASE }
+        : {}),
+  })
   const credentialStore =
     options.credentialStore ??
     createCredentialStore({ secretsDir: path.join(options.homeRoot, 'state', 'secrets') })

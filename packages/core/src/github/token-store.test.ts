@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MemoryCredentialStore } from './credential-store.js'
+import { MemoryCredentialStore, type CredentialStore } from './credential-store.js'
 import { GitHubError, GitHubErrorCode } from './errors.js'
 import { TokenStore, computeAuthorizationState } from './token-store.js'
 import type { GitHubApi } from './api.js'
@@ -66,6 +66,23 @@ describe('TokenStore', () => {
     expect(await tokens.read()).toBeNull()
     await memory.set({ service: 'skillbox-github', account: 'oauth-tokens' }, '{"foo":"bar"}')
     expect(await tokens.read()).toBeNull()
+  })
+
+  it('treats an unavailable credential store as not-connected (headless fallback)', async () => {
+    const unavailable: CredentialStore = {
+      async get() {
+        throw new GitHubError(
+          GitHubErrorCode.CREDENTIAL_STORE_UNAVAILABLE,
+          'Linux Secret Service unavailable during "lookup"',
+          { reason: 'store', recoverable: true },
+        )
+      },
+      async set() {},
+      async delete() {},
+    }
+    const tokens = new TokenStore({ store: unavailable })
+    expect(await tokens.read()).toBeNull()
+    expect(await tokens.state()).toBe('not-connected')
   })
 
   it('derives state from the stored record via the injected clock', async () => {

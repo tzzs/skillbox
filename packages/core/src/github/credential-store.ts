@@ -4,6 +4,8 @@ import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import { GitHubError, GitHubErrorCode } from './errors.js'
 import { scrubText } from '../logging/redact.js'
+import { atomicWriteFile } from '../fs/atomic-write.js'
+import { FilesystemService } from '../fs/filesystem-service.js'
 
 /**
  * OS Credential Store abstraction (SPEC §124/§125.1, ARCHITECTURE §15.3).
@@ -86,6 +88,54 @@ export class MemoryCredentialStore implements CredentialStore {
 
   async delete(key: CredentialKey): Promise<void> {
     this.values.delete(compoundKey(key))
+  }
+}
+
+/**
+ * Plaintext file credential store (opt-in: `memory: false` + `file: true`, or
+ * `SKILLBOX_CREDENTIAL_STORE=file`). Values are stored as JSON blobs under
+ * `secretsDir/<service>.<account>.json`.
+ *
+ * Intended for hermetic E2E journeys (cross-process token persistence on
+ * headless CI) and embedded deployments without an OS keychain. It is NOT
+ * encrypted at rest and must never be used where the OS store is available —
+ * `skillbox doctor` surfaces which store is active.
+ */
+export class FileCredentialStore implements CredentialStore {
+  private readonly filesystem: FilesystemService
+
+  constructor(
+    private readonly secretsDir: string,
+    filesystem?: FilesystemService,
+  ) {
+    this.filesystem = filesystem ?? new FilesystemService()
+  }
+
+  private fileFor(key: CredentialKey): string {
+    return path.join(this.secretsDir, `${slug(key.service)}.${slug(key.account)}.json`)
+  }
+
+  async get(key: CredentialKey): Promise<string | null> {
+    const file = this.fileFor(key)
+    try {
+      const parsed: unknown = JSON.parse(await this.filesystem.readFile(file))
+      return typeof parsed === 'string' ? parsed : null
+    } catch {
+      return null
+    }
+  }
+
+  async set(key: CredentialKey, value: string): Promise<void> {
+    const file = this.fileFor(key)
+    await this.filesystem.mkdir(path.dirname(file))
+    await atomicWriteFile(file, JSON.stringify(value))
+  }
+
+  async delete(key: CredentialKey): Promise<void> {
+    const file = this.fileFor(key)
+    if (await this.filesystem.exists(file)) {
+      await this.filesystem.remove(file)
+    }
   }
 }
 
@@ -302,15 +352,35 @@ export class LinuxSecretServiceCredentialStore implements CredentialStore {
 
 export interface CredentialStoreFactoryOptions {
   runner?: CommandRunner
-  /** Directory for the Windows DPAPI blob store. */
+  /** Directory for the Windows DPAPI blob store (and the file store). */
   secretsDir?: string
   platform?: NodeJS.Platform
+  /** Force the in-memory store (hermetic E2E seam). */
+  memory?: boolean
+  /** Force the plaintext file store (headless/embedded + cross-process E2E). */
+  file?: boolean
 }
 
-/** Picks the platform-native CredentialStore (falls back to the in-memory one). */
+/**
+ * Picks the platform-native CredentialStore (falls back to the in-memory one).
+ *
+ * Opt-in overrides (documented test/embedded seams):
+ * - `memory: true` or `SKILLBOX_CREDENTIAL_STORE=memory` → in-memory store
+ *   (tokens are lost when the process exits)
+ * - `file: true` or `SKILLBOX_CREDENTIAL_STORE=file` → plaintext file store
+ *   under `secretsDir` (tokens persist across processes; NOT encrypted at
+ *   rest — never use where the OS store is available)
+ */
 export function createCredentialStore(
   options: CredentialStoreFactoryOptions = {},
 ): CredentialStore {
+  const storeEnv = process.env.SKILLBOX_CREDENTIAL_STORE
+  if (options.memory === true || storeEnv === 'memory') {
+    return new MemoryCredentialStore()
+  }
+  if (options.file === true || storeEnv === 'file') {
+    return new FileCredentialStore(options.secretsDir ?? defaultWindowsSecretsDirPath())
+  }
   const platform = options.platform ?? process.platform
   switch (platform) {
     case 'win32': {

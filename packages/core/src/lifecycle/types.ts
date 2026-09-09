@@ -1,7 +1,7 @@
 import type { FilesystemService } from '../fs/filesystem-service.js'
 import type { ManifestSkillSource } from '../manifest/schema.js'
-import type { OperationRuntime } from '../operations/runtime.js'
-import type { SkillSourceResolver } from '../sources/types.js'
+import type { AgentRegistry } from '../agent/index.js'
+import type { RegistryProvider } from '../registry/types.js'
 
 /** Shared options for every lifecycle transaction (fork / vendor). */
 export interface LifecycleOptions {
@@ -13,36 +13,10 @@ export interface LifecycleOptions {
   /** Skillbox home root (defaults to `SKILLBOX_HOME` / `~/.skillbox`). */
   homeRoot?: string
   filesystem?: FilesystemService
-  /**
-   * Shared atomic mutation boundary. When omitted, the lifecycle operation
-   * creates one scoped to `repositoryRoot` and `homeRoot`.
-   */
-  operationRuntime?: OperationRuntime
 }
 
 /** Options for a Fork transaction (same shape as the base lifecycle options). */
 export type ForkSkillOptions = LifecycleOptions
-
-/** Options for restoring a Managed runtime from its pinned cache entry. */
-export interface RestoreManagedSkillOptions extends LifecycleOptions {
-  /**
-   * Source resolver used only when the disposable managed cache has no entry
-   * for the revision already pinned in `skillbox.lock`. Restore never asks it
-   * for a latest revision.
-   */
-  sourceResolver?: SkillSourceResolver
-}
-
-/** Outcome of restoring a Managed runtime (M17.3). */
-export interface RestoreManagedSkillResult {
-  alias: string
-  /** Number of payload files replaced; zero when it was already pristine. */
-  filesRestored: number
-  /** The locked canonical integrity verified after activation. */
-  integrity: string
-  /** Absolute managed-library path that was restored. */
-  materializedPath: string
-}
 
 /** Outcome of a completed Fork transaction (M17.1). */
 export interface ForkSkillResult {
@@ -99,5 +73,41 @@ export interface VendorSkillResult {
   /** Absolute path of the removed Base Snapshot (only when removed). */
   removedBaseSnapshot?: string
   /** Agents the skill stays enabled for (unchanged by the vendor). */
+  agents: string[]
+}
+
+/** Options for a Restore Upstream transaction (M17.3 "[Restore]"). */
+export interface RestoreManagedSkillOptions extends LifecycleOptions {
+  /**
+   * Registry provider that re-downloads the pinned revision. Resolved through
+   * the default registry (`resolveProvider(source.type)`) when omitted.
+   */
+  provider?: RegistryProvider
+  /** Agent registry used to refresh the agent links. Default: first-party adapters. */
+  agentRegistry?: AgentRegistry
+}
+
+/** Outcome of a completed Restore Upstream transaction (M17.3). */
+export interface RestoreManagedSkillResult {
+  alias: string
+  /** Restore keeps the skill managed; only the runtime copy is replaced. */
+  mode: 'managed'
+  /** Number of files in the restored runtime (the lockfile-integrity content). */
+  filesRestored: number
+  /** Canonical integrity (`sha256:<hex>`) of the restored content. */
+  integrity: string
+  /** Pinned revision the runtime was restored to (the lockfile revision). */
+  revision: string
+  /** True when the runtime already matched the lockfile and nothing changed. */
+  unchanged: boolean
+  /**
+   * Absolute path of the recovery snapshot of the pre-restore (modified)
+   * runtime, kept under `~/.skillbox/state/backups/restore/`. Only set when
+   * the runtime copy existed and was replaced.
+   */
+  backupPath?: string
+  /** Absolute path of the restored managed runtime copy. */
+  materializedPath: string
+  /** Agents whose links were verified/refreshed. */
   agents: string[]
 }

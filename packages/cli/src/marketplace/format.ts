@@ -124,6 +124,12 @@ export function formatSource(source: NormalizedSource): string {
       return `github:${source.repo}${source.path !== undefined ? `@${source.path}` : ''}`
     case 'skills-sh':
       return source.package
+    case 'git': {
+      let value = `git:${source.url}`
+      if (source.path !== undefined) value += `@${source.path}`
+      if (source.ref !== undefined) value += `#${source.ref}`
+      return value
+    }
     case 'local':
       return source.path
   }

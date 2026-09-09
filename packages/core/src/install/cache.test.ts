@@ -37,7 +37,7 @@ describe('ManagedCache', () => {
       const entry = await cache.put(GITHUB_SOURCE, 'abc123', 'sha256:aa', seed)
       expect(entry.path).toBe(path.join(cacheRoot, cacheSourceKey(GITHUB_SOURCE), 'abc123'))
       expect(await fs.stat(path.join(entry.path, 'SKILL.md'))).toBeDefined()
-      const marker = await fs.readFile(path.join(entry.path, CACHE_INTEGRITY_MARKER), 'utf8')
+      const marker = await fs.readFile(`${entry.path}${CACHE_INTEGRITY_MARKER}`, 'utf8')
       expect(marker.trim()).toBe('sha256:aa')
     })
   })
@@ -90,7 +90,7 @@ describe('ManagedCache', () => {
         code: 'CACHE_INVALID',
       })
 
-      await fs.writeFile(path.join(entryDir, CACHE_INTEGRITY_MARKER), '   \n', 'utf8')
+      await fs.writeFile(`${entryDir}${CACHE_INTEGRITY_MARKER}`, '   \n', 'utf8')
       await expect(cache.get(GITHUB_SOURCE, 'abc123')).rejects.toMatchObject({
         code: 'CACHE_INVALID',
       })

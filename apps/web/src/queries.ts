@@ -1,10 +1,13 @@
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
+  type FleetRunRequest,
   type InstallInput,
+  type LifecycleOperationResult,
+  type MergeAction,
   type RegistrySearchParams,
   type SettingsPatch,
-  type ResolveSyncConflictsInput,
   type SkillStatusEntry,
 } from './api.js'
 
@@ -28,9 +31,7 @@ export const queryKeys = {
     params.official === true ? 'official' : '',
   ],
   outdated: ['registry', 'outdated'],
-  syncStatus: ['sync', 'status'],
-  conflicts: ['sync', 'conflicts'],
-  conflict: (id: string) => ['sync', 'conflicts', id],
+  fleetHosts: ['fleet', 'hosts'],
 } as const
 
 export function useHealth() {
@@ -94,6 +95,22 @@ export function useSettings() {
   return useQuery({
     queryKey: queryKeys.settings,
     queryFn: () => api.settings(),
+  })
+}
+
+export function useRollbacks() {
+  return useQuery({ queryKey: ['rollbacks'], queryFn: () => api.rollbacks() })
+}
+
+export function useRestoreRollback() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.restoreRollback(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+      void queryClient.invalidateQueries({ queryKey: ['rollbacks'] })
+    },
   })
 }
 
@@ -201,115 +218,6 @@ export function useOutdated() {
   })
 }
 
-export function useSyncStatus() {
-  return useQuery({ queryKey: queryKeys.syncStatus, queryFn: () => api.syncStatus() })
-}
-
-export function useSync() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: () => api.sync(),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conflicts })
-    },
-  })
-}
-
-export function useConflict(id: string | undefined) {
-  const sessionId = id ?? ''
-  return useQuery({
-    queryKey: queryKeys.conflict(sessionId),
-    queryFn: () => api.conflict(sessionId),
-    enabled: sessionId !== '',
-  })
-}
-
-export function useResolveConflicts(sessionId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (input: ResolveSyncConflictsInput) => api.resolveConflicts(sessionId, input),
-    onSuccess: () => {
-      for (const key of [
-        queryKeys.syncStatus,
-        queryKeys.conflicts,
-        queryKeys.skills,
-        queryKeys.agents,
-        queryKeys.status,
-      ]) {
-        void queryClient.invalidateQueries({ queryKey: key })
-      }
-    },
-  })
-}
-
-export function useRestoreSyncSnapshot() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (snapshotId: string) => api.restoreSyncSnapshot(snapshotId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
-    },
-  })
-}
-
-/** Rolls back the most recently completed recoverable operation. */
-export function useRollbackLatestOperation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: () => api.rollbackOperation(),
-    onSuccess: () => {
-      for (const key of [
-        queryKeys.skills,
-        queryKeys.agents,
-        queryKeys.status,
-        queryKeys.syncStatus,
-      ]) {
-        void queryClient.invalidateQueries({ queryKey: key })
-      }
-    },
-  })
-}
-
-/** Mutates through the public lifecycle endpoints and refreshes all skill state. */
-export function useSkillLifecycle() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (input: {
-      name: string
-      action: 'fork' | 'vendor' | 'restore' | 'merge' | 'continue-merge' | 'abort-merge'
-    }) => {
-      switch (input.action) {
-        case 'fork':
-          return api.forkSkill(input.name)
-        case 'vendor':
-          return api.vendorSkill(input.name, { keepProvenance: true })
-        case 'restore':
-          return api.restoreSkill(input.name)
-        case 'merge':
-          return api.mergeSkill(input.name)
-        case 'continue-merge':
-          return api.continueMerge(input.name)
-        case 'abort-merge':
-          return api.abortMerge(input.name)
-      }
-    },
-    onSuccess: (_data, input) => {
-      for (const key of [
-        queryKeys.skill(input.name),
-        queryKeys.skillContent(input.name),
-        queryKeys.skills,
-        queryKeys.status,
-      ]) {
-        void queryClient.invalidateQueries({ queryKey: key })
-      }
-    },
-  })
-}
-
 /**
  * Remote install / update transaction (M15 + M16.3 Update button). On success
  * the library, status and outdated views are refreshed.
@@ -328,6 +236,86 @@ export function useInstallRegistrySkill() {
   })
 }
 
+/**
+ * Live event stream (GAP §4.4): subscribes to the web server's SSE endpoint
+ * and reports the latest core event (install/reconcile progress) for a
+ * lightweight activity indicator.
+ */
+export function useEventStream(): { latest: string | null } {
+  const [latest, setLatest] = useState<string | null>(null)
+  useEffect(() => {
+    const source = new EventSource('/api/events')
+    const show = (event: MessageEvent): void => {
+      setLatest(`${event.type}: ${event.data}`)
+    }
+    for (const type of [
+      'install:phase',
+      'install:completed',
+      'install:failed',
+      'reconcile:started',
+      'reconcile:completed',
+    ]) {
+      source.addEventListener(type, show)
+    }
+    return () => source.close()
+  }, [])
+  return { latest }
+}
+
 export function skillsForAgent(agentId: string, skills: SkillStatusEntry[]): SkillStatusEntry[] {
   return skills.filter((skill) => skill.agents.includes(agentId))
+}
+
+/* ---- V0.4 lifecycle API (M17 fork/vendor/restore, M20 merge) ---- */
+
+/** Refreshes every skill-scoped view after a lifecycle mutation. */
+function invalidateSkillViews(queryClient: ReturnType<typeof useQueryClient>, name: string): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skill(name) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skillDiff(name) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+}
+
+/**
+ * Fork / Vendor / Restore mutations (M17.1 / M18 / M17.3). A fork flips the
+ * mode to `forked`, vendor freezes content as `vendored`, restore re-fetches
+ * the pinned revision of a modified managed skill.
+ */
+export function useLifecycleAction(action: 'fork' | 'vendor' | 'restore') {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string): Promise<LifecycleOperationResult> => {
+      if (action === 'fork') return api.forkSkill(name)
+      if (action === 'vendor') return api.vendorSkill(name)
+      return api.restoreSkill(name)
+    },
+    onSuccess: (_data, name) => invalidateSkillViews(queryClient, name),
+  })
+}
+
+/** 3-way merge / continue / abort (M20.6). */
+export function useMergeSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { name: string; action?: MergeAction }) =>
+      api.mergeSkill(input.name, input.action),
+    onSuccess: (_data, input) => invalidateSkillViews(queryClient, input.name),
+  })
+}
+
+/* ---- Fleet API: multi-host SSH orchestration ---- */
+
+/** The hosts configured in `.skillbox/fleet.yaml` (`[]` when the file doesn't exist yet). */
+export function useFleetHosts() {
+  return useQuery({
+    queryKey: queryKeys.fleetHosts,
+    queryFn: () => api.fleetHosts(),
+  })
+}
+
+/** Runs `install` / `update` / `status` across the selected hosts over SSH. */
+export function useFleetRun() {
+  return useMutation({
+    mutationFn: (input: FleetRunRequest) => api.fleetRun(input),
+  })
 }

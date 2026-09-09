@@ -1,5 +1,5 @@
 import type { GitHubApi } from './api.js'
-import { requiresReauthorization } from './errors.js'
+import { GitHubErrorCode, isGitHubError, requiresReauthorization } from './errors.js'
 import type { AuthorizationState, TokenRecord } from './types.js'
 import { CredentialStore } from './credential-store.js'
 import type { CredentialKey } from './credential-store.js'
@@ -71,7 +71,25 @@ export class TokenStore {
 
   /** Reads and decodes the stored token record, or `null` when absent. */
   async read(): Promise<TokenRecord | null> {
-    const serialized = await this.store.get(toCredentialKey(this.service))
+    let serialized: string | null
+    try {
+      serialized = await this.store.get(toCredentialKey(this.service))
+    } catch (error) {
+      if (
+        isGitHubError(error) &&
+        // GitHubError's `code` is typed as the SkillboxErrorCode union, which
+        // does not include the GitHub-specific store code; compare as strings.
+        (error as { code: string }).code === GitHubErrorCode.CREDENTIAL_STORE_UNAVAILABLE
+      ) {
+        // No working credential store (headless Linux / WSL without a Secret
+        // Service) means there cannot be a stored token: report
+        // `not-connected` so callers fall back to the "run skillbox connect"
+        // path instead of failing with a store error — public remotes keep
+        // working through the plain git transport.
+        return null
+      }
+      throw error
+    }
     if (serialized === null) {
       return null
     }

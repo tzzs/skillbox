@@ -435,8 +435,9 @@ skills:
   git-skill:
     mode: managed
     source:
-      type: git
-      url: https://gitlab.com/x/y
+      type: registry
+      registry: other
+      package: x/y
     revision: aaaaaaa
     integrity: h1
 `,

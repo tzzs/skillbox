@@ -19,6 +19,7 @@ import type {
 } from '../registry/types.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { installSkill, defaultAliasFor } from './transaction.js'
+import { defaultEventBus } from '../events/index.js'
 import { ManagedCache } from './cache.js'
 import { createSkillSourceResolver } from '../sources/index.js'
 import type { CanonicalSkillSource, SkillSourceAdapter } from '../sources/types.js'
@@ -80,9 +81,14 @@ class FakeGithubProvider implements RegistryProvider {
     return resolved
   }
 
-  async download(_source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
+  async download(source: NormalizedSource, _revision: string, targetDir: string): Promise<void> {
     this.downloads++
-    await fs.cp(this.seedDir, targetDir, { recursive: true })
+    // Real providers materialize the skill *subtree* into `targetDir` (the
+    // path prefix is stripped); mirror that contract here.
+    const subPath = source.type === 'github' ? source.path : undefined
+    const seedRoot =
+      subPath === undefined ? this.seedDir : path.join(this.seedDir, ...subPath.split('/'))
+    await fs.cp(seedRoot, targetDir, { recursive: true })
   }
 
   async getLatestRevision(): Promise<string> {
@@ -311,6 +317,94 @@ describe('installSkill', () => {
       expect(secondProvider.downloads).toBe(0)
       expect(second.integrity).toBe(first.integrity)
       expect(second.revision).toBe('abc123')
+    })
+  })
+
+  it('installs a generic git source end to end (git: URL provider)', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      await fs.mkdir(repoRoot, { recursive: true })
+
+      const GIT_SOURCE: NormalizedSource = {
+        type: 'git',
+        url: 'https://git.example.com/org/repo.git',
+        path: 'skills/hello',
+        ref: 'main',
+      }
+      // Provider contract fake: materializes the subtree into the download dir.
+      const provider = {
+        id: 'git',
+        search: async () => [],
+        resolve: async (source: NormalizedSource) => ({ source, revision: 'abc123' }),
+        download: async (_source: NormalizedSource, _revision: string, targetDir: string) => {
+          await fs.mkdir(path.join(targetDir, 'nested'), { recursive: true })
+          await fs.writeFile(path.join(targetDir, 'SKILL.md'), '# hello\n', 'utf8')
+          await fs.writeFile(path.join(targetDir, 'nested', 'note.md'), 'x\n', 'utf8')
+        },
+        getLatestRevision: async () => 'abc123',
+      } satisfies RegistryProvider
+
+      const result = await installSkill(GIT_SOURCE, {
+        repositoryRoot: repoRoot,
+        provider,
+        homeRoot,
+      })
+
+      expect(result.alias).toBe('hello')
+      expect(result.mode).toBe('managed')
+      expect(result.revision).toBe('abc123')
+      expect(result.materializedPath).toBe(path.join(homeRoot, 'library', 'managed', 'hello'))
+
+      const manifest = await readManifest(repoRoot)
+      expect(manifest.skills.hello?.source).toEqual({
+        type: 'git',
+        url: 'https://git.example.com/org/repo.git',
+        path: 'skills/hello',
+        ref: 'main',
+      })
+
+      const locked = (await readLockfile(repoRoot)).skills.hello
+      expect(locked).toMatchObject({
+        mode: 'managed',
+        revision: 'abc123',
+        source: {
+          type: 'git',
+          url: 'https://git.example.com/org/repo.git',
+          path: 'skills/hello',
+          ref: 'main',
+        },
+      })
+    })
+  })
+
+  it('emits install lifecycle events on the default event bus', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      await fs.mkdir(repoRoot, { recursive: true })
+
+      const seed = path.join(dir, 'seed')
+      await seedRepo(seed)
+
+      const events: Array<{ type: string; phase?: string }> = []
+      const subscription = defaultEventBus.on((event) => events.push(event))
+      try {
+        await installSkill(GITHUB_SOURCE, {
+          repositoryRoot: repoRoot,
+          provider: new FakeGithubProvider(seed, 'abc123'),
+          homeRoot,
+        })
+      } finally {
+        subscription.unsubscribe()
+      }
+
+      expect(
+        events.filter((event) => event.type === 'install:phase').map((event) => event.phase),
+      ).toEqual(
+        expect.arrayContaining(['resolve', 'download', 'validate', 'materialize', 'lockfile']),
+      )
+      expect(events.some((event) => event.type === 'install:completed')).toBe(true)
     })
   })
 

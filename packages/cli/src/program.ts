@@ -1,42 +1,54 @@
 import { Command } from 'commander'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import {
+  BackupService,
   compareManifestToLockfile,
+  createDebugBundle,
   createRepositorySync,
   createDefaultAgentRegistry,
-  createDefaultSkillSourceResolver,
+  defaultLogFilePath,
   ErrorCode,
   isSkillboxError,
+  Logger,
+  RuntimeConfigService,
+  migrateRepository,
   readLockfile,
   readManifest,
   resolveSkillboxHome,
+  runDoctor,
   SkillboxError,
+  withRuntimeLock,
   type AgentDetectionSummary,
   type AgentRegistry,
+  type FleetOperationName,
+  type FleetService,
+  type MigrateFileReport,
   type ReconcileProblem,
   type RepositorySync,
   type RepositorySyncEvent,
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
-  type SkillSourceResolver,
   SkillService,
   StatusService,
   version,
 } from '@skillbox/core'
-import {
-  registerWebCommand,
-  startWebServer,
-  webOptionsFromFlags,
-  type WebCommandFlags,
-} from '@skillbox/web-server'
 import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
 import { renderTable } from './table.js'
 import type { InteractivePrompt } from './interactive/prompts.js'
 import { createClackPrompts, isInteractiveTTY } from './interactive/prompts.js'
 import {
+  registerWebCommand,
+  startWebServer,
+  webOptionsFromFlags,
+  type WebCommandFlags,
+} from './web/main.js'
+import {
   createDefaultGitHubProvider,
   createDefaultGitProvider,
   createDefaultSecretScanner,
+  createSyncGitTransport,
   SyncService,
   type GitHubProvider,
   type GitProvider,
@@ -74,22 +86,14 @@ import {
   type MergeProvider,
 } from './skill-lifecycle/index.js'
 import {
-  createDefaultRollbackProvider,
-  renderRollbackSummary,
-  type RollbackProvider,
-} from './operations/index.js'
-import {
-  createDefaultDiagnosticsProvider,
-  renderDiagnostics,
-  type DiagnosticsProvider,
-} from './diagnostics/index.js'
-import {
-  createDefaultMigrationProvider,
-  renderMigrationResult,
-  type MigrationProvider,
-} from './migrations/index.js'
-import { createDefaultDebugBundleProvider, type DebugBundleProvider } from './debug/index.js'
-import { runFullscreenTui } from './tui/index.js'
+  collect,
+  createDefaultFleetService,
+  renderFleetHostsTable,
+  renderFleetRunTable,
+  runOptionsFromOptions,
+  selectorFromOptions,
+  type FleetCliOptions,
+} from './fleet/index.js'
 
 /** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
 export interface MarketplaceDeps {
@@ -97,8 +101,6 @@ export interface MarketplaceDeps {
   registryClient?: RegistryClient
   installer?: InstallService
   scanner?: SecurityScanner
-  /** Canonical source resolver; defaults to Core's production adapters. */
-  sourceResolver?: SkillSourceResolver
 }
 
 /** V0.4 skill-lifecycle provider overrides (fork/vendor/edit/diff/merge). */
@@ -138,24 +140,20 @@ export interface CliDeps {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
   lifecycle?: LifecycleDeps
-  /** User-level operation rollback; default-constructed from @skillbox/core. */
-  rollbackProvider?: RollbackProvider
-  /** Environment diagnostics; default-constructed from @skillbox/core. */
-  diagnosticsProvider?: DiagnosticsProvider
-  /** Durable schema upgrades; default-constructed from @skillbox/core. */
-  migrationProvider?: MigrationProvider
-  /** Redacted local support artifact; default-constructed from @skillbox/core. */
-  debugBundleProvider?: DebugBundleProvider
+  /** Fleet (multi-host SSH orchestration); defaults to reading `.skillbox/fleet.yaml`. */
+  fleet?: FleetService
+  /** Structured audit logger; defaults to the home log file. */
+  logger?: Logger
 }
 
 export interface CliContext {
   repositoryRoot: string
   homeRoot: string
   registry: AgentRegistry
-  /** True only when the caller injected a registry instead of the built-in set. */
-  registryProvided?: boolean
   out: (chunk: string) => void
   err: (chunk: string) => void
+  /** Structured audit logger (info/warn to ~/.skillbox/logs/skillbox.log). */
+  logger: Logger
   gitProvider: GitProvider
   githubProvider: GitHubProvider
   secretScanner: SecretScanner
@@ -164,10 +162,8 @@ export interface CliContext {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
   lifecycle?: LifecycleDeps
-  rollbackProvider?: RollbackProvider
-  diagnosticsProvider?: DiagnosticsProvider
-  migrationProvider?: MigrationProvider
-  debugBundleProvider?: DebugBundleProvider
+  /** Fleet provider override; defaults applied in buildProgram. */
+  fleet?: FleetService
   /** Prompt implementation for the interactive `add` flow. */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -186,12 +182,10 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     registry,
     out,
     err,
+    logger: deps.logger ?? new Logger({ logFile: defaultLogFilePath(homeRoot) }),
     gitProvider: deps.gitProvider ?? createDefaultGitProvider(repositoryRoot),
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
     secretScanner: deps.secretScanner ?? createDefaultSecretScanner(repositoryRoot),
-  }
-  if (deps.registry !== undefined) {
-    context.registryProvided = true
   }
   if (deps.repositorySync !== undefined) {
     context.repositorySync = deps.repositorySync
@@ -208,17 +202,8 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   if (deps.lifecycle !== undefined) {
     context.lifecycle = deps.lifecycle
   }
-  if (deps.rollbackProvider !== undefined) {
-    context.rollbackProvider = deps.rollbackProvider
-  }
-  if (deps.diagnosticsProvider !== undefined) {
-    context.diagnosticsProvider = deps.diagnosticsProvider
-  }
-  if (deps.migrationProvider !== undefined) {
-    context.migrationProvider = deps.migrationProvider
-  }
-  if (deps.debugBundleProvider !== undefined) {
-    context.debugBundleProvider = deps.debugBundleProvider
+  if (deps.fleet !== undefined) {
+    context.fleet = deps.fleet
   }
   if (deps.prompts !== undefined) {
     context.prompts = deps.prompts
@@ -243,12 +228,6 @@ function renderRepositorySyncEvent(out: (chunk: string) => void, event: Reposito
 /** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
 function buildMarketplace(ctx: CliContext): MarketplaceService {
   const overrides = ctx.marketplace ?? {}
-  // An injected legacy RegistryClient deliberately retains its compatibility
-  // path. Production construction supplies the canonical resolver so Git
-  // and registry manifest sources can determine their latest revision.
-  const sourceResolver =
-    overrides.sourceResolver ??
-    (overrides.registryClient === undefined ? createDefaultSkillSourceResolver() : undefined)
   return new MarketplaceService({
     repositoryRoot: ctx.repositoryRoot,
     homeRoot: ctx.homeRoot,
@@ -262,7 +241,6 @@ function buildMarketplace(ctx: CliContext): MarketplaceService {
         homeRoot: ctx.homeRoot,
       }),
     scanner: overrides.scanner ?? createDefaultSecurityScanner(),
-    ...(sourceResolver === undefined ? {} : { sourceResolver }),
     prompts: ctx.prompts ?? createClackPrompts(),
     isInteractive: ctx.isInteractive ?? isInteractiveTTY(),
     out: ctx.out,
@@ -428,6 +406,44 @@ function problemAsError(problem: ReconcileProblem): SkillboxError {
   )
 }
 
+/**
+ * Runs a mutation command under the cross-process runtime lock
+ * (`~/.skillbox/state/locks/mutation.lock`, roadmap 5.1): concurrent CLI /
+ * Web processes cannot corrupt the Manifest / Lockfile / library / merge
+ * state. The lock is always released (also on errors), and a crashed process
+ * cannot wedge it (stale locks are broken).
+ */
+function mutation<T>(ctx: CliContext, operation: string, action: () => Promise<T>): Promise<T> {
+  ctx.logger.info(`mutation:${operation}:start`)
+  return withRuntimeLock(
+    'mutation',
+    async () => {
+      try {
+        const result = await action()
+        ctx.logger.info(`mutation:${operation}:done`)
+        return result
+      } catch (error) {
+        ctx.logger.warn(`mutation:${operation}:failed`, {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
+    },
+    { homeRoot: ctx.homeRoot },
+  )
+}
+
+/** Renders one file's migration report for `skillbox migrate`. */
+function renderMigrateFile(report: MigrateFileReport): string {
+  if (!report.present) {
+    return `  ${report.path}   absent (nothing to migrate)`
+  }
+  if (report.changed) {
+    return `  ${report.path}   migrated: ${report.applied.join(', ')}`
+  }
+  return `  ${report.path}   up to date`
+}
+
 function buildSyncService(ctx: CliContext, skills: SkillService): SyncService {
   return new SyncService({
     repositoryRoot: ctx.repositoryRoot,
@@ -437,6 +453,12 @@ function buildSyncService(ctx: CliContext, skills: SkillService): SyncService {
     secretScanner: ctx.secretScanner,
     skills,
     out: ctx.out,
+    // Production: route pull/push through Core RepositorySync so the
+    // Credential Bridge is injected into private-repo transports. Tests that
+    // inject provider overrides keep the plain gitProvider path.
+    ...(ctx.repositorySync !== undefined
+      ? { gitTransport: createSyncGitTransport(ctx.repositorySync, ctx.gitProvider) }
+      : {}),
   })
 }
 
@@ -451,7 +473,6 @@ export function buildProgram(ctx: CliContext): Command {
     registry: ctx.registry,
   })
   const sync = buildSyncService(ctx, skills)
-  let pendingConflictSession: import('@skillbox/core').ConflictSession | undefined
 
   const program = new Command()
   program
@@ -500,59 +521,67 @@ export function buildProgram(ctx: CliContext): Command {
     .command('create <name>')
     .description('Scaffold a new skill and register it with the repository')
     .option('-d, --description <text>', 'short description for the skill')
-    .action(async (name: string, options: { description?: string }) => {
-      const input: { name: string; description?: string } = { name }
-      if (options.description !== undefined) {
-        input.description = options.description
-      }
-      const result = await skills.createSkill(input)
-      ctx.out(
-        `Created skill "${result.name}" (local)\n  code     ${result.path}\n  library  ${result.materialized.path}\n`,
-      )
-    })
+    .action(async (name: string, options: { description?: string }) =>
+      mutation(ctx, 'create', async () => {
+        const input: { name: string; description?: string } = { name }
+        if (options.description !== undefined) {
+          input.description = options.description
+        }
+        const result = await skills.createSkill(input)
+        ctx.out(
+          `Created skill "${result.name}" (local)\n  code     ${result.path}\n  library  ${result.materialized.path}\n`,
+        )
+      }),
+    )
 
   program
     .command('remove <name>')
     .description('Remove a skill (config only by default)')
     .option('-f, --delete-files', 'also delete files from the repository')
-    .action(async (name: string, options: { deleteFiles?: boolean }) => {
-      const input: { name: string; deleteFiles?: boolean } = { name }
-      if (options.deleteFiles === true) {
-        input.deleteFiles = true
-      }
-      const result = await skills.removeSkill(input)
-      ctx.out(`Removed skill "${result.name}"`)
-      if (result.filesRemoved === true && result.filesPath !== undefined) {
-        ctx.out(` (config + files at ${result.filesPath})`)
-      } else {
-        ctx.out(' (config only, files kept)')
-      }
-      ctx.out('\n')
-    })
+    .action(async (name: string, options: { deleteFiles?: boolean }) =>
+      mutation(ctx, 'remove', async () => {
+        const input: { name: string; deleteFiles?: boolean } = { name }
+        if (options.deleteFiles === true) {
+          input.deleteFiles = true
+        }
+        const result = await skills.removeSkill(input)
+        ctx.out(`Removed skill "${result.name}"`)
+        if (result.filesRemoved === true && result.filesPath !== undefined) {
+          ctx.out(` (config + files at ${result.filesPath})`)
+        } else {
+          ctx.out(' (config only, files kept)')
+        }
+        ctx.out('\n')
+      }),
+    )
 
   program
     .command('enable <name>')
     .description('Enable a skill for an agent')
     .requiredOption('-a, --agent <agent>', 'agent id (e.g. claude, codex)')
-    .action(async (name: string, options: { agent: string }) => {
-      const result = await skills.enableSkill({ name, agent: options.agent })
-      ctx.out(
-        `Enabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (already enabled)'}\n`,
-      )
-      reportProblems(ctx, result.reconcile.problems)
-    })
+    .action(async (name: string, options: { agent: string }) =>
+      mutation(ctx, 'enable', async () => {
+        const result = await skills.enableSkill({ name, agent: options.agent })
+        ctx.out(
+          `Enabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (already enabled)'}\n`,
+        )
+        reportProblems(ctx, result.reconcile.problems)
+      }),
+    )
 
   program
     .command('disable <name>')
     .description('Disable a skill for an agent')
     .requiredOption('-a, --agent <agent>', 'agent to disable the skill for')
-    .action(async (name: string, options: { agent: string }) => {
-      const result = await skills.disableSkill({ name, agent: options.agent })
-      ctx.out(
-        `Disabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (was not enabled)'}\n`,
-      )
-      reportProblems(ctx, result.reconcile.problems)
-    })
+    .action(async (name: string, options: { agent: string }) =>
+      mutation(ctx, 'disable', async () => {
+        const result = await skills.disableSkill({ name, agent: options.agent })
+        ctx.out(
+          `Disabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (was not enabled)'}\n`,
+        )
+        reportProblems(ctx, result.reconcile.problems)
+      }),
+    )
 
   program
     .command('install')
@@ -564,28 +593,30 @@ export function buildProgram(ctx: CliContext): Command {
       'require manifest and lockfile to agree; never modify skillbox.lock',
     )
     .option('--ci', 'frozen-lockfile + fail on any reconcile problem (CI-safe)')
-    .action(async (options: { frozenLockfile?: boolean; ci?: boolean }) => {
-      const frozen = options.frozenLockfile === true || options.ci === true
-      if (frozen) {
-        await assertLockfileConsistent(ctx.repositoryRoot)
-      }
-      const report = await skills.install()
-      if (options.ci === true && report.problems.length > 0) {
-        const first = report.problems[0]
-        if (first === undefined) {
-          throw new SkillboxError(
-            ErrorCode.INVALID_MANIFEST,
-            '--ci install failed with an unknown reconcile problem',
-          )
+    .action(async (options: { frozenLockfile?: boolean; ci?: boolean }) =>
+      mutation(ctx, 'install', async () => {
+        const frozen = options.frozenLockfile === true || options.ci === true
+        if (frozen) {
+          await assertLockfileConsistent(ctx.repositoryRoot)
         }
-        throw problemAsError(first)
-      }
-      ctx.out(`Reconciled "${report.repository}"\n`)
-      ctx.out(
-        `  skills   ${report.skills.length}\n  problems ${report.problems.length}\n  changed  ${report.changed ? 'yes' : 'no'}\n`,
-      )
-      reportProblems(ctx, report.problems)
-    })
+        const report = await skills.install()
+        if (options.ci === true && report.problems.length > 0) {
+          const first = report.problems[0]
+          if (first === undefined) {
+            throw new SkillboxError(
+              ErrorCode.INVALID_MANIFEST,
+              '--ci install failed with an unknown reconcile problem',
+            )
+          }
+          throw problemAsError(first)
+        }
+        ctx.out(`Reconciled "${report.repository}"\n`)
+        ctx.out(
+          `  skills   ${report.skills.length}\n  problems ${report.problems.length}\n  changed  ${report.changed ? 'yes' : 'no'}\n`,
+        )
+        reportProblems(ctx, report.problems)
+      }),
+    )
 
   program
     .command('status')
@@ -622,112 +653,32 @@ export function buildProgram(ctx: CliContext): Command {
   // SyncService; the commands only render results and surface typed errors.
   program
     .command('sync')
-    .description('Synchronize this repository with your other devices')
-    .action(async () => {
-      if (ctx.repositorySync !== undefined) {
-        const outcome = await ctx.repositorySync.sync()
-        if (outcome.kind === 'completed') {
-          ctx.out(
-            `\nSync complete · automatically merged ${outcome.summary.automaticallyMerged} change(s)\n`,
-          )
-          return
-        }
-        if (outcome.kind === 'conflicts') {
-          pendingConflictSession = outcome.session
-          ctx.out(
-            `\n${outcome.session.conflicts.length} skill(s) need a decision. Run \`skillbox conflicts\`.\n`,
-          )
-          process.exitCode = 3
-          return
-        }
-        ctx.out(`\nSync needs attention: ${outcome.recovery.message}\n`)
-        process.exitCode = 3
-        return
-      }
-      const result = await sync.sync()
-      ctx.out(
-        `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
-      )
-      if (result.problems.length > 0) {
-        ctx.out('\nReconcile problems\n')
-        reportProblems(ctx, result.problems)
-      }
-    })
-
-  const conflictsCommand = program
-    .command('conflicts')
-    .description('Show pending multi-device sync decisions')
-    .action(async () => {
-      if (ctx.repositorySync === undefined) {
-        throw new SkillboxError(
-          ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
-          'No sync conflict session is available.',
-          { recoverable: true },
-        )
-      }
-      const sessions = await ctx.repositorySync.listConflicts()
-      const activeSession = pendingConflictSession ?? sessions[0]
-      if (activeSession === undefined) {
-        ctx.out('No pending sync decisions.\n')
-        return
-      }
-      ctx.out(`\n${activeSession.conflicts.length} decision(s) need your attention.\n`)
-      for (const conflict of activeSession.conflicts) {
+    .description('Sync skills: Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push')
+    .action(async () =>
+      mutation(ctx, 'sync', async () => {
+        const result = await sync.sync()
         ctx.out(
-          `  ${conflict.skillAlias ?? 'Skill'} · ${conflict.field ?? conflict.path ?? conflict.type}${conflict.recommendedResolution === undefined ? '' : ` · recommended: ${conflict.recommendedResolution}`}\n`,
+          `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
         )
-      }
-      ctx.out(
-        `\nUse \`skillbox conflicts resolve ${activeSession.id} --conflict=local|remote|keep-both\` for an advanced bulk choice.\n`,
-      )
-    })
-
-  conflictsCommand
-    .command('resolve <session>')
-    .description('Apply an advanced decision to every pending item in a session')
-    .requiredOption('--conflict <choice>', 'local, remote, or keep-both')
-    .action(async (session: string, options: { conflict: string }) => {
-      if (ctx.repositorySync === undefined) {
-        throw new SkillboxError(
-          ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND,
-          'This sync decision is no longer available.',
-          { recoverable: true },
-        )
-      }
-      if (!['local', 'remote', 'keep-both'].includes(options.conflict))
-        throw new SkillboxError(
-          ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
-          'Choose local, remote, or keep-both.',
-          { recoverable: true },
-        )
-      const activeSession =
-        pendingConflictSession?.id === session
-          ? pendingConflictSession
-          : await ctx.repositorySync.getConflict(session)
-      const outcome = await ctx.repositorySync.resolveConflicts({
-        sessionId: session,
-        resolutions: Object.fromEntries(
-          activeSession.conflicts.map((conflict) => [conflict.id, options.conflict]),
-        ) as Record<string, import('@skillbox/core').ConflictResolution>,
-      })
-      pendingConflictSession = outcome.kind === 'conflicts' ? outcome.session : undefined
-      ctx.out(
-        outcome.kind === 'completed'
-          ? 'Sync decisions applied.\n'
-          : 'Sync decisions need attention.\n',
-      )
-    })
+        if (result.problems.length > 0) {
+          ctx.out('\nReconcile problems\n')
+          reportProblems(ctx, result.problems)
+        }
+      }),
+    )
 
   program
     .command('pull')
     .description('Fetch + merge remote changes, then reconcile and regenerate the lockfile')
-    .action(async () => {
-      const result = await sync.pull()
-      ctx.out(
-        `Pulled ${result.pulledFiles.length} file(s) for "${result.repository}"\n  skills   ${result.reconcile.skills.length}\n  problems ${result.reconcile.problems.length}\n  changed  ${result.reconcile.changed ? 'yes' : 'no'}\n`,
-      )
-      reportProblems(ctx, result.reconcile.problems)
-    })
+    .action(async () =>
+      mutation(ctx, 'pull', async () => {
+        const result = await sync.pull()
+        ctx.out(
+          `Pulled ${result.pulledFiles.length} file(s) for "${result.repository}"\n  skills   ${result.reconcile.skills.length}\n  problems ${result.reconcile.problems.length}\n  changed  ${result.reconcile.changed ? 'yes' : 'no'}\n`,
+        )
+        reportProblems(ctx, result.reconcile.problems)
+      }),
+    )
 
   program
     .command('push')
@@ -743,8 +694,10 @@ export function buildProgram(ctx: CliContext): Command {
     .command('connect')
     .description('Connect a GitHub account via Device Flow so Git Sync can push')
     .action(async () => {
+      ctx.logger.info('mutation:connect:start')
       if (ctx.repositorySync !== undefined) {
         const result = await ctx.repositorySync.connect()
+        ctx.logger.info('mutation:connect:done', { login: result.account.login })
         ctx.out(
           `\nConnected GitHub account "${result.account.login}" to "${result.repository.fullName}".` +
             `\n  origin  ${result.local.remote.action} (${result.local.remote.url})\n`,
@@ -763,12 +716,130 @@ export function buildProgram(ctx: CliContext): Command {
     .command('disconnect')
     .description('Disconnect GitHub — removes only local credentials and connection metadata')
     .action(async () => {
+      ctx.logger.info('mutation:disconnect:start')
       if (ctx.repositorySync !== undefined) {
         await ctx.repositorySync.disconnect()
       } else {
         await sync.disconnect()
       }
+      ctx.logger.info('mutation:disconnect:done')
       ctx.out('Disconnected from GitHub. Local and remote repositories were preserved.\n')
+    })
+
+  // V0.4.1 — Schema migrations (roadmap 5.2): bring skillbox.yaml /
+  // skillbox.lock / config.json to the current schema versions.
+  program
+    .command('migrate')
+    .description(
+      'Migrate skillbox.yaml / skillbox.lock / config.json to the current schema versions',
+    )
+    .action(async () => {
+      const report = await migrateRepository(ctx.repositoryRoot, { homeRoot: ctx.homeRoot })
+      ctx.out('Migration report\n')
+      ctx.out(`${renderMigrateFile(report.config)}\n`)
+      ctx.out(`${renderMigrateFile(report.manifest)}\n`)
+      ctx.out(`${renderMigrateFile(report.lockfile)}\n`)
+    })
+
+  // V0.4.2 — Unified Backup / Rollback (roadmap 2.4): list the recoverable
+  // backups recorded by mutating operations (restore / remove), or restore
+  // one with `skillbox rollback <id>`.
+  program
+    .command('rollback [id]')
+    .description('List recoverable backups, or restore one with `skillbox rollback <id>`')
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (id: string | undefined, options: { json?: boolean }) => {
+      const backups = new BackupService({ homeRoot: ctx.homeRoot })
+      if (id === undefined) {
+        const records = await backups.list()
+        if (options.json === true) {
+          printJson(ctx.out, { backups: records })
+          return
+        }
+        if (records.length === 0) {
+          ctx.out('No backups recorded yet.\n')
+          return
+        }
+        ctx.out(
+          `${renderTable(
+            ['ID', 'OPERATION', 'ALIAS', 'KIND', 'CREATED'],
+            records.map((record) => [
+              record.id,
+              record.operation,
+              record.alias,
+              record.kind,
+              record.createdAt,
+            ]),
+          )}\n`,
+        )
+        return
+      }
+      const result = await backups.rollback(id, { repositoryRoot: ctx.repositoryRoot })
+      ctx.out(
+        `Rolled back "${result.alias}" (${result.operation}) — restored ${result.filesRestored} file(s) to ${result.path}\n`,
+      )
+    })
+
+  // V0.4.3 — Doctor / debug bundle (roadmap 5.3): environment + repository
+  // probes and a redacted diagnostics bundle with an automatic leak scan.
+  program
+    .command('doctor')
+    .description(
+      'Diagnose the environment and repository (git, node, config, manifest/lockfile, agents, links, credentials)',
+    )
+    .option('--json', 'emit JSON instead of human-readable output')
+    .option('--bundle <path>', 'write a redacted debug bundle to <path>')
+    .action(async (options: { json?: boolean; bundle?: string }) => {
+      const diagnostics = {
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+        registry: ctx.registry,
+        version,
+      }
+      const report = await runDoctor(diagnostics)
+
+      if (options.bundle !== undefined) {
+        const bundle = await createDebugBundle(diagnostics)
+        const target = path.resolve(options.bundle)
+        await fs.writeFile(target, `${JSON.stringify(bundle, null, 2)}\n`, 'utf8')
+        ctx.out(`Debug bundle written to ${target}\n`)
+        if (bundle.leakCheck.findings.length > 0) {
+          const summary = bundle.leakCheck.findings
+            .map((finding) => `${finding.pattern} (${finding.source} ×${finding.count})`)
+            .join(', ')
+          ctx.err(`WARNING: the leak scan still found secrets in the bundle: ${summary}\n`)
+        }
+      }
+
+      if (options.json === true) {
+        printJson(ctx.out, report)
+      } else {
+        for (const probe of report.probes) {
+          const marker = probe.ok ? '✓' : '✗'
+          const suffix = probe.ok
+            ? probe.detail !== undefined
+              ? ` — ${probe.detail}`
+              : ''
+            : probe.error !== undefined
+              ? ` — ${probe.error}`
+              : ''
+          ctx.out(`${marker} ${probe.name}${suffix}\n`)
+        }
+        const failedCount = report.probes.filter((probe) => !probe.ok).length
+        ctx.out(
+          failedCount === 0 ? '\nAll checks passed.\n' : `\n${failedCount} check(s) failed.\n`,
+        )
+      }
+      const failed = report.probes.filter((probe) => !probe.ok)
+      if (failed.length === 0) {
+        return
+      }
+      // Exit non-zero so CI can gate on `skillbox doctor`.
+      throw new SkillboxError(
+        ErrorCode.SKILL_BROKEN,
+        `Doctor found ${failed.length} problem(s): ${failed.map((probe) => probe.name).join(', ')}`,
+        { recoverable: true, context: { failed: failed.map((probe) => probe.name) } },
+      )
     })
 
   // V0.3 — Marketplace (GAP_ANALYSIS §3): search / add / outdated / update /
@@ -803,20 +874,22 @@ export function buildProgram(ctx: CliContext): Command {
     .option('--agent <agent>', 'agent to install for (skips the interactive picker)')
     .option('--name <alias>', 'alias to install under (defaults to the source name)')
     .option('--yes', 'confirm HIGH-risk installs without prompting (CI)')
-    .action(async (source: string, options: { agent?: string; name?: string; yes?: boolean }) => {
-      const input: { source: string; agent?: string; alias?: string; yes?: boolean } = {
-        source,
-        yes: options.yes === true,
-      }
-      if (options.agent !== undefined) {
-        input.agent = options.agent
-      }
-      if (options.name !== undefined) {
-        input.alias = options.name
-      }
-      const outcome = await marketplace.add(input)
-      ctx.out(`${renderAddSummary(outcome)}\n`)
-    })
+    .action(async (source: string, options: { agent?: string; name?: string; yes?: boolean }) =>
+      mutation(ctx, 'add', async () => {
+        const input: { source: string; agent?: string; alias?: string; yes?: boolean } = {
+          source,
+          yes: options.yes === true,
+        }
+        if (options.agent !== undefined) {
+          input.agent = options.agent
+        }
+        if (options.name !== undefined) {
+          input.alias = options.name
+        }
+        const outcome = await marketplace.add(input)
+        ctx.out(`${renderAddSummary(outcome)}\n`)
+      }),
+    )
 
   program
     .command('outdated')
@@ -837,10 +910,12 @@ export function buildProgram(ctx: CliContext): Command {
       'Update a managed skill to the latest upstream revision; agent links are preserved (M16.2)',
     )
     .option('--yes', 'confirm HIGH-risk updates without prompting (CI)')
-    .action(async (name: string, options: { yes?: boolean }) => {
-      const outcome = await marketplace.update({ name, yes: options.yes === true })
-      ctx.out(`${renderUpdateSummary(outcome)}\n`)
-    })
+    .action(async (name: string, options: { yes?: boolean }) =>
+      mutation(ctx, 'update', async () => {
+        const outcome = await marketplace.update({ name, yes: options.yes === true })
+        ctx.out(`${renderUpdateSummary(outcome)}\n`)
+      }),
+    )
 
   const cacheCommand = program.command('cache').description('Manage the skillbox download cache')
   cacheCommand
@@ -860,20 +935,24 @@ export function buildProgram(ctx: CliContext): Command {
     .description(
       'Fork a managed skill into the repository (M17.1): copy the runtime, snapshot the base revision, keep upstream tracking',
     )
-    .action(async (name: string) => {
-      const outcome = await lifecycle.fork({ name })
-      ctx.out(`${renderForkSummary(outcome)}\n`)
-    })
+    .action(async (name: string) =>
+      mutation(ctx, 'fork', async () => {
+        const outcome = await lifecycle.fork({ name })
+        ctx.out(`${renderForkSummary(outcome)}\n`)
+      }),
+    )
 
   program
     .command('vendor <name>')
     .description(
       'Vendor a managed or forked skill (M18): localize the runtime and clear upstream tracking',
     )
-    .action(async (name: string) => {
-      const outcome = await lifecycle.vendor({ name })
-      ctx.out(`${renderVendorSummary(outcome)}\n`)
-    })
+    .action(async (name: string) =>
+      mutation(ctx, 'vendor', async () => {
+        const outcome = await lifecycle.vendor({ name })
+        ctx.out(`${renderVendorSummary(outcome)}\n`)
+      }),
+    )
 
   program
     .command('edit <name>')
@@ -881,10 +960,12 @@ export function buildProgram(ctx: CliContext): Command {
       'Open a skill in your editor (M17.2); editing a managed skill converts it to a fork',
     )
     .option('--yes', 'confirm the fork conversion without prompting (CI)')
-    .action(async (name: string, options: { yes?: boolean }) => {
-      const outcome = await lifecycle.edit({ name, yes: options.yes === true })
-      ctx.out(`${renderEditSummary(outcome)}\n`)
-    })
+    .action(async (name: string, options: { yes?: boolean }) =>
+      mutation(ctx, 'edit', async () => {
+        const outcome = await lifecycle.edit({ name, yes: options.yes === true })
+        ctx.out(`${renderEditSummary(outcome)}\n`)
+      }),
+    )
 
   program
     .command('diff <name>')
@@ -908,75 +989,95 @@ export function buildProgram(ctx: CliContext): Command {
     )
     .option('--continue', 'finish the merge after resolving conflicts')
     .option('--abort', 'cancel the merge and restore the pre-merge state')
-    .action(async (name: string, options: { continue?: boolean; abort?: boolean }) => {
-      const action =
-        options.continue === true ? 'continue' : options.abort === true ? 'abort' : 'merge'
-      const outcome = await lifecycle.merge({ name, action })
-      ctx.out(`${renderMergeOutcome(outcome)}\n`)
-    })
+    .action(async (name: string, options: { continue?: boolean; abort?: boolean }) =>
+      mutation(ctx, 'merge', async () => {
+        const action =
+          options.continue === true ? 'continue' : options.abort === true ? 'abort' : 'merge'
+        const outcome = await lifecycle.merge({ name, action })
+        ctx.out(`${renderMergeOutcome(outcome)}\n`)
+      }),
+    )
 
-  program
-    .command('rollback [operationId]')
-    .description('Restore the latest eligible operation backup, or a specified operation id')
-    .action(async (operationId: string | undefined) => {
-      const result = await (
-        ctx.rollbackProvider ?? createDefaultRollbackProvider()
-      ).rollbackOperation({
-        repositoryRoot: ctx.repositoryRoot,
-        homeRoot: ctx.homeRoot,
-        ...(operationId === undefined ? {} : { operationId }),
-      })
-      ctx.out(`${renderRollbackSummary(result)}\n`)
-    })
+  // Fleet — orchestrates `skillbox install` / `update` / `status` on remote
+  // hosts over SSH, reading `.skillbox/fleet.yaml` for the inventory (a
+  // `--ssh [user@]host[:port]` entry works without any config file at all).
+  // No local runtime state is touched, so these commands skip the mutation
+  // lock; a failed host is reported per-row and only fails the process exit
+  // code (FLEET_RUN_FAILED), never the other hosts in the same run.
+  const fleet = ctx.fleet ?? createDefaultFleetService(ctx.repositoryRoot)
+  const fleetCommand = program
+    .command('fleet')
+    .description('Orchestrate skillbox install/update/status across remote hosts over SSH')
 
-  program
-    .command('doctor')
-    .description('Check local prerequisites and Skillbox repository state')
-    .option('--json', 'emit the Core diagnostic report as JSON')
+  fleetCommand
+    .command('list')
+    .description('List the hosts configured in .skillbox/fleet.yaml')
+    .option('--json', 'emit JSON instead of a table')
     .action(async (options: { json?: boolean }) => {
-      const report = await (ctx.diagnosticsProvider ?? createDefaultDiagnosticsProvider()).collect({
-        repositoryRoot: ctx.repositoryRoot,
-      })
+      const hosts = await fleet.listHosts()
       if (options.json === true) {
-        printJson(ctx.out, report)
+        printJson(ctx.out, { hosts })
         return
       }
-      ctx.out(`${renderDiagnostics(report)}\n`)
+      ctx.out(`${renderFleetHostsTable(hosts)}\n`)
     })
 
-  program
-    .command('migrate')
-    .description('Apply pending, versioned Skillbox schema migrations')
-    .option('--json', 'emit the Core migration result as JSON')
-    .action(async (options: { json?: boolean }) => {
-      const result = await (ctx.migrationProvider ?? createDefaultMigrationProvider()).migrate({
-        repositoryRoot: ctx.repositoryRoot,
-        homeRoot: ctx.homeRoot,
-      })
-      if (options.json === true) {
-        printJson(ctx.out, result)
-        return
-      }
-      ctx.out(`${renderMigrationResult(result)}\n`)
-    })
+  function addFleetSelectorOptions(command: Command): Command {
+    return command
+      .option('--host <name>', 'select a configured host by name (repeatable)', collect, [])
+      .option('--tag <tag>', 'select configured hosts carrying this tag (repeatable)', collect, [])
+      .option(
+        '--ssh <spec>',
+        'target an ad-hoc [user@]host[:port] outside fleet.yaml (repeatable)',
+        collect,
+        [],
+      )
+      .option('--concurrency <n>', 'maximum hosts contacted at once (default 4)')
+      .option('--dry-run', 'print the command that would run on each host without running it')
+      .option('--json', 'emit JSON instead of a table')
+  }
 
-  program
-    .command('debug-bundle')
-    .description('Write a safe, redacted support bundle outside the repository')
-    .action(async () => {
-      const result = await (ctx.debugBundleProvider ?? createDefaultDebugBundleProvider()).create({
-        repositoryRoot: ctx.repositoryRoot,
-        homeRoot: ctx.homeRoot,
-      })
-      ctx.out(`Debug bundle created: ${result.outputFile}\n`)
-    })
+  async function runFleetCommand(
+    operation: FleetOperationName,
+    options: FleetCliOptions & { json?: boolean },
+  ): Promise<void> {
+    const result = await fleet.run(
+      operation,
+      selectorFromOptions(options),
+      runOptionsFromOptions(options),
+    )
+    if (options.json === true) {
+      printJson(ctx.out, result)
+    } else {
+      ctx.out(`${renderFleetRunTable(result)}\n`)
+    }
+    const failedCount = result.results.filter((entry) => !entry.ok).length
+    if (failedCount > 0) {
+      throw new SkillboxError(
+        ErrorCode.FLEET_RUN_FAILED,
+        `fleet ${operation} failed on ${failedCount} of ${result.results.length} host(s)`,
+        { recoverable: true, context: { operation, failedCount } },
+      )
+    }
+  }
 
-  program
-    .command('tui')
-    .description('Open the keyboard-first full-screen terminal UI')
-    .action(async () => {
-      await runFullscreenTui(ctx)
-    })
+  addFleetSelectorOptions(fleetCommand.command('install'))
+    .description('Run `skillbox install` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('install', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('update'))
+    .description('Run `skillbox update` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('update', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('status'))
+    .description('Run `skillbox status` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('status', options),
+    )
 
   // M10/M11 — the `web` subcommand is registered by the web module; the
   // handler is wired here so the interactive/CLI entry point stays in one
@@ -984,13 +1085,29 @@ export function buildProgram(ctx: CliContext): Command {
   const webCommand = registerWebCommand(program)
   webCommand.action(async (flags: WebCommandFlags) => {
     const options = webOptionsFromFlags(flags)
+    const configured = await new RuntimeConfigService({
+      configFilePath: path.join(ctx.homeRoot, 'config.json'),
+    }).load()
+    const configuredWeb = configured.web ?? {}
     const started = await startWebServer({
-      repositoryRoot: options.repositoryRoot ?? ctx.repositoryRoot,
+      repositoryRoot: options.repositoryRoot ?? configured.repository ?? ctx.repositoryRoot,
       homeRoot: ctx.homeRoot,
-      ...(ctx.registryProvided === true ? { registry: ctx.registry } : {}),
-      ...(options.port === undefined ? {} : { port: options.port }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-      ...(options.open === undefined ? {} : { open: options.open }),
+      registry: ctx.registry,
+      ...(options.port === undefined
+        ? configuredWeb.port === undefined
+          ? {}
+          : { port: configuredWeb.port }
+        : { port: options.port }),
+      ...(options.host === undefined
+        ? configuredWeb.host === undefined
+          ? {}
+          : { host: configuredWeb.host }
+        : { host: options.host }),
+      ...(options.open === undefined
+        ? configuredWeb.open === undefined
+          ? {}
+          : { open: configuredWeb.open }
+        : { open: options.open }),
       out: ctx.out,
       err: ctx.err,
     })

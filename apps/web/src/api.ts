@@ -67,17 +67,6 @@ export interface SavedSkillContent {
   status: 'ready' | 'modified'
 }
 
-/** Results returned by the Core-backed lifecycle routes. */
-export interface LifecycleResult {
-  alias?: string
-  name?: string
-  mode?: 'forked' | 'vendored'
-  filesRestored?: number
-  filesMerged?: number
-  conflicts?: unknown[]
-  resolved?: boolean
-}
-
 export interface AgentAssignment {
   name: string
   agent: string
@@ -110,18 +99,18 @@ export type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
 /** Machine config persisted at `~/.skillbox/config.json` (GAP 1.2). */
 export interface RuntimeSettingsInput {
   linkStrategy?: LinkStrategy
-  web?: { host?: string; port?: number; open?: boolean }
-  agents?: Record<string, { path?: string; skillDirectories?: string[]; executable?: string }>
+  web?: { port?: number; host?: string; open?: boolean }
+  agents?: Record<string, { path?: string; executable?: string; skillDirectories?: string[] }>
 }
 
 /**
  * The editable subset of the Machine Config accepted by `PUT /api/settings`.
- * A `path` remains supported for existing configuration. `skillDirectories`
- * controls one or more explicit locations; an empty array clears it.
+ * Agent overrides carry a `path` (a non-empty string sets it; an empty string
+ * removes the override).
  */
 export interface SettingsPatch {
   linkStrategy?: LinkStrategy
-  web?: { host?: string; port?: number; open?: boolean }
+  web?: { port?: number; host?: string; open?: boolean }
   agents?: Record<string, { path?: string; skillDirectories?: string[] }>
 }
 
@@ -249,51 +238,96 @@ export interface SkillDiff {
   unchanged: boolean
 }
 
+/* ---- V0.4 lifecycle API (M17 fork/vendor/restore, M20 merge) ---- */
+
+/** One lifecycle operation's outcome, rendered by the Web UI. */
+export interface LifecycleOperationResult {
+  name: string
+  action: 'forked' | 'vendored' | 'restored' | 'merged' | 'continued' | 'aborted'
+  /** Repo-relative path of the forked/vendored copy (when applicable). */
+  localPath?: string
+  /** Revision the skill is based on / restored to (when applicable). */
+  revision?: string
+  /** Files restored to the lockfile integrity (restore / merge abort). */
+  filesRestored?: number
+  /** Files merged (3-way merge). */
+  filesMerged?: number
+  /** Conflict hunks left in the content (0 = clean merge). */
+  changes?: number
+  /** Conflicts left after a merge / continue (empty = clean). */
+  conflicts?: Array<{ path: string; hunks: number; reason?: string }>
+  /** New base revision after a clean merge. */
+  baseRevision?: string
+}
+
+/** Merge action accepted by `POST /api/skills/:id/merge`. */
+export type MergeAction = 'merge' | 'continue' | 'abort'
+
+export interface BackupRecord {
+  id: string
+  kind: 'runtime' | 'repo-dir'
+  operation: string
+  alias: string
+  createdAt: string
+  path: string
+  sourcePath: string
+  repositoryRoot: string
+}
+
+export interface RollbackResult {
+  id: string
+  kind: 'runtime' | 'repo-dir'
+  operation: string
+  alias: string
+  filesRestored: number
+  path: string
+}
+
+/** One remote machine from `.skillbox/fleet.yaml` (Fleet: multi-host SSH orchestration). */
+export interface FleetHostConfig {
+  name: string
+  host: string
+  user?: string
+  port?: number
+  identityFile?: string
+  remotePath?: string
+  skillboxBin?: string
+  tags?: string[]
+}
+
+export type FleetOperationName = 'install' | 'update' | 'status'
+
+export interface FleetHostResult {
+  host: string
+  ok: boolean
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  durationMs: number
+  error?: string
+}
+
+export interface FleetRunResult {
+  operation: FleetOperationName
+  results: FleetHostResult[]
+}
+
+/** Body of `POST /api/fleet/run`: named/tagged config hosts, plus ad-hoc `--ssh`-style entries. */
+export interface FleetRunRequest {
+  operation: FleetOperationName
+  hosts?: string[]
+  tags?: string[]
+  ssh?: string[]
+  concurrency?: number
+  dryRun?: boolean
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
     message: string
     recoverable: boolean
   }
-}
-
-/* ---- Multi-device sync ---- */
-
-/** Presentation-only state returned by the local sync service. */
-export type SyncStatus =
-  | { kind: 'idle' }
-  | { kind: 'completed'; automaticallyMerged: number; snapshotId?: string; retriedPushes: number }
-  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
-  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
-
-export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
-export type SyncConflictKind =
-  'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
-
-export interface SyncConflictView {
-  id: string
-  type: SyncConflictKind
-  skillAlias?: string
-  path?: string
-  field?: string
-  basePreview?: string
-  localPreview?: string
-  remotePreview?: string
-  allowedResolutions: ConflictChoice[]
-  recommendedResolution?: ConflictChoice
-  destructive: boolean
-}
-
-export interface ConflictSessionView {
-  id: string
-  snapshotId: string
-  createdAt: string
-  expiresAt: string
-  conflicts: SyncConflictView[]
-}
-
-export interface ResolveSyncConflictsInput {
-  resolutions: Record<string, ConflictChoice>
 }
 
 /** Error thrown when the API answers with a non-2xx status (M10.8 envelope). */
@@ -311,18 +345,7 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * A sync conflict or a safely-paused sync is an expected workflow result, not
- * an API failure. The server deliberately uses 409/423 for those outcomes so
- * other clients can distinguish them from a completed sync. Allow just those
- * status codes through for the sync calls below; all regular error envelopes
- * still become ApiError instances.
- */
-async function request<T>(
-  path: string,
-  init?: RequestInit,
-  acceptedStatuses: readonly number[] = [],
-): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -339,7 +362,7 @@ async function request<T>(
     body = undefined
   }
 
-  if (!response.ok && !acceptedStatuses.includes(response.status)) {
+  if (!response.ok) {
     const envelope = body as ApiErrorBody | undefined
     if (envelope?.error !== undefined) {
       const { code, message, recoverable } = envelope.error
@@ -380,24 +403,16 @@ export interface ApiClient {
   installRegistrySkill(input: InstallInput): Promise<InstallResult>
   /* V0.4 diff API */
   skillDiff(name: string): Promise<SkillDiff>
-  syncStatus(): Promise<SyncStatus>
-  sync(): Promise<SyncStatus>
-  conflicts(): Promise<ConflictSessionView[]>
-  conflict(id: string): Promise<ConflictSessionView>
-  resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
-  restoreSyncSnapshot(id: string): Promise<void>
-  forkSkill(name: string): Promise<LifecycleResult>
-  vendorSkill(
-    name: string,
-    input?: { keepProvenance?: boolean; removeBaseSnapshot?: boolean },
-  ): Promise<LifecycleResult>
-  restoreSkill(name: string): Promise<LifecycleResult>
-  mergeSkill(name: string): Promise<LifecycleResult>
-  continueMerge(name: string): Promise<LifecycleResult>
-  abortMerge(name: string): Promise<LifecycleResult>
-  rollbackOperation(
-    operationId?: string,
-  ): Promise<{ operationId: string; restoredTargets: string[] }>
+  /* V0.4 lifecycle API */
+  forkSkill(name: string): Promise<LifecycleOperationResult>
+  vendorSkill(name: string): Promise<LifecycleOperationResult>
+  restoreSkill(name: string): Promise<LifecycleOperationResult>
+  mergeSkill(name: string, action?: MergeAction): Promise<LifecycleOperationResult>
+  rollbacks(): Promise<BackupRecord[]>
+  restoreRollback(id: string): Promise<RollbackResult>
+  /* Fleet API */
+  fleetHosts(): Promise<FleetHostConfig[]>
+  fleetRun(input: FleetRunRequest): Promise<FleetRunResult>
 }
 
 function encodeName(name: string): string {
@@ -533,101 +548,61 @@ export const api: ApiClient = {
     return response.diff
   },
 
-  async syncStatus() {
-    const response = await request<{ sync: SyncStatus }>('/api/sync/status')
-    return response.sync
-  },
-
-  async sync() {
-    const response = await request<{ sync: SyncStatus }>(
-      '/api/sync',
-      { method: 'POST' },
-      [409, 423],
-    )
-    return response.sync
-  },
-
-  async conflicts() {
-    const response = await request<{ conflicts: ConflictSessionView[] }>('/api/conflicts')
-    return response.conflicts
-  },
-
-  async conflict(id) {
-    const response = await request<{ conflict: ConflictSessionView }>(
-      `/api/conflicts/${encodeName(id)}`,
-    )
-    return response.conflict
-  },
-
-  async resolveConflicts(id, input) {
-    const response = await request<{ sync: SyncStatus }>(
-      `/api/conflicts/${encodeName(id)}/resolve`,
-      { method: 'POST', body: JSON.stringify(input) },
-      [409, 423],
-    )
-    return response.sync
-  },
-
-  async restoreSyncSnapshot(id) {
-    await request<unknown>(`/api/sync/snapshots/${encodeName(id)}/restore`, { method: 'POST' })
-  },
-
   async forkSkill(name) {
-    return (
-      await request<{ forked: LifecycleResult }>(`/api/skills/${encodeName(name)}/fork`, {
-        method: 'POST',
-      })
-    ).forked
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/fork`,
+      { method: 'POST' },
+    )
+    return response.result
   },
 
-  async vendorSkill(name, input) {
-    return (
-      await request<{ vendored: LifecycleResult }>(`/api/skills/${encodeName(name)}/vendor`, {
-        method: 'POST',
-        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-      })
-    ).vendored
+  async vendorSkill(name) {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/vendor`,
+      { method: 'POST' },
+    )
+    return response.result
   },
 
   async restoreSkill(name) {
-    return (
-      await request<{ restored: LifecycleResult }>(`/api/skills/${encodeName(name)}/restore`, {
-        method: 'POST',
-      })
-    ).restored
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/restore`,
+      { method: 'POST' },
+    )
+    return response.result
   },
 
-  async mergeSkill(name) {
-    return (
-      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge`, {
-        method: 'POST',
-      })
-    ).merge
+  async mergeSkill(name, action = 'merge') {
+    const response = await request<{ result: LifecycleOperationResult }>(
+      `/api/skills/${encodeName(name)}/merge`,
+      { method: 'POST', body: JSON.stringify({ action }) },
+    )
+    return response.result
   },
 
-  async continueMerge(name) {
-    return (
-      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge/continue`, {
-        method: 'POST',
-      })
-    ).merge
+  async rollbacks() {
+    const response = await request<{ rollbacks: BackupRecord[] }>('/api/rollbacks')
+    return response.rollbacks
   },
 
-  async abortMerge(name) {
-    return (
-      await request<{ merge: LifecycleResult }>(`/api/skills/${encodeName(name)}/merge/abort`, {
-        method: 'POST',
-      })
-    ).merge
-  },
-
-  async rollbackOperation(operationId) {
-    const response = await request<{
-      rollback: { operationId: string; restoredTargets: string[] }
-    }>('/api/operations/rollback', {
-      method: 'POST',
-      ...(operationId === undefined ? {} : { body: JSON.stringify({ operationId }) }),
-    })
+  async restoreRollback(id) {
+    const response = await request<{ rollback: RollbackResult }>(
+      `/api/rollbacks/${encodeURIComponent(id)}/restore`,
+      { method: 'POST' },
+    )
     return response.rollback
+  },
+
+  async fleetHosts() {
+    const response = await request<{ hosts: FleetHostConfig[] }>('/api/fleet/hosts')
+    return response.hosts
+  },
+
+  async fleetRun(input) {
+    const response = await request<{ result: FleetRunResult }>('/api/fleet/run', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.result
   },
 }

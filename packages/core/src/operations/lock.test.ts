@@ -1,76 +1,110 @@
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import { withTempDir } from '../fs/test-utils.js'
-import {
-  acquireOperationLock,
-  isStaleOperationLock,
-  operationLockPath,
-  readOperationLock,
-  repositoryKey,
-} from './lock.js'
+import { ErrorCode, isSkillboxError } from '../errors.js'
+import { acquireRuntimeLock, withRuntimeLock, lockDirOf } from './lock.js'
 
-const owner = { id: 'test-owner', pid: 42, hostname: 'test-host' }
-
-describe('operation lock', () => {
-  it('is exclusive per repository and releases only its own owner record', async () => {
+describe('runtime lock', () => {
+  it('acquires and releases the lock file', async () => {
     await withTempDir(async (dir) => {
-      const options = {
-        repositoryRoot: path.join(dir, 'repo'),
-        stateRoot: path.join(dir, 'state'),
-        owner,
-      }
-      const lock = await acquireOperationLock(options)
-      await expect(
-        acquireOperationLock({ ...options, owner: { ...owner, id: 'other' } }),
-      ).rejects.toMatchObject({ code: 'LOCK_HELD' })
-      await lock.release()
-      await expect(
-        acquireOperationLock({ ...options, owner: { ...owner, id: 'other' } }),
-      ).resolves.toBeDefined()
+      const handle = await acquireRuntimeLock('mutation', { homeRoot: dir })
+      expect(handle.owner.pid).toBe(process.pid)
+      await expect(fs.stat(lockPath(dir, 'mutation'))).resolves.toBeDefined()
+      await handle.release()
+      await expect(fs.stat(lockPath(dir, 'mutation'))).rejects.toThrow()
     })
   })
 
-  it('recovers an expired lock using the injected clock', async () => {
+  it('rejects a live lock held by another process', async () => {
     await withTempDir(async (dir) => {
-      let now = 1_000
-      const options = {
-        repositoryRoot: path.join(dir, 'repo'),
-        stateRoot: path.join(dir, 'state'),
-        owner,
-        staleAfterMs: 10,
-        clock: { now: () => now },
-      }
-      await acquireOperationLock(options)
-      now = 1_011
-      const recovered = await acquireOperationLock({
-        ...options,
-        owner: { ...owner, id: 'recovered' },
+      const now = { value: 1_000 }
+      const first = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        hostname: () => 'host-a',
+        pid: 111,
       })
-      expect(recovered.record.owner.id).toBe('recovered')
+      now.value = 2_000 // 1s later — still well below the 10min stale threshold
+
+      const error = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        hostname: () => 'host-b',
+        pid: 222,
+      }).catch((caught: unknown) => caught)
+
+      expect(isSkillboxError(error)).toBe(true)
+      expect(error).toMatchObject({
+        code: ErrorCode.RUNTIME_LOCKED,
+        recoverable: true,
+        context: { owner: { pid: 111, hostname: 'host-a' } },
+      })
+      await first.release()
     })
   })
 
-  it('derives a stable key without exposing the repository path', () => {
-    const root = path.resolve('private/repository')
-    const key = repositoryKey(root)
-    expect(key).toMatch(/^[a-f0-9]{64}$/)
-    expect(operationLockPath('/state', key)).toContain(key)
-    expect(isStaleOperationLock(undefined, 0)).toBe(true)
+  it('breaks a stale lock and re-acquires', async () => {
+    await withTempDir(async (dir) => {
+      const now = { value: 1_000 }
+      const stale = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        pid: 111,
+      })
+      now.value = 1_000 + 11 * 60 * 1_000 // > 10min stale threshold
+      // The stale owner "crashed" without releasing.
+      void stale
+
+      const handle = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        pid: 222,
+      })
+      expect(handle.owner.pid).toBe(222)
+      await handle.release()
+    })
   })
 
-  it('refuses to release after ownership is replaced', async () => {
+  it('withRuntimeLock releases even when the callback throws', async () => {
     await withTempDir(async (dir) => {
-      const stateRoot = path.join(dir, 'state')
-      const repositoryRoot = path.join(dir, 'repo')
-      const lock = await acquireOperationLock({ repositoryRoot, stateRoot, owner })
-      await lock.release()
-      await acquireOperationLock({
-        repositoryRoot,
-        stateRoot,
-        owner: { ...owner, id: 'new-owner' },
+      await expect(
+        withRuntimeLock(
+          'mutation',
+          async () => {
+            throw new Error('boom')
+          },
+          { homeRoot: dir },
+        ),
+      ).rejects.toThrow('boom')
+      await expect(fs.stat(lockPath(dir, 'mutation'))).rejects.toThrow()
+    })
+  })
+
+  it('release does not remove a lock re-acquired by a newer process', async () => {
+    await withTempDir(async (dir) => {
+      const now = { value: 1_000 }
+      const first = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        pid: 111,
       })
-      await expect(lock.release()).rejects.toMatchObject({ code: 'LOCK_OWNERSHIP_LOST' })
-      expect(await readOperationLock(lock.path)).toMatchObject({ owner: { id: 'new-owner' } })
+      // Another process breaks the stale lock and acquires it.
+      now.value = 1_000 + 11 * 60 * 1_000
+      const second = await acquireRuntimeLock('mutation', {
+        homeRoot: dir,
+        now: () => now.value,
+        pid: 222,
+      })
+      // The first owner releases late — its lock is gone; it must not remove
+      // the new owner's file.
+      await first.release()
+      await expect(fs.stat(lockPath(dir, 'mutation'))).resolves.toBeDefined()
+      await second.release()
     })
   })
 })
+
+function lockPath(homeRoot: string, name: string): string {
+  return path.join(lockDirOf(homeRoot), `${name}.lock`)
+}

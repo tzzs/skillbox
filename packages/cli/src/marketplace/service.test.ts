@@ -380,8 +380,9 @@ skills:
   managed-foo:
     mode: managed
     source:
-      type: git
-      url: https://gitlab.com/x/y
+      type: registry
+      registry: other
+      package: x/y
     revision: aaaaaaa
     integrity: h1
   local-skill:
@@ -590,10 +591,28 @@ describe('normalizeLockedSource', () => {
     })
   })
 
+  it('maps git manifest sources onto the registry framework', () => {
+    expect(
+      normalizeLockedSource({
+        type: 'git',
+        url: 'https://git.example.com/org/repo.git',
+        path: 'skills/hello',
+        ref: 'main',
+      }),
+    ).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+      path: 'skills/hello',
+      ref: 'main',
+    })
+  })
+
   it('returns undefined for sources the framework cannot represent yet', () => {
-    expect(normalizeLockedSource({ type: 'git', url: 'https://example.com/x.git' })).toBeUndefined()
     expect(
       normalizeLockedSource({ type: 'registry', registry: 'skills.sh', package: 'org/x' }),
+    ).toEqual({ type: 'skills-sh', package: 'org/x' })
+    expect(
+      normalizeLockedSource({ type: 'registry', registry: 'other', package: 'org/x' }),
     ).toBeUndefined()
   })
 })

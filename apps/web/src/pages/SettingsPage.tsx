@@ -17,11 +17,10 @@ const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction',
 
 interface MachineDraft {
   linkStrategy: LinkStrategy
-  webHost: string
   webPort: string
+  webHost: string
   webOpen: boolean
   agentPaths: Record<string, string>
-  agentSkillDirectories: Record<string, string>
 }
 
 /**
@@ -43,7 +42,6 @@ export function SettingsPage() {
 
   const [draft, setDraft] = useState<MachineDraft | null>(null)
   const [seededOverrides, setSeededOverrides] = useState<Record<string, string>>({})
-  const [seededSkillDirectories, setSeededSkillDirectories] = useState<Record<string, string>>({})
   const [portError, setPortError] = useState(false)
 
   useEffect(() => {
@@ -51,24 +49,18 @@ export function SettingsPage() {
       return
     }
     const overrides: Record<string, string> = {}
-    const directories: Record<string, string> = {}
     for (const [id, entry] of Object.entries(settings.agents ?? {})) {
-      if (entry !== null && typeof entry === 'object' && entry.path !== undefined) {
-        overrides[id] = entry.path
-      }
-      if (entry !== null && typeof entry === 'object' && entry.skillDirectories !== undefined) {
-        directories[id] = entry.skillDirectories.join('\n')
+      if (entry !== null && typeof entry === 'object') {
+        if (entry.path !== undefined) overrides[id] = entry.path
       }
     }
     setSeededOverrides(overrides)
-    setSeededSkillDirectories(directories)
     setDraft({
       linkStrategy: settings.linkStrategy ?? 'auto',
-      webHost: settings.web?.host ?? '',
       webPort: settings.web?.port === undefined ? '' : String(settings.web.port),
+      webHost: settings.web?.host ?? '',
       webOpen: settings.web?.open ?? true,
-      agentPaths: overrides,
-      agentSkillDirectories: directories,
+      agentPaths: {},
     })
   }, [settings, draft])
 
@@ -87,16 +79,6 @@ export function SettingsPage() {
     })
   }
 
-  const setAgentSkillDirectories = (id: string, value: string) => {
-    setDraft((current) => {
-      if (current === null) return current
-      return {
-        ...current,
-        agentSkillDirectories: { ...current.agentSkillDirectories, [id]: value },
-      }
-    })
-  }
-
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (draft === null || save.isPending) {
@@ -110,39 +92,28 @@ export function SettingsPage() {
       return
     }
     const patch: SettingsPatch = { linkStrategy: draft.linkStrategy }
-    const web: { host?: string; port?: number; open?: boolean } = {
-      ...(draft.webHost.trim() !== '' ? { host: draft.webHost.trim() } : {}),
+    const web: { port?: number; host?: string; open?: boolean } = {
       ...(draft.webPort.trim() !== '' ? { port } : {}),
+      ...(draft.webHost.trim() !== '' ? { host: draft.webHost.trim() } : {}),
       open: draft.webOpen,
     }
-    const currentHost = settings?.web?.host ?? ''
     const currentPort = settings?.web?.port
+    const currentHost = settings?.web?.host ?? ''
     const currentOpen = settings?.web?.open ?? true
     if (
-      web.host !== currentHost ||
       web.open !== currentOpen ||
-      (web.port ?? undefined) !== (currentPort ?? undefined)
+      (web.port ?? undefined) !== (currentPort ?? undefined) ||
+      (web.host ?? '') !== currentHost
     ) {
       patch.web = web
     }
     const agentPatch: Record<string, { path?: string; skillDirectories?: string[] }> = {}
     for (const agent of agents) {
       const value = draft.agentPaths[agent.id]
-      const directories = draft.agentSkillDirectories[agent.id]
-      const pathChanged = value !== (seededOverrides[agent.id] ?? '')
-      const directoriesChanged = directories !== (seededSkillDirectories[agent.id] ?? '')
-      if (pathChanged || directoriesChanged) {
-        agentPatch[agent.id] = {
-          ...(pathChanged ? { path: value ?? '' } : {}),
-          ...(directoriesChanged
-            ? {
-                skillDirectories: (directories ?? '')
-                  .split(/\r?\n/)
-                  .map((directory) => directory.trim())
-                  .filter((directory) => directory !== ''),
-              }
-            : {}),
-        }
+      if (value !== undefined) {
+        agentPatch[agent.id] = { path: value }
+      } else if (seededOverrides[agent.id] !== undefined) {
+        agentPatch[agent.id] = { path: '' }
       }
     }
     if (Object.keys(agentPatch).length > 0) {
@@ -299,12 +270,8 @@ export function SettingsPage() {
                       className="field-input"
                       value={draft.webHost}
                       onChange={(event) => setDraft({ ...draft, webHost: event.target.value })}
-                      placeholder="server default"
+                      placeholder="127.0.0.1"
                     />
-                    <p className="field-hint">
-                      Saved for launchers that read Machine settings; the active server is
-                      unchanged.
-                    </p>
                   </div>
                   <div className="field" style={{ flex: 1 }}>
                     <label className="field-label" htmlFor="setting-web-port">
@@ -361,16 +328,6 @@ export function SettingsPage() {
                               onChange={(event) => setAgentPath(agent.id, event.target.value)}
                               placeholder="detected path (unset to auto-detect)"
                               aria-label={`Override path for ${agent.name}`}
-                            />
-                            <textarea
-                              className="field-input"
-                              rows={2}
-                              value={draft.agentSkillDirectories[agent.id] ?? ''}
-                              onChange={(event) =>
-                                setAgentSkillDirectories(agent.id, event.target.value)
-                              }
-                              placeholder="one skill directory per line (unset to auto-detect)"
-                              aria-label={`Override skill directories for ${agent.name}`}
                             />
                             <span className={`settings-agent-state${changed ? ' is-changed' : ''}`}>
                               {changed ? 'unsaved' : 'saved'}
