@@ -118,6 +118,8 @@ export interface CliAgentAdapterConfig {
   defaultSkillsSubdir: string
   /** Precise skills directory override (highest priority). */
   skillsDir?: string
+  /** Explicit ordered skill-directory overrides (highest priority). */
+  skillDirectories?: string[]
   homeDir?: string
   env?: NodeJS.ProcessEnv
   /** Search PATH for the executable; disable for deterministic fixtures. */
@@ -171,6 +173,9 @@ export abstract class CliAgentAdapter implements AgentAdapter {
    * environment variable and falls back to `~/.<name>`.
    */
   async getSkillDirectories(): Promise<string[]> {
+    if (this.config.skillDirectories !== undefined) {
+      return this.config.skillDirectories.map((directory) => path.resolve(directory))
+    }
     return [await this.resolveSkillsDirectory()]
   }
 

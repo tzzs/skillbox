@@ -27,6 +27,7 @@ import type { GitClient } from '../git/index.js'
 import type { ProviderRegistry } from '../registry/index.js'
 import type { FilesystemService } from '../fs/filesystem-service.js'
 import { resolveSkillboxHome } from '../runtime/paths.js'
+import type { SkillSourceResolver } from '../sources/index.js'
 
 export type SkillDiffWhich = 'managed' | 'base-local' | 'local-upstream' | 'base-upstream'
 
@@ -70,6 +71,8 @@ export interface DiffSkillOptions {
   registry?: ProviderRegistry
   remoteRoot?: string
   filesystem?: FilesystemService
+  /** Canonical remote-source resolution for diff content views. */
+  sourceResolver?: SkillSourceResolver
 }
 
 interface DiffContext {
@@ -140,6 +143,7 @@ async function openContext(options: DiffSkillOptions): Promise<DiffContext> {
     registry: options.registry,
     remoteRoot: options.remoteRoot,
     filesystem: options.filesystem,
+    sourceResolver: options.sourceResolver,
   })
   // Read sequentially so a failure cannot leave filesystem work running after
   // diffSkill has rejected, which can race with cleanup on Windows.

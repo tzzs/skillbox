@@ -1,3 +1,4 @@
+import * as path from 'node:path'
 import { ErrorCode, SkillboxError } from '../errors.js'
 import type { EnsureRepositoryOptions } from '../github/index.js'
 import type {
@@ -6,15 +7,25 @@ import type {
   RepositorySync,
   RepositorySyncConnectResult,
   RepositorySyncEvent,
+  SyncOutcome,
+  SyncRequest,
+  ResolveConflictsRequest,
 } from './types.js'
+import { SyncTransaction } from './sync-transaction.js'
+import { ConflictSessionStore } from './conflict-session-store.js'
+import { SnapshotService } from './snapshot-service.js'
 
 export interface RepositorySyncServiceOptions {
   repositoryRoot: string
+  /** The Skillbox home owning sync sessions, snapshots and temporary trees. */
+  homeRoot?: string
   git: RepositoryGitPort
   host: RepositoryHostPort
   onEvent?: (event: RepositorySyncEvent) => void
   sleep?: (milliseconds: number) => Promise<void>
   now?: () => number
+  /** Runs only after a validated repository result has been committed and pushed. */
+  reconcile?: () => Promise<void>
 }
 
 /** Owns the GitHub-account, hosted-repository, and local-Git consistency boundary. */
@@ -22,12 +33,16 @@ export class RepositorySyncService implements RepositorySync {
   private readonly repositoryRoot: string
   private readonly git: RepositoryGitPort
   private readonly host: RepositoryHostPort
+  private readonly homeRoot: string
   private readonly onEvent: (event: RepositorySyncEvent) => void
   private readonly sleep: (milliseconds: number) => Promise<void>
   private readonly now: () => number
+  private readonly reconcile: (() => Promise<void>) | undefined
 
   constructor(options: RepositorySyncServiceOptions) {
     this.repositoryRoot = options.repositoryRoot
+    this.homeRoot =
+      options.homeRoot ?? process.env.SKILLBOX_HOME ?? path.join(process.cwd(), '.skillbox')
     this.git = options.git
     this.host = options.host
     this.onEvent = options.onEvent ?? (() => undefined)
@@ -35,6 +50,7 @@ export class RepositorySyncService implements RepositorySync {
       options.sleep ??
       ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
     this.now = options.now ?? (() => Date.now())
+    this.reconcile = options.reconcile
   }
 
   async status() {
@@ -135,9 +151,140 @@ export class RepositorySyncService implements RepositorySync {
     })
   }
 
-  async sync(): Promise<void> {
-    await this.pull()
-    await this.push()
+  async sync(_input: SyncRequest = {}): Promise<SyncOutcome> {
+    const transaction = new SyncTransaction({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+      auth: () => this.host.getGitTransportAuth(),
+      event: (phase) => this.phase(phase),
+    })
+    const outcome = await transaction.run()
+    if (outcome.kind !== 'blocked' || outcome.reason !== 'recovery-required') {
+      return this.reconcileAfterPublish(outcome)
+    }
+    const status = await this.status()
+    if (status.hasConflicts) {
+      return {
+        kind: 'blocked',
+        reason: 'git-merge-in-progress',
+        recovery: {
+          retryable: true,
+          message: 'Finish or abort the existing repository operation before syncing again.',
+        },
+      }
+    }
+    try {
+      // The transaction layer owns semantic merge in production. Retaining this
+      // safe transport fallback keeps injected ports compatible and never
+      // writes conflict markers itself.
+      await this.pull()
+      await this.push()
+      return this.reconcileAfterPublish({
+        kind: 'completed',
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      })
+    } catch (error) {
+      if (error instanceof SkillboxError && error.code === ErrorCode.GIT_PUSH_REJECTED) {
+        return {
+          kind: 'blocked',
+          reason: 'push-retry-exhausted',
+          recovery: {
+            retryable: true,
+            message: 'The other device changed the repository. Sync again.',
+          },
+        }
+      }
+      throw error
+    }
+  }
+
+  private async reconcileAfterPublish(outcome: SyncOutcome): Promise<SyncOutcome> {
+    if (outcome.kind !== 'completed' || this.reconcile === undefined) return outcome
+    this.phase('reconcile')
+    try {
+      await this.reconcile()
+      return outcome
+    } catch {
+      return {
+        kind: 'blocked',
+        reason: 'recovery-required',
+        recovery: {
+          retryable: true,
+          ...(outcome.summary.createdSnapshotId === undefined
+            ? {}
+            : { snapshotId: outcome.summary.createdSnapshotId }),
+          message:
+            'The repository was synchronized, but this device could not refresh its runtime. Retry the runtime refresh.',
+        },
+      }
+    }
+  }
+
+  async listConflicts() {
+    return new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+    }).list()
+  }
+
+  async getConflict(sessionId: string) {
+    return new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+    }).get(sessionId)
+  }
+
+  async resolveConflicts(input: ResolveConflictsRequest): Promise<SyncOutcome> {
+    const store = new ConflictSessionStore({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+    })
+    const session = await store.get(input.sessionId)
+    const expected = new Map(session.conflicts.map((conflict) => [conflict.id, conflict]))
+    for (const [id, resolution] of Object.entries(input.resolutions)) {
+      const conflict = expected.get(id)
+      if (conflict === undefined || !conflict.allowedResolutions.includes(resolution)) {
+        throw new SkillboxError(
+          ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
+          'One of the selected conflict resolutions is no longer valid. Review the conflicts and try again.',
+          { recoverable: true },
+        )
+      }
+      expected.delete(id)
+    }
+    if (expected.size > 0) {
+      throw new SkillboxError(
+        ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION,
+        'Choose a resolution for every pending conflict before continuing.',
+        { recoverable: true },
+      )
+    }
+
+    return new SyncTransaction({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+      auth: () => this.host.getGitTransportAuth(),
+      event: (phase) => this.phase(phase),
+    }).resolve(session, input.resolutions)
+  }
+
+  async restoreSnapshot(snapshotId: string): Promise<void> {
+    if (!hasSnapshotGit(this.git)) {
+      throw new SkillboxError(
+        ErrorCode.SYNC_SNAPSHOT_RESTORE_FAILED,
+        'This Git implementation cannot safely restore a sync restore point.',
+        {
+          recoverable: true,
+        },
+      )
+    }
+    await new SnapshotService({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+    }).restore(snapshotId)
   }
 
   private async authorize(): Promise<'existing' | 'completed'> {
@@ -198,6 +345,15 @@ export class RepositorySyncService implements RepositorySync {
   private phase(phase: Extract<RepositorySyncEvent, { type: 'phase' }>['phase']): void {
     this.onEvent({ type: 'phase', phase })
   }
+}
+
+function hasSnapshotGit(
+  git: RepositoryGitPort,
+): git is RepositoryGitPort &
+  Required<Pick<RepositoryGitPort, 'revParse' | 'createPrivateRef' | 'deletePrivateRef'>> {
+  return ['revParse', 'createPrivateRef', 'deletePrivateRef'].every(
+    (key) => typeof git[key as keyof RepositoryGitPort] === 'function',
+  )
 }
 
 function canonicalRemoteUrl(value: string): string {

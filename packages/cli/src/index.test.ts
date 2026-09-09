@@ -100,7 +100,19 @@ describe('cli', () => {
       },
       pull: async () => undefined,
       push: async () => undefined,
-      sync: async () => undefined,
+      sync: async () => ({
+        kind: 'completed',
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      }),
+      listConflicts: async () => [],
+      getConflict: async () => {
+        throw new Error('not used')
+      },
+      resolveConflicts: async () => ({
+        kind: 'completed',
+        summary: { automaticallyMerged: 0, retriedPushes: 0 },
+      }),
+      restoreSnapshot: async () => undefined,
     } satisfies RepositorySync
 
     expect(await main(['connect'], { ...io, repositorySync })).toBe(0)

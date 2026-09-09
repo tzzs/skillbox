@@ -1960,6 +1960,166 @@ code,
 
 /* ---- V0.4 Skill Diff (M19.5) ---- */
 
+/* ---- Multi-device sync ---- */
+
+.sync-card {
+  max-width: 640px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.sync-card h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.sync-card p {
+  margin: 0 0 16px;
+  color: var(--text-2);
+}
+.sync-subtle {
+  font-size: 12.5px;
+  color: var(--text-3) !important;
+}
+
+.sync-note,
+.sync-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.sync-note svg {
+  width: 16px;
+  color: var(--ok);
+}
+.sync-restore {
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--ok-line);
+  border-radius: var(--radius-sm);
+  background: var(--ok-bg);
+}
+.conflict-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.conflict-card {
+  padding: 18px;
+}
+.conflict-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.conflict-card-head .page-description {
+  margin: 5px 0 0;
+}
+.conflict-card details {
+  margin-top: 14px;
+}
+.conflict-card summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.conflict-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.conflict-diff h3 {
+  margin: 0 0 5px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.conflict-diff .diff-patch {
+  margin: 0;
+  max-height: 260px;
+}
+.conflict-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+}
+.conflict-choices legend {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.conflict-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.conflict-choice:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.conflict-choice--selected {
+  border-color: var(--accent);
+  background: var(--info-bg);
+  color: var(--text);
+}
+.conflict-choice input {
+  accent-color: var(--accent);
+}
+.modal-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 48%);
+}
+.confirm-dialog {
+  width: min(100%, 420px);
+  padding: 22px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.confirm-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+.confirm-dialog p {
+  margin: 0;
+  color: var(--text-2);
+}
+.confirm-dialog .form-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+@media (max-width: 600px) {
+  .conflict-diff {
+    grid-template-columns: 1fr;
+  }
+  .conflict-card-head {
+    flex-direction: column;
+  }
+}
+
 .diff-file-list {
   list-style: none;
   margin: 0;
