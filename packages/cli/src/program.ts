@@ -21,6 +21,8 @@ import {
   withRuntimeLock,
   type AgentDetectionSummary,
   type AgentRegistry,
+  type FleetOperationName,
+  type FleetService,
   type MigrateFileReport,
   type ReconcileProblem,
   type RepositorySync,
@@ -83,6 +85,15 @@ import {
   type LifecycleProvider,
   type MergeProvider,
 } from './skill-lifecycle/index.js'
+import {
+  collect,
+  createDefaultFleetService,
+  renderFleetHostsTable,
+  renderFleetRunTable,
+  runOptionsFromOptions,
+  selectorFromOptions,
+  type FleetCliOptions,
+} from './fleet/index.js'
 
 /** V0.3 marketplace provider overrides (search/add/outdated/update/cache clean). */
 export interface MarketplaceDeps {
@@ -129,6 +140,8 @@ export interface CliDeps {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle providers; default-constructed from @skillbox/core. */
   lifecycle?: LifecycleDeps
+  /** Fleet (multi-host SSH orchestration); defaults to reading `.skillbox/fleet.yaml`. */
+  fleet?: FleetService
   /** Structured audit logger; defaults to the home log file. */
   logger?: Logger
 }
@@ -149,6 +162,8 @@ export interface CliContext {
   marketplace?: MarketplaceDeps
   /** V0.4 lifecycle provider overrides; defaults applied in buildProgram. */
   lifecycle?: LifecycleDeps
+  /** Fleet provider override; defaults applied in buildProgram. */
+  fleet?: FleetService
   /** Prompt implementation for the interactive `add` flow. */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -186,6 +201,9 @@ export function buildContext(deps: CliDeps = {}): CliContext {
   }
   if (deps.lifecycle !== undefined) {
     context.lifecycle = deps.lifecycle
+  }
+  if (deps.fleet !== undefined) {
+    context.fleet = deps.fleet
   }
   if (deps.prompts !== undefined) {
     context.prompts = deps.prompts
@@ -978,6 +996,87 @@ export function buildProgram(ctx: CliContext): Command {
         const outcome = await lifecycle.merge({ name, action })
         ctx.out(`${renderMergeOutcome(outcome)}\n`)
       }),
+    )
+
+  // Fleet — orchestrates `skillbox install` / `update` / `status` on remote
+  // hosts over SSH, reading `.skillbox/fleet.yaml` for the inventory (a
+  // `--ssh [user@]host[:port]` entry works without any config file at all).
+  // No local runtime state is touched, so these commands skip the mutation
+  // lock; a failed host is reported per-row and only fails the process exit
+  // code (FLEET_RUN_FAILED), never the other hosts in the same run.
+  const fleet = ctx.fleet ?? createDefaultFleetService(ctx.repositoryRoot)
+  const fleetCommand = program
+    .command('fleet')
+    .description('Orchestrate skillbox install/update/status across remote hosts over SSH')
+
+  fleetCommand
+    .command('list')
+    .description('List the hosts configured in .skillbox/fleet.yaml')
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (options: { json?: boolean }) => {
+      const hosts = await fleet.listHosts()
+      if (options.json === true) {
+        printJson(ctx.out, { hosts })
+        return
+      }
+      ctx.out(`${renderFleetHostsTable(hosts)}\n`)
+    })
+
+  function addFleetSelectorOptions(command: Command): Command {
+    return command
+      .option('--host <name>', 'select a configured host by name (repeatable)', collect, [])
+      .option('--tag <tag>', 'select configured hosts carrying this tag (repeatable)', collect, [])
+      .option(
+        '--ssh <spec>',
+        'target an ad-hoc [user@]host[:port] outside fleet.yaml (repeatable)',
+        collect,
+        [],
+      )
+      .option('--concurrency <n>', 'maximum hosts contacted at once (default 4)')
+      .option('--dry-run', 'print the command that would run on each host without running it')
+      .option('--json', 'emit JSON instead of a table')
+  }
+
+  async function runFleetCommand(
+    operation: FleetOperationName,
+    options: FleetCliOptions & { json?: boolean },
+  ): Promise<void> {
+    const result = await fleet.run(
+      operation,
+      selectorFromOptions(options),
+      runOptionsFromOptions(options),
+    )
+    if (options.json === true) {
+      printJson(ctx.out, result)
+    } else {
+      ctx.out(`${renderFleetRunTable(result)}\n`)
+    }
+    const failedCount = result.results.filter((entry) => !entry.ok).length
+    if (failedCount > 0) {
+      throw new SkillboxError(
+        ErrorCode.FLEET_RUN_FAILED,
+        `fleet ${operation} failed on ${failedCount} of ${result.results.length} host(s)`,
+        { recoverable: true, context: { operation, failedCount } },
+      )
+    }
+  }
+
+  addFleetSelectorOptions(fleetCommand.command('install'))
+    .description('Run `skillbox install` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('install', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('update'))
+    .description('Run `skillbox update` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('update', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('status'))
+    .description('Run `skillbox status` on the selected fleet hosts over SSH')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('status', options),
     )
 
   // M10/M11 — the `web` subcommand is registered by the web module; the

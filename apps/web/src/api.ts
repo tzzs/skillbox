@@ -283,6 +283,45 @@ export interface RollbackResult {
   path: string
 }
 
+/** One remote machine from `.skillbox/fleet.yaml` (Fleet: multi-host SSH orchestration). */
+export interface FleetHostConfig {
+  name: string
+  host: string
+  user?: string
+  port?: number
+  identityFile?: string
+  remotePath?: string
+  skillboxBin?: string
+  tags?: string[]
+}
+
+export type FleetOperationName = 'install' | 'update' | 'status'
+
+export interface FleetHostResult {
+  host: string
+  ok: boolean
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  durationMs: number
+  error?: string
+}
+
+export interface FleetRunResult {
+  operation: FleetOperationName
+  results: FleetHostResult[]
+}
+
+/** Body of `POST /api/fleet/run`: named/tagged config hosts, plus ad-hoc `--ssh`-style entries. */
+export interface FleetRunRequest {
+  operation: FleetOperationName
+  hosts?: string[]
+  tags?: string[]
+  ssh?: string[]
+  concurrency?: number
+  dryRun?: boolean
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
@@ -371,6 +410,9 @@ export interface ApiClient {
   mergeSkill(name: string, action?: MergeAction): Promise<LifecycleOperationResult>
   rollbacks(): Promise<BackupRecord[]>
   restoreRollback(id: string): Promise<RollbackResult>
+  /* Fleet API */
+  fleetHosts(): Promise<FleetHostConfig[]>
+  fleetRun(input: FleetRunRequest): Promise<FleetRunResult>
 }
 
 function encodeName(name: string): string {
@@ -549,5 +591,18 @@ export const api: ApiClient = {
       { method: 'POST' },
     )
     return response.rollback
+  },
+
+  async fleetHosts() {
+    const response = await request<{ hosts: FleetHostConfig[] }>('/api/fleet/hosts')
+    return response.hosts
+  },
+
+  async fleetRun(input) {
+    const response = await request<{ result: FleetRunResult }>('/api/fleet/run', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.result
   },
 }

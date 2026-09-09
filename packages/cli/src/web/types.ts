@@ -1,6 +1,9 @@
 import type {
   AgentRegistry,
   BackupRecord,
+  FleetHostConfig,
+  FleetRunResult,
+  FleetService,
   ReconcileResult,
   RepositoryStatus,
   RollbackResult,
@@ -195,6 +198,8 @@ export interface WebServices {
   diff: DiffService
   /** V0.4 lifecycle operations (fork / vendor / restore / merge). */
   lifecycle: LifecycleService
+  /** Fleet (multi-host SSH orchestration): reads `.skillbox/fleet.yaml`. */
+  fleet: FleetService
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
@@ -272,6 +277,26 @@ export interface RollbackListResponse {
 /** Success shape of `POST /api/rollbacks/:id/restore` (roadmap 2.4). */
 export interface RollbackRestoreResponse {
   rollback: RollbackResult
+}
+
+/** Success shape of `GET /api/fleet/hosts`. */
+export interface FleetHostsResponse {
+  hosts: FleetHostConfig[]
+}
+
+/** Request body of `POST /api/fleet/run`. */
+export interface FleetRunRequest {
+  operation: 'install' | 'update' | 'status'
+  hosts?: string[]
+  tags?: string[]
+  ssh?: string[]
+  concurrency?: number
+  dryRun?: boolean
+}
+
+/** Success shape of `POST /api/fleet/run`. */
+export interface FleetRunResponse {
+  result: FleetRunResult
 }
 
 /** Options accepted by {@link createWebApp}. */

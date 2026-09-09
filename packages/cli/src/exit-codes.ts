@@ -30,6 +30,11 @@ const VALIDATION_CODES = new Set<string>([
   'SOURCE_INVALID',
   'SOURCE_UNSUPPORTED',
   'REGISTRY_NOT_FOUND',
+  // Fleet: a bad fleet.yaml, an unknown host name/tag, or no host selected
+  // at all are all user-input mistakes, not infrastructure faults.
+  'FLEET_CONFIG_INVALID',
+  'FLEET_HOST_NOT_FOUND',
+  'FLEET_NO_HOSTS_SELECTED',
 ])
 
 /** Two parties disagree over the same resource (duplicate, locked mismatch). */

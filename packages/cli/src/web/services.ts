@@ -1,3 +1,4 @@
+import * as path from 'node:path'
 import {
   abortMerge,
   continueMerge,
@@ -5,6 +6,7 @@ import {
   defaultRegistry,
   diffSkill,
   ErrorCode,
+  FleetService,
   forkSkill,
   fromManifestSource,
   GitSourceProvider,
@@ -81,6 +83,11 @@ export interface CreateWebServicesOptions {
    * the Core transactions; tests inject fakes to override.
    */
   lifecycle?: LifecycleService
+  /**
+   * Fleet (multi-host SSH orchestration). Defaults to a Core `FleetService`
+   * reading `<repositoryRoot>/.skillbox/fleet.yaml`; tests inject a fake.
+   */
+  fleet?: FleetService
 }
 
 /**
@@ -113,6 +120,9 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     install: options.install ?? createInstallService(repositoryRoot, homeRoot, registry),
     diff: options.diff ?? createDiffService(repositoryRoot, homeRoot),
     lifecycle: options.lifecycle ?? createLifecycleService(repositoryRoot, homeRoot, registry),
+    fleet:
+      options.fleet ??
+      new FleetService({ configPath: path.join(repositoryRoot, '.skillbox', 'fleet.yaml') }),
   }
 }
 

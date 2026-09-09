@@ -8,8 +8,10 @@ import {
   AgentRegistry,
   emitSkillboxEvent,
   ErrorCode,
+  FleetService,
   LocalProvider,
   SkillboxError,
+  SshClient,
   addSkill,
   computeSkillIntegrity,
   createLockedSkill,
@@ -1425,6 +1427,101 @@ describe('V0.5 live event stream', () => {
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
+    })
+  })
+})
+
+/** Builds a web app with an injected Fleet service (routing tests). */
+async function withFleetApp(fleet: FleetService, run: (app: Hono) => Promise<void>): Promise<void> {
+  const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-repo-'))
+  const home = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-home-'))
+  try {
+    const services = createWebServices({ repositoryRoot: repository, homeRoot: home, fleet })
+    const app = createWebApp({ services })
+    await run(app)
+  } finally {
+    await rm(repository, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+describe('Fleet API', () => {
+  it('GET /api/fleet/hosts lists an empty inventory when no fleet.yaml exists', async () => {
+    const fleet = new FleetService({
+      configPath: '/does/not/exist/fleet.yaml',
+      ssh: new SshClient({ spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }),
+    })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/hosts')
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as { hosts: unknown[] }
+      expect(body.hosts).toEqual([])
+    })
+  })
+
+  it('POST /api/fleet/run reports a per-host failure without an HTTP error', async () => {
+    const ssh = new SshClient({
+      spawn: async (args) => {
+        if (args[0] === '-V') {
+          return { exitCode: 0, stdout: '', stderr: '' }
+        }
+        const destination = args.at(-2)
+        return destination === '10.0.0.11'
+          ? { exitCode: 0, stdout: 'ok\n', stderr: '' }
+          : { exitCode: 1, stdout: '', stderr: 'boom\n' }
+      },
+    })
+    const fleet = new FleetService({ configPath: '/does/not/exist/fleet.yaml', ssh })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'status',
+          ssh: ['10.0.0.11', '10.0.0.12'],
+        }),
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { operation: string; results: Array<{ host: string; ok: boolean }> }
+      }
+      expect(body.result.operation).toBe('status')
+      expect(body.result.results.find((entry) => entry.host === '10.0.0.11')?.ok).toBe(true)
+      expect(body.result.results.find((entry) => entry.host === '10.0.0.12')?.ok).toBe(false)
+    })
+  })
+
+  it('POST /api/fleet/run answers FLEET_NO_HOSTS_SELECTED (400) with no config and no selection', async () => {
+    const fleet = new FleetService({
+      configPath: '/does/not/exist/fleet.yaml',
+      ssh: new SshClient({ spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }),
+    })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operation: 'install' }),
+      })
+      expect(response.status).toBe(404)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('FLEET_CONFIG_NOT_FOUND')
+    })
+  })
+
+  it('POST /api/fleet/run rejects an invalid operation', async () => {
+    const fleet = new FleetService({
+      configPath: '/does/not/exist/fleet.yaml',
+      ssh: new SshClient({ spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }),
+    })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operation: 'destroy' }),
+      })
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('INVALID_REQUEST')
     })
   })
 })

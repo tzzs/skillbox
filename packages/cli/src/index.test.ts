@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { acquireRuntimeLock } from '@skillbox/core'
+import { acquireRuntimeLock, FleetService, SshClient, type FleetHostConfig } from '@skillbox/core'
 import type { RepositorySync } from '@skillbox/core'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
@@ -264,6 +264,102 @@ describe('cli', () => {
         leakCheck: { findings: unknown[] }
       }
       expect(bundle.leakCheck.findings).toEqual([])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('runs `fleet list`/`fleet install` through FleetService and exits non-zero on a host failure', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(path.join(repo, '.skillbox'), { recursive: true })
+      await fs.writeFile(
+        path.join(repo, '.skillbox', 'fleet.yaml'),
+        'version: 1\nhosts:\n  - name: web-1\n    host: 10.0.0.11\n  - name: web-2\n    host: 10.0.0.12\n',
+        'utf8',
+      )
+
+      const ssh = new SshClient({
+        spawn: async (args) => {
+          if (args[0] === '-V') {
+            return { exitCode: 0, stdout: '', stderr: '' }
+          }
+          const destination = args.at(-2)
+          return destination === '10.0.0.11'
+            ? { exitCode: 0, stdout: 'ok\n', stderr: '' }
+            : { exitCode: 1, stdout: '', stderr: 'boom\n' }
+        },
+      })
+      const fleet = new FleetService({
+        configPath: path.join(repo, '.skillbox', 'fleet.yaml'),
+        ssh,
+      })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+
+      const listIo = capture()
+      expect(await main(['fleet', 'list', '--json'], deps(listIo))).toBe(0)
+      const listed = JSON.parse(listIo.out()) as { hosts: FleetHostConfig[] }
+      expect(listed.hosts.map((host) => host.name)).toEqual(['web-1', 'web-2'])
+
+      const installIo = capture()
+      const exit = await main(['fleet', 'install', '--json'], deps(installIo))
+      expect(exit).toBe(1)
+      const result = JSON.parse(installIo.out()) as {
+        results: Array<{ host: string; ok: boolean }>
+      }
+      expect(result.results.find((entry) => entry.host === 'web-1')?.ok).toBe(true)
+      expect(result.results.find((entry) => entry.host === 'web-2')?.ok).toBe(false)
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('selects fleet hosts ad-hoc via --ssh without needing fleet.yaml', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-adhoc-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const ssh = new SshClient({
+        spawn: async (args) =>
+          args[0] === '-V'
+            ? { exitCode: 0, stdout: '', stderr: '' }
+            : { exitCode: 0, stdout: 'status ok\n', stderr: '' },
+      })
+      const fleet = new FleetService({
+        configPath: path.join(repo, '.skillbox', 'fleet.yaml'),
+        ssh,
+      })
+
+      const io = capture()
+      const exit = await main(['fleet', 'status', '--ssh', 'deploy@10.0.0.9', '--json'], {
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+      expect(exit).toBe(0)
+      const result = JSON.parse(io.out()) as { results: Array<{ host: string; ok: boolean }> }
+      expect(result.results).toEqual([
+        {
+          host: 'deploy@10.0.0.9',
+          ok: true,
+          exitCode: 0,
+          stdout: 'status ok\n',
+          stderr: '',
+          durationMs: expect.any(Number),
+        },
+      ])
     } finally {
       await fs.rm(base, { recursive: true, force: true })
     }
