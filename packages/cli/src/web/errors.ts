@@ -63,6 +63,13 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
   [ErrorCode.VENDOR_TARGET_EXISTS]: 409,
   [ErrorCode.RESTORE_FAILED]: 500,
   [ErrorCode.RUNTIME_LOCKED]: 409,
+  /* Fleet (multi-host SSH orchestration): bad config / selection is a client
+     mistake; a missing local `ssh` binary is an infrastructure fault. */
+  [ErrorCode.FLEET_CONFIG_NOT_FOUND]: 404,
+  [ErrorCode.FLEET_CONFIG_INVALID]: 400,
+  [ErrorCode.FLEET_HOST_NOT_FOUND]: 404,
+  [ErrorCode.FLEET_NO_HOSTS_SELECTED]: 400,
+  [ErrorCode.FLEET_SSH_NOT_FOUND]: 503,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */
@@ -85,6 +92,8 @@ const RECOVERABLE: ReadonlySet<string> = new Set<string>([
   ErrorCode.INSTALL_SECURITY_BLOCKED,
   /* Agent link failures are resolved by Reconcile (retryable). */
   ErrorCode.INSTALL_AGENT_LINK_FAILED,
+  /* Fleet: installing ssh locally (or adding fleet.yaml/hosts) is a retry. */
+  ErrorCode.FLEET_SSH_NOT_FOUND,
 ])
 
 export interface ApiErrorResult {

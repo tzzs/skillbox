@@ -177,6 +177,10 @@ Agent 适配器提供检测（`detect`）、扫描（`scan`）、链接（`link`
   通用 CLI/Web rollback 与操作恢复记录。
 - **安全层（P1）** ✅ 已落地：安装前 Security Scan、Web 风险展示、`.skillboxignore`。
 - **Hermetic CLI E2E** ✅ 已覆盖 git-free、bare remote、connect、授权失败、私仓认证失败旅程；三平台真实环境验收仍需发布前执行。
+- **Fleet — 多服务器编排** ✅ 已落地：`skillbox fleet list/install/update/status` 通过 SSH 在
+  `.skillbox/fleet.yaml` 配置的（或 `--ssh [user@]host[:port]` 临时指定的）远程主机上批量运行
+  `skillbox install/update/status`；单台主机失败不影响其余主机，结果按主机逐行汇总。CLI 与 Web UI
+  （侧栏 Fleet 页）均已接入；远程主机需预先安装 `skillbox` 与其自身的 skill 仓库。
 
 > 权威状态清单以 **[GAP_ANALYSIS.md](./GAP_ANALYSIS.md)** 为准，本 Roadmap 只做概览。
 

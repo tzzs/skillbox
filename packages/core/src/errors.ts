@@ -84,6 +84,14 @@ export const ErrorCode = {
   MERGE_NOT_IN_PROGRESS: 'MERGE_NOT_IN_PROGRESS',
   MERGE_NO_BASE: 'MERGE_NO_BASE',
   MERGE_INVALID_STATE: 'MERGE_INVALID_STATE',
+  // Fleet (multi-host orchestration): SSH-driven remote install/update/status.
+  FLEET_CONFIG_NOT_FOUND: 'FLEET_CONFIG_NOT_FOUND',
+  FLEET_CONFIG_INVALID: 'FLEET_CONFIG_INVALID',
+  FLEET_HOST_NOT_FOUND: 'FLEET_HOST_NOT_FOUND',
+  FLEET_NO_HOSTS_SELECTED: 'FLEET_NO_HOSTS_SELECTED',
+  FLEET_SSH_NOT_FOUND: 'FLEET_SSH_NOT_FOUND',
+  /** At least one host failed its remote command; the run itself completed. */
+  FLEET_RUN_FAILED: 'FLEET_RUN_FAILED',
 } as const
 
 export type SkillboxErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]

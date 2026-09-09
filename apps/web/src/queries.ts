@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
+  type FleetRunRequest,
   type InstallInput,
   type LifecycleOperationResult,
   type MergeAction,
@@ -30,6 +31,7 @@ export const queryKeys = {
     params.official === true ? 'official' : '',
   ],
   outdated: ['registry', 'outdated'],
+  fleetHosts: ['fleet', 'hosts'],
 } as const
 
 export function useHealth() {
@@ -298,5 +300,22 @@ export function useMergeSkill() {
     mutationFn: (input: { name: string; action?: MergeAction }) =>
       api.mergeSkill(input.name, input.action),
     onSuccess: (_data, input) => invalidateSkillViews(queryClient, input.name),
+  })
+}
+
+/* ---- Fleet API: multi-host SSH orchestration ---- */
+
+/** The hosts configured in `.skillbox/fleet.yaml` (`[]` when the file doesn't exist yet). */
+export function useFleetHosts() {
+  return useQuery({
+    queryKey: queryKeys.fleetHosts,
+    queryFn: () => api.fleetHosts(),
+  })
+}
+
+/** Runs `install` / `update` / `status` across the selected hosts over SSH. */
+export function useFleetRun() {
+  return useMutation({
+    mutationFn: (input: FleetRunRequest) => api.fleetRun(input),
   })
 }

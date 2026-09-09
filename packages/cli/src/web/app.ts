@@ -4,12 +4,18 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import {
   BackupService,
   defaultEventBus,
+  parseAdHocHost,
   withRuntimeLock,
+  type FleetHostSelector,
+  type FleetOperationName,
+  type FleetRunOptions,
   type RuntimeConfig,
   type RollbackResult,
 } from '@skillbox/core'
 import type {
   AgentsResponse,
+  FleetHostsResponse,
+  FleetRunResponse,
   HealthResponse,
   InstallResponse,
   LifecycleOperationResult,
@@ -279,6 +285,28 @@ export function createWebApp(options: WebAppOptions): Hono {
     })
   })
 
+  /* ---- Fleet API: multi-host SSH orchestration ---- */
+
+  /** Lists the hosts configured in `.skillbox/fleet.yaml` (`[]` if the file is absent). */
+  app.get('/api/fleet/hosts', async (c) => {
+    const hosts = await services.fleet.listHosts()
+    return c.json<FleetHostsResponse>({ hosts })
+  })
+
+  /**
+   * Runs `install` / `update` / `status` across the selected hosts over SSH.
+   * A per-host failure is reported inside `result.results` (200), never as an
+   * HTTP error — only a structural problem (bad selection, no local `ssh`)
+   * throws. No local runtime state is touched, so this route skips the
+   * mutation lock.
+   */
+  app.post('/api/fleet/run', async (c) => {
+    const body = await requireJsonBody(c)
+    const { operation, selector, options } = parseFleetRunBody(body)
+    const result = await services.fleet.run(operation, selector, options)
+    return c.json<FleetRunResponse>({ result })
+  })
+
   /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
 
   /**
@@ -426,6 +454,71 @@ function allowPolicyField(body: Record<string, unknown>): 'safe' | 'all' {
     return value
   }
   throw new WebApiError('INVALID_REQUEST', 'Field "allowPolicy" must be either "safe" or "all"')
+}
+
+/* ---- /api/fleet/run body (multi-host SSH orchestration) ---- */
+
+const FLEET_OPERATIONS: ReadonlySet<string> = new Set(['install', 'update', 'status'])
+
+/** Like {@link stringArrayField}, but the field is optional and may be `[]`. */
+function optionalStringArrayField(
+  body: Record<string, unknown>,
+  field: string,
+): string[] | undefined {
+  const value = body[field]
+  if (value === undefined) {
+    return undefined
+  }
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry): entry is string => typeof entry === 'string')
+  ) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be an array of strings`)
+  }
+  return value
+}
+
+function parseFleetRunBody(body: Record<string, unknown>): {
+  operation: FleetOperationName
+  selector: FleetHostSelector
+  options: FleetRunOptions
+} {
+  const operation = body['operation']
+  if (typeof operation !== 'string' || !FLEET_OPERATIONS.has(operation)) {
+    throw new WebApiError('INVALID_REQUEST', 'Field "operation" must be install/update/status')
+  }
+
+  const hosts = optionalStringArrayField(body, 'hosts')
+  const tags = optionalStringArrayField(body, 'tags')
+  const ssh = optionalStringArrayField(body, 'ssh')
+  const selector: FleetHostSelector = {}
+  if (hosts !== undefined && hosts.length > 0) {
+    selector.hostNames = hosts
+  }
+  if (tags !== undefined && tags.length > 0) {
+    selector.tags = tags
+  }
+  if (ssh !== undefined && ssh.length > 0) {
+    selector.adHoc = ssh.map(parseAdHocHost)
+  }
+
+  const options: FleetRunOptions = {}
+  const concurrency = body['concurrency']
+  if (concurrency !== undefined) {
+    if (typeof concurrency !== 'number' || !Number.isFinite(concurrency) || concurrency <= 0) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "concurrency" must be a positive number')
+    }
+    options.concurrency = concurrency
+  }
+  const dryRun = body['dryRun']
+  if (dryRun !== undefined) {
+    if (typeof dryRun !== 'boolean') {
+      throw new WebApiError('INVALID_REQUEST', 'Field "dryRun" must be a boolean')
+    }
+    options.dryRun = dryRun
+  }
+
+  return { operation: operation as FleetOperationName, selector, options }
 }
 
 function toStatusCode(status: number): ContentfulStatusCode {

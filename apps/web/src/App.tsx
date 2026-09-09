@@ -1,10 +1,11 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { Library, Bot, Settings, Compass, ArrowUpCircle } from 'lucide-react'
+import { Library, Bot, Settings, Compass, ArrowUpCircle, Server } from 'lucide-react'
 import { useHealth } from './queries.js'
 import { AgentsPage } from './pages/AgentsPage.js'
 import { CreateSkillPage } from './pages/CreateSkillPage.js'
 import { DiffPage } from './pages/DiffPage.js'
 import { ExplorePage } from './pages/ExplorePage.js'
+import { FleetPage } from './pages/FleetPage.js'
 import { LibraryPage } from './pages/LibraryPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { SkillDetailPage } from './pages/SkillDetailPage.js'
@@ -16,6 +17,7 @@ const NAV_ITEMS = [
   { to: '/explore', label: 'Explore', icon: Compass, end: false },
   { to: '/updates', label: 'Updates', icon: ArrowUpCircle, end: false },
   { to: '/agents', label: 'Agents', icon: Bot, end: false },
+  { to: '/fleet', label: 'Fleet', icon: Server, end: false },
   { to: '/settings', label: 'Settings', icon: Settings, end: false },
 ]
 
@@ -71,6 +73,7 @@ export function App() {
           <Route path="/explore/install" element={<SkillInstallPage />} />
           <Route path="/updates" element={<UpdatesPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/fleet" element={<FleetPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/skills/new" element={<CreateSkillPage />} />
           <Route path="/skills/:name" element={<SkillDetailPage />} />
