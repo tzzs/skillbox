@@ -92,6 +92,8 @@ export const ErrorCode = {
   FLEET_SSH_NOT_FOUND: 'FLEET_SSH_NOT_FOUND',
   /** At least one host failed its remote command; the run itself completed. */
   FLEET_RUN_FAILED: 'FLEET_RUN_FAILED',
+  /** `remove`/`enable`/`disable` need a skill (and `enable`/`disable` an agent) to target. */
+  FLEET_TARGET_REQUIRED: 'FLEET_TARGET_REQUIRED',
   // Recoverable multi-device sync: internal operation runtime (lock / journal
   // / snapshot) used by the sync transaction, distinct from the CLI's own
   // RUNTIME_LOCKED / BACKUP_* / ROLLBACK_FAILED codes above.

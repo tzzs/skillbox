@@ -27,6 +27,35 @@ export function readThemePreference(): ThemePreference {
 
 export function applyThemePreference(preference: ThemePreference): void {
   document.documentElement.dataset.theme = preference
+  syncThemeColorMeta(preference)
+}
+
+/**
+ * Keeps the browser chrome (status bar, tab strip) in sync with --bg. index.html
+ * ships two `prefers-color-scheme`-scoped tags for the pre-JS "system" default;
+ * an explicit choice replaces them with one unconditional tag, and switching
+ * back to "system" restores the reactive pair.
+ */
+function syncThemeColorMeta(preference: ThemePreference): void {
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.remove()
+  }
+  if (preference === 'system') {
+    appendThemeColorMeta('#000000', '(prefers-color-scheme: dark)')
+    appendThemeColorMeta('#ffffff', '(prefers-color-scheme: light)')
+    return
+  }
+  appendThemeColorMeta(preference === 'dark' ? '#000000' : '#ffffff')
+}
+
+function appendThemeColorMeta(content: string, media?: string): void {
+  const meta = document.createElement('meta')
+  meta.name = 'theme-color'
+  meta.content = content
+  if (media !== undefined) {
+    meta.media = media
+  }
+  document.head.appendChild(meta)
 }
 
 export function useThemePreference(): [ThemePreference, (next: ThemePreference) => void] {

@@ -23,6 +23,7 @@ import { errorMessage } from '../format.js'
 import { useAgents, useInstallRegistrySkill } from '../queries.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
 import { SecurityReviewedBadge } from './ExplorePage.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 interface InstallLocationState {
   result?: RegistrySearchResult
@@ -39,6 +40,7 @@ export function SkillInstallPage() {
   const location = useLocation()
   const locationState = location.state as InstallLocationState | null
   const picked = locationState?.result
+  useDocumentTitle(picked === undefined ? 'Install skill' : `Install ${picked.name}`)
 
   const agentsQuery = useAgents()
   const install = useInstallRegistrySkill()

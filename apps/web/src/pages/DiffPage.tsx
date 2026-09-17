@@ -5,6 +5,7 @@ import { errorMessage } from '../format.js'
 import { useSkillDiff } from '../queries.js'
 import { ModePill } from '../components/Pills.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 /**
  * M19.5 — Skill Diff — the web view of `skillbox diff <name>`:
@@ -18,6 +19,7 @@ import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 export function DiffPage() {
   const params = useParams()
   const name = params.name ?? ''
+  useDocumentTitle(name === '' ? 'Diff' : `${name} diff`)
   const diffQuery = useSkillDiff(name)
 
   if (name === '') {

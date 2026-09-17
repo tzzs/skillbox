@@ -30,10 +30,13 @@ import type {
   AgentInstalledSkill,
   AgentLinkOptions,
   AgentUnlinkResult,
+  ConflictSession,
   NormalizedSource,
   RegistryProvider,
   RegistrySearchResult as CoreRegistrySearchResult,
+  RepositorySync,
   ResolvedSource,
+  SyncOutcome,
 } from '@skillbox/core'
 import type {
   DiffService,
@@ -1522,6 +1525,365 @@ describe('Fleet API', () => {
       expect(response.status).toBe(400)
       const body = (await response.json()) as { error: { code: string } }
       expect(body.error.code).toBe('INVALID_REQUEST')
+    })
+  })
+
+  it('POST /api/fleet/run rejects remove/enable/disable without a target', async () => {
+    const fleet = new FleetService({
+      configPath: '/does/not/exist/fleet.yaml',
+      ssh: new SshClient({ spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }),
+    })
+    await withFleetApp(fleet, async (app) => {
+      for (const operation of ['remove', 'enable', 'disable']) {
+        const response = await app.request('/api/fleet/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operation, ssh: ['10.0.0.11'] }),
+        })
+        expect(response.status).toBe(400)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('INVALID_REQUEST')
+      }
+    })
+  })
+
+  it('POST /api/fleet/run rejects enable/disable with a target missing the agent', async () => {
+    const fleet = new FleetService({
+      configPath: '/does/not/exist/fleet.yaml',
+      ssh: new SshClient({ spawn: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }),
+    })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'enable',
+          ssh: ['10.0.0.11'],
+          target: { name: 'incident-runbook' },
+        }),
+      })
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('INVALID_REQUEST')
+    })
+  })
+
+  it('POST /api/fleet/run proxies remove/enable/disable to the built remote command', async () => {
+    const commands: string[] = []
+    const ssh = new SshClient({
+      spawn: async (args) => {
+        if (args[0] === '-V') {
+          return { exitCode: 0, stdout: '', stderr: '' }
+        }
+        commands.push(args.at(-1) ?? '')
+        return { exitCode: 0, stdout: 'ok\n', stderr: '' }
+      },
+    })
+    const fleet = new FleetService({ configPath: '/does/not/exist/fleet.yaml', ssh })
+    await withFleetApp(fleet, async (app) => {
+      const remove = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'remove',
+          ssh: ['10.0.0.11'],
+          target: { name: 'legacy-deploy', deleteFiles: true },
+        }),
+      })
+      expect(remove.status).toBe(200)
+
+      const enable = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'enable',
+          ssh: ['10.0.0.11'],
+          target: { name: 'incident-runbook', agent: 'claude' },
+        }),
+      })
+      expect(enable.status).toBe(200)
+    })
+    expect(commands).toEqual([
+      "'skillbox' remove 'legacy-deploy' --delete-files",
+      "'skillbox' enable 'incident-runbook' --agent 'claude'",
+    ])
+  })
+
+  it('POST /api/fleet/run proxies sync through the multi-device engine, no target needed', async () => {
+    const commands: string[] = []
+    const ssh = new SshClient({
+      spawn: async (args) => {
+        if (args[0] === '-V') {
+          return { exitCode: 0, stdout: '', stderr: '' }
+        }
+        commands.push(args.at(-1) ?? '')
+        return { exitCode: 0, stdout: 'Sync complete\n', stderr: '' }
+      },
+    })
+    const fleet = new FleetService({ configPath: '/does/not/exist/fleet.yaml', ssh })
+    await withFleetApp(fleet, async (app) => {
+      const response = await app.request('/api/fleet/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operation: 'sync', ssh: ['10.0.0.11'] }),
+      })
+      expect(response.status).toBe(200)
+    })
+    expect(commands).toEqual(["'skillbox' sync --multi-device"])
+  })
+})
+
+/** A fake `RepositorySync`; individual methods throw unless overridden per test. */
+function fakeRepositorySync(overrides: Partial<RepositorySync>): RepositorySync {
+  const unimplemented = (name: string) => () => {
+    throw new Error(`fakeRepositorySync.${name} was not stubbed for this test`)
+  }
+  return {
+    status: overrides.status ?? unimplemented('status'),
+    connect: overrides.connect ?? unimplemented('connect'),
+    disconnect: overrides.disconnect ?? unimplemented('disconnect'),
+    pull: overrides.pull ?? unimplemented('pull'),
+    push: overrides.push ?? unimplemented('push'),
+    sync: overrides.sync ?? unimplemented('sync'),
+    listConflicts: overrides.listConflicts ?? unimplemented('listConflicts'),
+    getConflict: overrides.getConflict ?? unimplemented('getConflict'),
+    resolveConflicts: overrides.resolveConflicts ?? unimplemented('resolveConflicts'),
+    restoreSnapshot: overrides.restoreSnapshot ?? unimplemented('restoreSnapshot'),
+  }
+}
+
+async function withSyncApp(sync: RepositorySync, run: (app: Hono) => Promise<void>): Promise<void> {
+  const repository = await mkdtemp(join(tmpdir(), 'skillbox-web-sync-repo-'))
+  const home = await mkdtemp(join(tmpdir(), 'skillbox-web-sync-home-'))
+  try {
+    const services = createWebServices({ repositoryRoot: repository, homeRoot: home, sync })
+    const app = createWebApp({ services })
+    await run(app)
+  } finally {
+    await rm(repository, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+const conflictSession: ConflictSession = {
+  version: 1,
+  id: 'session-1',
+  repositoryId: 'repo-1',
+  baseRevision: 'base',
+  localRevision: 'local',
+  remoteRevision: 'remote',
+  snapshotId: 'snapshot-1',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: '2026-01-02T00:00:00.000Z',
+  conflicts: [
+    {
+      id: 'conflict-1',
+      type: 'content',
+      skillAlias: 'incident-runbook',
+      allowedResolutions: ['local', 'remote', 'merged'],
+      recommendedResolution: 'merged',
+      destructive: false,
+      local: { preview: 'local body' },
+      remote: { preview: 'remote body' },
+    },
+  ],
+}
+
+describe('Sync API', () => {
+  it('GET /api/sync/status reports idle with no open conflict session', async () => {
+    const sync = fakeRepositorySync({ listConflicts: async () => [] })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync/status')
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ sync: { kind: 'idle' } })
+    })
+  })
+
+  it('GET /api/sync/status reports the open conflict session', async () => {
+    const sync = fakeRepositorySync({ listConflicts: async () => [conflictSession] })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync/status')
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        sync: {
+          kind: 'conflicts',
+          sessionId: 'session-1',
+          conflictCount: 1,
+          snapshotId: 'snapshot-1',
+        },
+      })
+    })
+  })
+
+  it('POST /api/sync returns 200 with the merge summary on a clean sync', async () => {
+    const outcome: SyncOutcome = {
+      kind: 'completed',
+      summary: { automaticallyMerged: 2, retriedPushes: 1, createdSnapshotId: 'snap-9' },
+    }
+    const sync = fakeRepositorySync({ sync: async () => outcome })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        sync: {
+          kind: 'completed',
+          automaticallyMerged: 2,
+          retriedPushes: 1,
+          snapshotId: 'snap-9',
+        },
+      })
+    })
+  })
+
+  it('POST /api/sync returns 409 (not a thrown error) when sync needs a decision', async () => {
+    const outcome: SyncOutcome = { kind: 'conflicts', session: conflictSession }
+    const sync = fakeRepositorySync({ sync: async () => outcome })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(409)
+      expect(await response.json()).toEqual({
+        sync: {
+          kind: 'conflicts',
+          sessionId: 'session-1',
+          conflictCount: 1,
+          snapshotId: 'snapshot-1',
+        },
+      })
+    })
+  })
+
+  it('POST /api/sync returns 423 when safely blocked', async () => {
+    const outcome: SyncOutcome = {
+      kind: 'blocked',
+      reason: 'operation-locked',
+      recovery: { retryable: true, message: 'Another sync is already running.' },
+    }
+    const sync = fakeRepositorySync({ sync: async () => outcome })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(423)
+      expect(await response.json()).toEqual({
+        sync: {
+          kind: 'blocked',
+          reason: 'operation-locked',
+          message: 'Another sync is already running.',
+          retryable: true,
+        },
+      })
+    })
+  })
+
+  it('GET /api/conflicts lists open sessions', async () => {
+    const sync = fakeRepositorySync({ listConflicts: async () => [conflictSession] })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/conflicts')
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as { conflicts: Array<{ id: string }> }
+      expect(body.conflicts).toHaveLength(1)
+      expect(body.conflicts[0]?.id).toBe('session-1')
+    })
+  })
+
+  it('GET /api/conflicts/:id maps a conflict with previews and a recommendation', async () => {
+    const sync = fakeRepositorySync({
+      getConflict: async (id) => {
+        expect(id).toBe('session-1')
+        return conflictSession
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/conflicts/session-1')
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        conflict: { conflicts: Array<Record<string, unknown>> }
+      }
+      expect(body.conflict.conflicts[0]).toMatchObject({
+        id: 'conflict-1',
+        skillAlias: 'incident-runbook',
+        localPreview: 'local body',
+        remotePreview: 'remote body',
+        recommendedResolution: 'merged',
+        destructive: false,
+      })
+    })
+  })
+
+  it('POST /api/conflicts/:id/resolve rejects a missing/empty resolutions field', async () => {
+    const sync = fakeRepositorySync({})
+    await withSyncApp(sync, async (app) => {
+      const missing = await app.request('/api/conflicts/session-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(missing.status).toBe(400)
+
+      const empty = await app.request('/api/conflicts/session-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolutions: {} }),
+      })
+      expect(empty.status).toBe(400)
+
+      const invalidChoice = await app.request('/api/conflicts/session-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolutions: { 'conflict-1': 'not-a-real-choice' } }),
+      })
+      expect(invalidChoice.status).toBe(400)
+    })
+  })
+
+  it('POST /api/conflicts/:id/resolve applies choices and reports the resulting outcome', async () => {
+    const outcome: SyncOutcome = {
+      kind: 'completed',
+      summary: { automaticallyMerged: 1, retriedPushes: 0 },
+    }
+    const sync = fakeRepositorySync({
+      resolveConflicts: async (input) => {
+        expect(input).toEqual({ sessionId: 'session-1', resolutions: { 'conflict-1': 'local' } })
+        return outcome
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/conflicts/session-1/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolutions: { 'conflict-1': 'local' } }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        sync: { kind: 'completed', automaticallyMerged: 1, retriedPushes: 0 },
+      })
+    })
+  })
+
+  it('POST /api/sync/snapshots/:id/restore restores and confirms with a JSON body', async () => {
+    let restoredId: string | undefined
+    const sync = fakeRepositorySync({
+      restoreSnapshot: async (id) => {
+        restoredId = id
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync/snapshots/snap-9/restore', { method: 'POST' })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ restored: true })
+      expect(restoredId).toBe('snap-9')
+    })
+  })
+
+  it('a genuine sync failure (not connected) surfaces through the M10.8 error envelope', async () => {
+    const sync = fakeRepositorySync({
+      sync: async () => {
+        throw new SkillboxError(ErrorCode.GITHUB_NOT_CONNECTED, 'Not connected to GitHub')
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('GITHUB_NOT_CONNECTED')
     })
   })
 })

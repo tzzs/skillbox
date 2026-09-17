@@ -1,7 +1,8 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { Library, Bot, Settings, Compass, ArrowUpCircle, Server } from 'lucide-react'
+import { Library, Bot, Settings, Compass, ArrowUpCircle, RefreshCw, Server } from 'lucide-react'
 import { useHealth } from './queries.js'
 import { AgentsPage } from './pages/AgentsPage.js'
+import { ConflictResolutionPage } from './pages/ConflictResolutionPage.js'
 import { CreateSkillPage } from './pages/CreateSkillPage.js'
 import { DiffPage } from './pages/DiffPage.js'
 import { ExplorePage } from './pages/ExplorePage.js'
@@ -10,6 +11,7 @@ import { LibraryPage } from './pages/LibraryPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { SkillDetailPage } from './pages/SkillDetailPage.js'
 import { SkillInstallPage } from './pages/SkillInstallPage.js'
+import { SyncPage } from './pages/SyncPage.js'
 import { UpdatesPage } from './pages/UpdatesPage.js'
 
 const NAV_GROUPS = [
@@ -17,6 +19,7 @@ const NAV_GROUPS = [
     label: 'Skills',
     items: [
       { to: '/', label: 'Library', icon: Library, end: true },
+      { to: '/sync', label: 'Sync', icon: RefreshCw, end: false },
       { to: '/explore', label: 'Explore', icon: Compass, end: false },
       { to: '/updates', label: 'Updates', icon: ArrowUpCircle, end: false },
     ],
@@ -84,6 +87,8 @@ export function App() {
       <main className="content">
         <Routes>
           <Route path="/" element={<LibraryPage />} />
+          <Route path="/sync" element={<SyncPage />} />
+          <Route path="/sync/conflicts/:id" element={<ConflictResolutionPage />} />
           <Route path="/explore" element={<ExplorePage />} />
           <Route path="/explore/install" element={<SkillInstallPage />} />
           <Route path="/updates" element={<UpdatesPage />} />

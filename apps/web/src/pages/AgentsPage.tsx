@@ -4,6 +4,7 @@ import type { AgentSummary } from '../api.js'
 import { errorMessage } from '../format.js'
 import { useAgents, useReconcile } from '../queries.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 /**
  * M11.4 + GAP 1.3 — Agents — the detected agent registry: capabilities,
@@ -11,6 +12,7 @@ import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
  * Every card links into the Library pre-filtered to that agent's skills.
  */
 export function AgentsPage() {
+  useDocumentTitle('Agents')
   const agentsQuery = useAgents()
   const reconcile = useReconcile()
   const agents = agentsQuery.data ?? []

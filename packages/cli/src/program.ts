@@ -23,10 +23,12 @@ import {
   type AgentRegistry,
   type FleetOperationName,
   type FleetService,
+  type FleetSkillTarget,
   type MigrateFileReport,
   type ReconcileProblem,
   type RepositorySync,
   type RepositorySyncEvent,
+  type SyncOutcome,
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
@@ -223,6 +225,44 @@ function renderRepositorySyncEvent(out: (chunk: string) => void, event: Reposito
         `Waiting for authorization\n`,
     )
   }
+}
+
+/**
+ * `skillbox sync --multi-device` result. A `conflicts` outcome is a normal,
+ * expected stopping point — not a failure — so this only informs, it never
+ * throws; resolving conflicts is a Web-only flow (`skillbox web`, then
+ * `/sync/conflicts/:id`) since it needs an interactive side-by-side compare.
+ */
+function renderSyncOutcome(outcome: SyncOutcome): string {
+  if (outcome.kind === 'completed') {
+    const { automaticallyMerged, retriedPushes, createdSnapshotId } = outcome.summary
+    const lines = [
+      `\nSync complete · ${automaticallyMerged} change${automaticallyMerged === 1 ? '' : 's'} merged automatically`,
+    ]
+    if (retriedPushes > 0) {
+      lines.push(
+        `  retried  ${retriedPushes} push${retriedPushes === 1 ? '' : 'es'} after another device pushed first`,
+      )
+    }
+    if (createdSnapshotId !== undefined) {
+      lines.push(`  restore point  ${createdSnapshotId}`)
+    }
+    return `${lines.join('\n')}\n`
+  }
+  if (outcome.kind === 'conflicts') {
+    return (
+      `\n${outcome.session.conflicts.length} change(s) need a decision.\n` +
+      `  session  ${outcome.session.id}\n` +
+      `  Run \`skillbox web\` and open /sync/conflicts/${outcome.session.id} to resolve.\n`
+    )
+  }
+  return (
+    `\nSync paused safely: ${outcome.recovery.message}\n` +
+    `  retryable  ${outcome.recovery.retryable ? 'yes' : 'no'}\n` +
+    (outcome.recovery.snapshotId === undefined
+      ? ''
+      : `  restore point  ${outcome.recovery.snapshotId}\n`)
+  )
 }
 
 /** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
@@ -654,8 +694,23 @@ export function buildProgram(ctx: CliContext): Command {
   program
     .command('sync')
     .description('Sync skills: Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push')
-    .action(async () =>
+    .option(
+      '--multi-device',
+      'use the recoverable multi-device sync engine (conflict sessions + restore points) instead — requires `skillbox connect`',
+    )
+    .action(async (options: { multiDevice?: boolean }) =>
       mutation(ctx, 'sync', async () => {
+        if (options.multiDevice === true) {
+          if (ctx.repositorySync === undefined) {
+            throw new SkillboxError(
+              ErrorCode.GITHUB_NOT_CONNECTED,
+              'Multi-device sync needs a connected GitHub account — run `skillbox connect` first.',
+            )
+          }
+          const outcome = await ctx.repositorySync.sync()
+          ctx.out(renderSyncOutcome(outcome))
+          return
+        }
         const result = await sync.sync()
         ctx.out(
           `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
@@ -905,15 +960,29 @@ export function buildProgram(ctx: CliContext): Command {
     })
 
   program
-    .command('update <name>')
+    .command('update [name]')
     .description(
-      'Update a managed skill to the latest upstream revision; agent links are preserved (M16.2)',
+      'Update a managed skill to the latest upstream revision (M16.2); with no [name], updates every outdated managed skill. Agent links are preserved.',
     )
     .option('--yes', 'confirm HIGH-risk updates without prompting (CI)')
-    .action(async (name: string, options: { yes?: boolean }) =>
+    .action(async (name: string | undefined, options: { yes?: boolean }) =>
       mutation(ctx, 'update', async () => {
-        const outcome = await marketplace.update({ name, yes: options.yes === true })
-        ctx.out(`${renderUpdateSummary(outcome)}\n`)
+        if (name !== undefined) {
+          const outcome = await marketplace.update({ name, yes: options.yes === true })
+          ctx.out(`${renderUpdateSummary(outcome)}\n`)
+          return
+        }
+        const outdated = (await marketplace.outdated()).filter(
+          (entry) => entry.status === 'outdated',
+        )
+        if (outdated.length === 0) {
+          ctx.out('Every managed skill is already up to date.\n')
+          return
+        }
+        for (const entry of outdated) {
+          const outcome = await marketplace.update({ name: entry.name, yes: options.yes === true })
+          ctx.out(`${renderUpdateSummary(outcome)}\n`)
+        }
       }),
     )
 
@@ -1040,12 +1109,13 @@ export function buildProgram(ctx: CliContext): Command {
   async function runFleetCommand(
     operation: FleetOperationName,
     options: FleetCliOptions & { json?: boolean },
+    target?: FleetSkillTarget,
   ): Promise<void> {
-    const result = await fleet.run(
-      operation,
-      selectorFromOptions(options),
-      runOptionsFromOptions(options),
-    )
+    const runOptions = runOptionsFromOptions(options)
+    if (target !== undefined) {
+      runOptions.target = target
+    }
+    const result = await fleet.run(operation, selectorFromOptions(options), runOptions)
     if (options.json === true) {
       printJson(ctx.out, result)
     } else {
@@ -1067,16 +1137,57 @@ export function buildProgram(ctx: CliContext): Command {
       runFleetCommand('install', options),
     )
 
-  addFleetSelectorOptions(fleetCommand.command('update'))
-    .description('Run `skillbox update` on the selected fleet hosts over SSH')
-    .action(async (options: FleetCliOptions & { json?: boolean }) =>
-      runFleetCommand('update', options),
+  addFleetSelectorOptions(fleetCommand.command('update [name]'))
+    .description(
+      'Run `skillbox update` on the selected fleet hosts over SSH; with [name], updates only that managed skill',
+    )
+    .option('--yes', 'confirm a HIGH-risk update without prompting')
+    .action(
+      async (
+        name: string | undefined,
+        options: FleetCliOptions & { json?: boolean; yes?: boolean },
+      ) =>
+        runFleetCommand(
+          'update',
+          options,
+          name === undefined ? undefined : { name, yes: options.yes === true },
+        ),
     )
 
   addFleetSelectorOptions(fleetCommand.command('status'))
     .description('Run `skillbox status` on the selected fleet hosts over SSH')
     .action(async (options: FleetCliOptions & { json?: boolean }) =>
       runFleetCommand('status', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('sync'))
+    .description(
+      'Run `skillbox sync --multi-device` on the selected fleet hosts over SSH — each host must already be `skillbox connect`-ed',
+    )
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('sync', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('remove <name>'))
+    .description('Remove a skill (config only by default) on the selected fleet hosts over SSH')
+    .option('-f, --delete-files', 'also delete files from each host repository')
+    .action(
+      async (name: string, options: FleetCliOptions & { json?: boolean; deleteFiles?: boolean }) =>
+        runFleetCommand('remove', options, { name, deleteFiles: options.deleteFiles === true }),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('enable <name>'))
+    .description('Enable a skill for an agent on the selected fleet hosts over SSH')
+    .requiredOption('-a, --agent <agent>', 'agent id (e.g. claude, codex)')
+    .action(async (name: string, options: FleetCliOptions & { json?: boolean; agent: string }) =>
+      runFleetCommand('enable', options, { name, agent: options.agent }),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('disable <name>'))
+    .description('Disable a skill for an agent on the selected fleet hosts over SSH')
+    .requiredOption('-a, --agent <agent>', 'agent to disable the skill for')
+    .action(async (name: string, options: FleetCliOptions & { json?: boolean; agent: string }) =>
+      runFleetCommand('disable', options, { name, agent: options.agent }),
     )
 
   // M10/M11 — the `web` subcommand is registered by the web module; the

@@ -22,6 +22,60 @@ describe('buildRemoteCommand', () => {
     const host: FleetHostConfig = { name: 'h', host: '1.2.3.4', skillboxBin: "/opt/skill'box/bin" }
     expect(buildRemoteCommand(host, 'update')).toBe("'/opt/skill'\\''box/bin' update")
   })
+
+  it('targets a single skill for update, quoting the name but not the flag', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    expect(buildRemoteCommand(host, 'update', { name: 'incident-runbook' })).toBe(
+      "'skillbox' update 'incident-runbook'",
+    )
+    expect(buildRemoteCommand(host, 'update', { name: 'incident-runbook', yes: true })).toBe(
+      "'skillbox' update 'incident-runbook' --yes",
+    )
+  })
+
+  it('builds remove, quoting the name and passing --delete-files through', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    expect(buildRemoteCommand(host, 'remove', { name: 'legacy-deploy' })).toBe(
+      "'skillbox' remove 'legacy-deploy'",
+    )
+    expect(buildRemoteCommand(host, 'remove', { name: 'legacy-deploy', deleteFiles: true })).toBe(
+      "'skillbox' remove 'legacy-deploy' --delete-files",
+    )
+  })
+
+  it('builds enable/disable, quoting both the name and the agent', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    expect(buildRemoteCommand(host, 'enable', { name: 'incident-runbook', agent: 'claude' })).toBe(
+      "'skillbox' enable 'incident-runbook' --agent 'claude'",
+    )
+    expect(buildRemoteCommand(host, 'disable', { name: 'incident-runbook', agent: 'claude' })).toBe(
+      "'skillbox' disable 'incident-runbook' --agent 'claude'",
+    )
+  })
+
+  it('builds sync through the multi-device engine, with no target needed', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    expect(buildRemoteCommand(host, 'sync')).toBe("'skillbox' sync --multi-device")
+  })
+
+  it('throws FLEET_TARGET_REQUIRED for remove/enable/disable without a target', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    for (const operation of ['remove', 'enable', 'disable'] as const) {
+      try {
+        buildRemoteCommand(host, operation)
+        expect.unreachable(`buildRemoteCommand should have thrown for "${operation}"`)
+      } catch (error) {
+        expect(isSkillboxError(error) && error.code === ErrorCode.FLEET_TARGET_REQUIRED).toBe(true)
+      }
+    }
+  })
+
+  it('throws FLEET_TARGET_REQUIRED for enable/disable without an agent', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    for (const operation of ['enable', 'disable'] as const) {
+      expect(() => buildRemoteCommand(host, operation, { name: 'x' })).toThrowError()
+    }
+  })
 })
 
 /** A scripted `ssh` spawn: `-V` (isInstalled) always succeeds; exec calls are dispatched per destination. */

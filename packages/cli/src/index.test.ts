@@ -21,6 +21,54 @@ function capture(): CliDeps & { out(): string; err(): string } {
   }
 }
 
+/** A fully-stubbed `RepositorySync`; override individual methods per test. */
+function repositorySyncStub(): RepositorySync {
+  return {
+    connect: async () => ({
+      authorization: 'existing',
+      account: { login: 'octocat' },
+      repository: {
+        id: 1,
+        name: 'skillbox-skills',
+        owner: 'octocat',
+        fullName: 'octocat/skillbox-skills',
+        private: true,
+        defaultBranch: 'main',
+        htmlUrl: 'https://github.com/octocat/skillbox-skills',
+        cloneUrl: 'https://github.com/octocat/skillbox-skills.git',
+        action: 'reused',
+      },
+      local: {
+        initialized: false,
+        remote: {
+          name: 'origin',
+          url: 'https://github.com/octocat/skillbox-skills.git',
+          action: 'unchanged',
+        },
+      },
+    }),
+    disconnect: async () => undefined,
+    status: async () => {
+      throw new Error('not used')
+    },
+    pull: async () => undefined,
+    push: async () => undefined,
+    sync: async () => ({
+      kind: 'completed',
+      summary: { automaticallyMerged: 0, retriedPushes: 0 },
+    }),
+    listConflicts: async () => [],
+    getConflict: async () => {
+      throw new Error('not used')
+    },
+    resolveConflicts: async () => ({
+      kind: 'completed',
+      summary: { automaticallyMerged: 0, retriedPushes: 0 },
+    }),
+    restoreSnapshot: async () => undefined,
+  }
+}
+
 describe('cli', () => {
   it('prints the version for --version', async () => {
     const io = capture()
@@ -68,57 +116,50 @@ describe('cli', () => {
   it('routes connect and disconnect through the Core RepositorySync seam', async () => {
     const io = capture()
     let disconnects = 0
-    const repositorySync = {
-      connect: async () => ({
-        authorization: 'existing' as const,
-        account: { login: 'octocat' },
-        repository: {
-          id: 1,
-          name: 'skillbox-skills',
-          owner: 'octocat',
-          fullName: 'octocat/skillbox-skills',
-          private: true,
-          defaultBranch: 'main',
-          htmlUrl: 'https://github.com/octocat/skillbox-skills',
-          cloneUrl: 'https://github.com/octocat/skillbox-skills.git',
-          action: 'reused' as const,
-        },
-        local: {
-          initialized: false,
-          remote: {
-            name: 'origin' as const,
-            url: 'https://github.com/octocat/skillbox-skills.git',
-            action: 'unchanged' as const,
-          },
-        },
-      }),
+    const repositorySync: RepositorySync = {
+      ...repositorySyncStub(),
       disconnect: async () => {
         disconnects += 1
       },
-      status: async () => {
-        throw new Error('not used')
-      },
-      pull: async () => undefined,
-      push: async () => undefined,
-      sync: async () => ({
-        kind: 'completed',
-        summary: { automaticallyMerged: 0, retriedPushes: 0 },
-      }),
-      listConflicts: async () => [],
-      getConflict: async () => {
-        throw new Error('not used')
-      },
-      resolveConflicts: async () => ({
-        kind: 'completed',
-        summary: { automaticallyMerged: 0, retriedPushes: 0 },
-      }),
-      restoreSnapshot: async () => undefined,
-    } satisfies RepositorySync
+    }
 
     expect(await main(['connect'], { ...io, repositorySync })).toBe(0)
     expect(io.out()).toContain('octocat/skillbox-skills')
     expect(await main(['disconnect'], { ...io, repositorySync })).toBe(0)
     expect(disconnects).toBe(1)
+  })
+
+  it('routes `sync --multi-device` through the Core RepositorySync seam', async () => {
+    const conflictsSync = {
+      ...repositorySyncStub(),
+      sync: async () => ({
+        kind: 'conflicts' as const,
+        session: {
+          version: 1 as const,
+          id: 'session-1',
+          repositoryId: 'r1',
+          baseRevision: 'a',
+          localRevision: 'b',
+          remoteRevision: 'c',
+          snapshotId: 'snap-9',
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          conflicts: [
+            {
+              id: 'c1',
+              type: 'content' as const,
+              allowedResolutions: ['local' as const, 'remote' as const],
+              destructive: true,
+            },
+          ],
+        },
+      }),
+    } satisfies RepositorySync
+
+    const io = capture()
+    expect(await main(['sync', '--multi-device'], { ...io, repositorySync: conflictsSync })).toBe(0)
+    expect(io.out()).toContain('1 change(s) need a decision')
+    expect(io.out()).toContain('session-1')
   })
 
   it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {

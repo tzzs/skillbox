@@ -6,6 +6,7 @@ import { errorMessage } from '../format.js'
 import { useAgents, useEventStream, useReconcile, useSkills } from '../queries.js'
 import { AgentTags, ModePill, StatusPill } from '../components/Pills.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 const STATUS_OPTIONS = ['ready', 'modified', 'outdated', 'conflict', 'missing', 'broken'] as const
 
@@ -18,6 +19,7 @@ type StatusFilter = 'all' | (typeof STATUS_OPTIONS)[number]
  * and "Reconcile".
  */
 export function LibraryPage() {
+  useDocumentTitle('Library')
   const skillsQuery = useSkills()
   const reconcile = useReconcile()
   const agentsQuery = useAgents()

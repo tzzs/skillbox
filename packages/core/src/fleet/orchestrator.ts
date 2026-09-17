@@ -6,6 +6,7 @@ import type {
   FleetOperationName,
   FleetRunOptions,
   FleetRunResult,
+  FleetSkillTarget,
 } from './types.js'
 
 const DEFAULT_CONCURRENCY = 4
@@ -15,16 +16,71 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`
 }
 
-const OPERATION_ARGS: Record<FleetOperationName, readonly string[]> = {
-  install: ['install'],
-  update: ['update'],
-  status: ['status', '--json'],
+function requireTarget(operation: FleetOperationName, target?: FleetSkillTarget): FleetSkillTarget {
+  if (target === undefined) {
+    throw new SkillboxError(
+      ErrorCode.FLEET_TARGET_REQUIRED,
+      `Fleet "${operation}" needs a skill to target`,
+      { context: { operation } },
+    )
+  }
+  return target
 }
 
+function requireAgent(operation: FleetOperationName, target: FleetSkillTarget): string {
+  if (target.agent === undefined) {
+    throw new SkillboxError(
+      ErrorCode.FLEET_TARGET_REQUIRED,
+      `Fleet "${operation}" needs an agent to target`,
+      { context: { operation, name: target.name } },
+    )
+  }
+  return target.agent
+}
+
+const OPERATION_ARGS: Record<FleetOperationName, (target?: FleetSkillTarget) => readonly string[]> =
+  {
+    install: () => ['install'],
+    status: () => ['status', '--json'],
+    // Bare `update` refreshes every outdated managed skill; a target narrows
+    // it to just that one (see packages/cli/src/program.ts's `update <name>`
+    // and bare `update` commands).
+    update: (target) =>
+      target === undefined
+        ? ['update']
+        : ['update', target.name, ...(target.yes === true ? ['--yes'] : [])],
+    remove: (target) => {
+      const t = requireTarget('remove', target)
+      return ['remove', t.name, ...(t.deleteFiles === true ? ['--delete-files'] : [])]
+    },
+    enable: (target) => {
+      const t = requireTarget('enable', target)
+      return ['enable', t.name, '--agent', requireAgent('enable', t)]
+    },
+    disable: (target) => {
+      const t = requireTarget('disable', target)
+      return ['disable', t.name, '--agent', requireAgent('disable', t)]
+    },
+    // Routes through the recoverable multi-device sync engine, not the
+    // legacy git-sync pipeline `install`/`update`/`status` otherwise share —
+    // the host must already be `skillbox connect`-ed (Tier 2: reuses the
+    // Tier 3 engine instead of a parallel local/remote diff mechanism).
+    sync: () => ['sync', '--multi-device'],
+  }
+
 /** The exact command Fleet will run on `host` for `operation`. */
-export function buildRemoteCommand(host: FleetHostConfig, operation: FleetOperationName): string {
+export function buildRemoteCommand(
+  host: FleetHostConfig,
+  operation: FleetOperationName,
+  target?: FleetSkillTarget,
+): string {
   const bin = host.skillboxBin ?? 'skillbox'
-  const command = [shellQuote(bin), ...OPERATION_ARGS[operation]].join(' ')
+  const args = OPERATION_ARGS[operation](target).map((arg, index) =>
+    // Only quote the skill/agent names the caller supplied — the flags
+    // (`install`, `--agent`, `--delete-files`, ...) are our own literals.
+    index === 0 || arg.startsWith('--') ? arg : shellQuote(arg),
+  )
+  const command = [shellQuote(bin), ...args].join(' ')
   return host.remotePath === undefined ? command : `cd ${shellQuote(host.remotePath)} && ${command}`
 }
 
@@ -45,6 +101,14 @@ export async function runFleetOperation(
       ErrorCode.FLEET_NO_HOSTS_SELECTED,
       'No fleet hosts selected — configure .skillbox/fleet.yaml or pass --host/--tag/--ssh',
     )
+  }
+  // Validate the target once upfront — otherwise every host's worker would
+  // independently discover and report the exact same missing-target error.
+  if (operation === 'remove' || operation === 'enable' || operation === 'disable') {
+    const target = requireTarget(operation, options.target)
+    if (operation !== 'remove') {
+      requireAgent(operation, target)
+    }
   }
   if (options.dryRun !== true && !(await ssh.isInstalled())) {
     throw new SkillboxError(
@@ -68,7 +132,7 @@ export async function runFleetOperation(
         return
       }
       const host = hosts[index] as FleetHostConfig
-      const command = buildRemoteCommand(host, operation)
+      const command = buildRemoteCommand(host, operation, options.target)
       const start = Date.now()
 
       if (options.dryRun === true) {

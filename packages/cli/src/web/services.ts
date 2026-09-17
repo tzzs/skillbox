@@ -3,6 +3,7 @@ import {
   abortMerge,
   continueMerge,
   createDefaultAgentRegistry,
+  createRepositorySync,
   defaultRegistry,
   diffSkill,
   ErrorCode,
@@ -28,6 +29,7 @@ import {
   type AgentRegistry,
   type RegistryProvider,
   type RegistrySearchResult as CoreRegistrySearchResult,
+  type RepositorySync,
   type SkillboxLockfile,
   type SkillboxManifest,
   type SkillDiff,
@@ -88,6 +90,12 @@ export interface CreateWebServicesOptions {
    * reading `<repositoryRoot>/.skillbox/fleet.yaml`; tests inject a fake.
    */
   fleet?: FleetService
+  /**
+   * Recoverable multi-device sync. Defaults to the Core `RepositorySync`
+   * production wiring (GitHub device-flow auth, credentials under
+   * `<homeRoot>/state/secrets`); tests inject a fake.
+   */
+  sync?: RepositorySync
 }
 
 /**
@@ -123,6 +131,7 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     fleet:
       options.fleet ??
       new FleetService({ configPath: path.join(repositoryRoot, '.skillbox', 'fleet.yaml') }),
+    sync: options.sync ?? createRepositorySync({ repositoryRoot, homeRoot }),
   }
 }
 

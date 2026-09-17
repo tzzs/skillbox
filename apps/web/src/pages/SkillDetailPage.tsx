@@ -17,6 +17,7 @@ import {
 } from '../queries.js'
 import { AgentTags, ModePill, SkillPath, StatusPill } from '../components/Pills.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 /**
  * M11.2 — Skill Detail — full status of one skill (path, mode, integrity,
@@ -27,6 +28,7 @@ export function SkillDetailPage() {
   const params = useParams()
   const name = params.name ?? ''
   const navigate = useNavigate()
+  useDocumentTitle(name === '' ? 'Skill' : name)
 
   const skillQuery = useSkill(name)
   const contentQuery = useSkillContent(name)

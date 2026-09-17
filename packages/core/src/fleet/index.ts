@@ -18,4 +18,5 @@ export {
   type FleetOperationName,
   type FleetRunOptions,
   type FleetRunResult,
+  type FleetSkillTarget,
 } from './types.js'

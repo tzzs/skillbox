@@ -12,6 +12,7 @@ import {
 } from '../queries.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
 import { THEME_PREFERENCES, useThemePreference, type ThemePreference } from '../theme.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction', 'copy']
 
@@ -29,6 +30,7 @@ interface MachineDraft {
  * server options and per-agent path overrides) persisted to `config.json`.
  */
 export function SettingsPage() {
+  useDocumentTitle('Settings')
   const health = useHealth()
   const statusQuery = useStatus()
   const settingsQuery = useSettings()

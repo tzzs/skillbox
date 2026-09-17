@@ -1,10 +1,12 @@
 import type {
   AgentRegistry,
   BackupRecord,
+  ConflictResolution,
   FleetHostConfig,
   FleetRunResult,
   FleetService,
   ReconcileResult,
+  RepositorySync,
   RepositoryStatus,
   RollbackResult,
   RuntimeConfig,
@@ -200,10 +202,66 @@ export interface WebServices {
   lifecycle: LifecycleService
   /** Fleet (multi-host SSH orchestration): reads `.skillbox/fleet.yaml`. */
   fleet: FleetService
+  /**
+   * Recoverable multi-device sync (connect/sync/conflicts/snapshots). `connect`
+   * itself stays CLI-only (it's a multi-minute GitHub device-flow handshake,
+   * a poor fit for a single request/response cycle) — the Web surface only
+   * covers day-to-day `sync` once a device has already run `skillbox connect`.
+   */
+  sync: RepositorySync
   /** Absolute repository root the API operates on (identity info). */
   repositoryRoot: string
   /** Absolute Skillbox home root (identity info). */
   homeRoot: string
+}
+
+/* ---- Multi-device sync (RepositorySync) DTOs ---- */
+
+export interface SyncConflictDto {
+  id: string
+  type: string
+  skillAlias?: string
+  path?: string
+  field?: string
+  basePreview?: string
+  localPreview?: string
+  remotePreview?: string
+  allowedResolutions: ConflictResolution[]
+  recommendedResolution?: ConflictResolution
+  destructive: boolean
+}
+
+export interface ConflictSessionDto {
+  id: string
+  createdAt: string
+  expiresAt: string
+  snapshotId: string
+  conflicts: SyncConflictDto[]
+}
+
+export type SyncOutcomeDto =
+  | { kind: 'completed'; automaticallyMerged: number; retriedPushes: number; snapshotId?: string }
+  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
+  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+
+/** Success shape of `GET /api/sync/status` (idle when there's no open conflict session). */
+export interface SyncStatusResponse {
+  sync: { kind: 'idle' } | SyncOutcomeDto
+}
+
+/** Success shape of `POST /api/sync` and `POST /api/conflicts/:id/resolve`. */
+export interface SyncResponse {
+  sync: SyncOutcomeDto
+}
+
+/** Success shape of `GET /api/conflicts`. */
+export interface ConflictsResponse {
+  conflicts: ConflictSessionDto[]
+}
+
+/** Success shape of `GET /api/conflicts/:id`. */
+export interface ConflictResponse {
+  conflict: ConflictSessionDto
 }
 
 /** Unified error envelope required by M10.8. */
@@ -286,12 +344,19 @@ export interface FleetHostsResponse {
 
 /** Request body of `POST /api/fleet/run`. */
 export interface FleetRunRequest {
-  operation: 'install' | 'update' | 'status'
+  operation: 'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
   hosts?: string[]
   tags?: string[]
   ssh?: string[]
   concurrency?: number
   dryRun?: boolean
+  /** Required for remove/enable/disable; optional for update (targets one skill). */
+  target?: {
+    name: string
+    agent?: string
+    deleteFiles?: boolean
+    yes?: boolean
+  }
 }
 
 /** Success shape of `POST /api/fleet/run`. */
