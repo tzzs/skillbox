@@ -21,6 +21,7 @@ import {
   withRuntimeLock,
   type AgentDetectionSummary,
   type AgentRegistry,
+  type FleetHostConfig,
   type FleetOperationName,
   type FleetService,
   type FleetSkillTarget,
@@ -1090,6 +1091,107 @@ export function buildProgram(ctx: CliContext): Command {
       }
       ctx.out(`${renderFleetHostsTable(hosts)}\n`)
     })
+
+  interface FleetHostCliOptions {
+    user?: string
+    port?: string
+    identityFile?: string
+    remotePath?: string
+    skillboxBin?: string
+    tag?: string[]
+    json?: boolean
+  }
+
+  /** Shared `--user`/`--port`/`--identity-file`/`--remote-path`/`--skillbox-bin`/`--tag` options for `fleet host add`/`edit`. */
+  function addFleetHostFieldOptions(command: Command): Command {
+    return command
+      .option('-u, --user <user>', 'SSH user')
+      .option('-p, --port <port>', 'SSH port')
+      .option('-i, --identity-file <path>', 'SSH private key path')
+      .option('--remote-path <path>', 'directory to cd into before running skillbox on this host')
+      .option('--skillbox-bin <bin>', 'skillbox binary name/path on this host (default: skillbox)')
+      .option('--tag <tag>', 'tag for this host (repeatable)', collect, [])
+      .option('--json', 'emit JSON instead of a table')
+  }
+
+  function parsePort(raw: string | undefined): number | undefined {
+    if (raw === undefined) {
+      return undefined
+    }
+    const port = Number(raw)
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new SkillboxError(
+        ErrorCode.INVALID_MANIFEST,
+        `--port must be a positive integer, got "${raw}"`,
+      )
+    }
+    return port
+  }
+
+  function fleetHostFieldsFromOptions(
+    options: FleetHostCliOptions,
+  ): Omit<FleetHostConfig, 'name' | 'host'> {
+    const fields: Omit<FleetHostConfig, 'name' | 'host'> = {}
+    if (options.user !== undefined) fields.user = options.user
+    const port = parsePort(options.port)
+    if (port !== undefined) fields.port = port
+    if (options.identityFile !== undefined) fields.identityFile = options.identityFile
+    if (options.remotePath !== undefined) fields.remotePath = options.remotePath
+    if (options.skillboxBin !== undefined) fields.skillboxBin = options.skillboxBin
+    if (options.tag !== undefined && options.tag.length > 0) fields.tags = options.tag
+    return fields
+  }
+
+  function renderFleetHostResult(host: FleetHostConfig, json: boolean | undefined): void {
+    if (json === true) {
+      printJson(ctx.out, { host })
+      return
+    }
+    ctx.out(`${renderFleetHostsTable([host])}\n`)
+  }
+
+  const fleetHostCommand = fleetCommand
+    .command('host')
+    .description('Add, edit, or remove hosts in .skillbox/fleet.yaml')
+
+  addFleetHostFieldOptions(fleetHostCommand.command('add <name> <host>'))
+    .description('Add a host to .skillbox/fleet.yaml')
+    .action(async (name: string, host: string, options: FleetHostCliOptions) =>
+      mutation(ctx, 'fleet-host-add', async () => {
+        const added = await fleet.addHost({ name, host, ...fleetHostFieldsFromOptions(options) })
+        renderFleetHostResult(added, options.json)
+      }),
+    )
+
+  addFleetHostFieldOptions(fleetHostCommand.command('edit <name>'))
+    .option('--rename <name>', 'new name for this host')
+    .option('--host <host>', 'new hostname/IP')
+    .description('Edit a host in .skillbox/fleet.yaml')
+    .action(
+      async (name: string, options: FleetHostCliOptions & { rename?: string; host?: string }) =>
+        mutation(ctx, 'fleet-host-edit', async () => {
+          const patch: Partial<FleetHostConfig> = { ...fleetHostFieldsFromOptions(options) }
+          if (options.rename !== undefined) patch.name = options.rename
+          if (options.host !== undefined) patch.host = options.host
+          const updated = await fleet.updateHost(name, patch)
+          renderFleetHostResult(updated, options.json)
+        }),
+    )
+
+  fleetHostCommand
+    .command('remove <name>')
+    .description('Remove a host from .skillbox/fleet.yaml')
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (name: string, options: { json?: boolean }) =>
+      mutation(ctx, 'fleet-host-remove', async () => {
+        await fleet.removeHost(name)
+        if (options.json === true) {
+          printJson(ctx.out, { removed: name })
+        } else {
+          ctx.out(`Removed fleet host "${name}"\n`)
+        }
+      }),
+    )
 
   function addFleetSelectorOptions(command: Command): Command {
     return command

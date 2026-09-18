@@ -190,6 +190,7 @@ export function SkillDetailPage() {
                 className="btn btn--primary"
                 onClick={saveEdit}
                 disabled={save.isPending}
+                title="Save (⌘+Enter)"
               >
                 {save.isPending ? <span className="spinner" /> : <Check aria-hidden="true" />}
                 Save changes
@@ -218,6 +219,12 @@ export function SkillDetailPage() {
               if (editing) {
                 setDraft(event.target.value)
                 setDirty(true)
+              }
+            }}
+            onKeyDown={(event) => {
+              if (editing && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault()
+                saveEdit()
               }
             }}
             readOnly={!editing}

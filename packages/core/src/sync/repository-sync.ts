@@ -57,6 +57,10 @@ export class RepositorySyncService implements RepositorySync {
     return this.git.status(this.repositoryRoot)
   }
 
+  async connectionState() {
+    return this.host.getConnectionState()
+  }
+
   async connect(options: EnsureRepositoryOptions = {}): Promise<RepositorySyncConnectResult> {
     if (!(await this.git.isInstalled())) {
       throw new SkillboxError(ErrorCode.GIT_NOT_FOUND, 'Git is required to connect this repository')

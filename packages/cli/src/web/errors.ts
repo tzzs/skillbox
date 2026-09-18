@@ -68,6 +68,7 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
   [ErrorCode.FLEET_CONFIG_NOT_FOUND]: 404,
   [ErrorCode.FLEET_CONFIG_INVALID]: 400,
   [ErrorCode.FLEET_HOST_NOT_FOUND]: 404,
+  [ErrorCode.FLEET_HOST_EXISTS]: 409,
   [ErrorCode.FLEET_NO_HOSTS_SELECTED]: 400,
   [ErrorCode.FLEET_SSH_NOT_FOUND]: 503,
   /* Multi-device sync (RepositorySync): missing GitHub auth or a stale

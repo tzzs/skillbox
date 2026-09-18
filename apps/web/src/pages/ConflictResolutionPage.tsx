@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
-import type { ConflictChoice, SyncConflictView } from '../api.js'
+import { ApiError, type ConflictChoice, type SyncConflictView } from '../api.js'
 import { errorMessage } from '../format.js'
 import { useConflict, useResolveConflicts, useRestoreSyncSnapshot } from '../queries.js'
-import { CenteredHint, ErrorState } from '../components/States.js'
+import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 import { useDocumentTitle } from '../useDocumentTitle.js'
 
 const CHOICE_LABELS: Record<ConflictChoice, string> = {
@@ -47,6 +47,26 @@ export function ConflictResolutionPage() {
     return <CenteredHint>Loading changes…</CenteredHint>
   }
   if (session.isError) {
+    const code = session.error instanceof ApiError ? session.error.code : undefined
+    if (code === 'SYNC_CONFLICT_SESSION_EXPIRED' || code === 'SYNC_CONFLICT_SESSION_NOT_FOUND') {
+      return (
+        <section className="page">
+          <EmptyState
+            title={code === 'SYNC_CONFLICT_SESSION_EXPIRED' ? 'This review expired' : 'Not found'}
+            body={
+              code === 'SYNC_CONFLICT_SESSION_EXPIRED'
+                ? 'This conflict session is no longer valid. Sync again to get a fresh one.'
+                : "This conflict session doesn't exist — it may have already been resolved on another device."
+            }
+            action={
+              <Link to="/sync" className="btn btn--primary">
+                Back to Sync
+              </Link>
+            }
+          />
+        </section>
+      )
+    }
     return (
       <section className="page">
         <ErrorState message={errorMessage(session.error)} />
@@ -97,7 +117,16 @@ export function ConflictResolutionPage() {
         </div>
       </header>
 
-      {resolve.isError && <ErrorState message={errorMessage(resolve.error)} />}
+      {resolve.isError && (
+        <ErrorState
+          message={
+            resolve.error instanceof ApiError &&
+            resolve.error.code === 'SYNC_CONFLICT_SESSION_EXPIRED'
+              ? 'This review expired while you were choosing. Go back to Sync and start again.'
+              : errorMessage(resolve.error)
+          }
+        />
+      )}
       {restore.isError && <ErrorState message={errorMessage(restore.error)} />}
 
       <div className="sync-restore">
@@ -231,7 +260,7 @@ function Preview({ label, value }: { label: string; value: string | undefined })
   )
 }
 
-function explain(conflict: SyncConflictView): string {
+export function explain(conflict: SyncConflictView): string {
   if (conflict.type === 'delete-modify') {
     return 'One device removed this skill while the other changed it — choose whether to keep the change.'
   }

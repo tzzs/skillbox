@@ -24,6 +24,7 @@ function capture(): CliDeps & { out(): string; err(): string } {
 /** A fully-stubbed `RepositorySync`; override individual methods per test. */
 function repositorySyncStub(): RepositorySync {
   return {
+    connectionState: async () => ({ state: 'connected', connected: true, login: 'octocat' }),
     connect: async () => ({
       authorization: 'existing',
       account: { login: 'octocat' },
@@ -160,6 +161,28 @@ describe('cli', () => {
     expect(await main(['sync', '--multi-device'], { ...io, repositorySync: conflictsSync })).toBe(0)
     expect(io.out()).toContain('1 change(s) need a decision')
     expect(io.out()).toContain('session-1')
+  })
+
+  it('rejects `sync --multi-device` up front when no RepositorySync is wired', async () => {
+    // `buildContext` only skips constructing a real RepositorySync when a
+    // gitProvider/githubProvider override is supplied instead — matching how
+    // the legacy sync/pull/push tests simulate "not connected".
+    const unimplemented = (name: string) => async () => {
+      throw new Error(`gitProvider.${name} was not stubbed for this test`)
+    }
+    const io = capture()
+    const exit = await main(['sync', '--multi-device'], {
+      ...io,
+      gitProvider: {
+        status: unimplemented('status'),
+        pull: unimplemented('pull'),
+        commit: unimplemented('commit'),
+        push: unimplemented('push'),
+      },
+    })
+    expect(exit).toBe(ExitCode.GENERIC)
+    expect(io.err()).toContain('GitHub')
+    expect(io.err()).toContain('skillbox connect')
   })
 
   it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {
@@ -413,6 +436,82 @@ describe('cli', () => {
           durationMs: expect.any(Number),
         },
       ])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('adds, edits, and removes hosts in .skillbox/fleet.yaml via `fleet host`', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-host-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const fleet = new FleetService({ configPath: path.join(repo, '.skillbox', 'fleet.yaml') })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+
+      const addIo = capture()
+      expect(
+        await main(
+          ['fleet', 'host', 'add', 'web-1', '10.0.0.11', '--tag', 'prod', '--json'],
+          deps(addIo),
+        ),
+      ).toBe(0)
+      expect((JSON.parse(addIo.out()) as { host: FleetHostConfig }).host).toEqual({
+        name: 'web-1',
+        host: '10.0.0.11',
+        tags: ['prod'],
+      })
+
+      const duplicateIo = capture()
+      const duplicateExit = await main(
+        ['fleet', 'host', 'add', 'web-1', '10.0.0.99'],
+        deps(duplicateIo),
+      )
+      expect(duplicateExit).not.toBe(0)
+      expect(duplicateIo.err()).toContain('web-1')
+
+      const editIo = capture()
+      expect(
+        await main(
+          [
+            'fleet',
+            'host',
+            'edit',
+            'web-1',
+            '--rename',
+            'web-1-renamed',
+            '--host',
+            '10.0.0.12',
+            '--json',
+          ],
+          deps(editIo),
+        ),
+      ).toBe(0)
+      expect((JSON.parse(editIo.out()) as { host: FleetHostConfig }).host).toMatchObject({
+        name: 'web-1-renamed',
+        host: '10.0.0.12',
+      })
+
+      const listIo = capture()
+      await main(['fleet', 'list', '--json'], deps(listIo))
+      expect(
+        (JSON.parse(listIo.out()) as { hosts: FleetHostConfig[] }).hosts.map((h) => h.name),
+      ).toEqual(['web-1-renamed'])
+
+      const removeIo = capture()
+      expect(
+        await main(['fleet', 'host', 'remove', 'web-1-renamed', '--json'], deps(removeIo)),
+      ).toBe(0)
+      expect(JSON.parse(removeIo.out())).toEqual({ removed: 'web-1-renamed' })
+      expect(await fleet.listHosts()).toEqual([])
     } finally {
       await fs.rm(base, { recursive: true, force: true })
     }

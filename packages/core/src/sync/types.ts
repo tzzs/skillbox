@@ -121,6 +121,12 @@ export interface RepositorySyncConnectResult {
 
 export interface RepositorySync {
   status(): Promise<GitStatusResult>
+  /**
+   * Read-only GitHub connection snapshot — never starts or advances a device
+   * flow, unlike `connect()`. Safe to poll from an unattended surface (the
+   * Web UI) to decide whether to show a "connect first" prompt.
+   */
+  connectionState(): Promise<GitHubConnectionSnapshot>
   connect(options?: EnsureRepositoryOptions): Promise<RepositorySyncConnectResult>
   disconnect(): Promise<void>
   pull(): Promise<void>

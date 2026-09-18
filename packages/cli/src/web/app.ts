@@ -21,6 +21,10 @@ import type {
   AgentsResponse,
   ConflictResponse,
   ConflictsResponse,
+  FleetHostCreateRequest,
+  FleetHostPatchRequest,
+  FleetHostRemoveResponse,
+  FleetHostResponse,
   FleetHostsResponse,
   FleetRunResponse,
   HealthResponse,
@@ -36,6 +40,8 @@ import type {
   SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
+  SyncConnectionDto,
+  SyncDisconnectResponse,
   SyncResponse,
   SyncStatusResponse,
   WebAppOptions,
@@ -140,7 +146,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const body = await requireJsonBody(c)
       const name = stringField(body, 'name')
-      const description = stringField(body, 'description')
+      const description = optionalStringField(body, 'description')
       const input: { name: string; description?: string } = { name }
       if (description !== undefined) {
         input.description = description
@@ -302,6 +308,34 @@ export function createWebApp(options: WebAppOptions): Hono {
     return c.json<FleetHostsResponse>({ hosts })
   })
 
+  /** Adds a host to `.skillbox/fleet.yaml`, creating the file if needed. */
+  app.post('/api/fleet/hosts', async (c) => {
+    return mutation(services, async () => {
+      const body = await requireJsonBody(c)
+      const host = await services.fleet.addHost(parseFleetHostCreateBody(body))
+      return c.json<FleetHostResponse>({ host }, 201)
+    })
+  })
+
+  /** Merges the given fields into the named host; `name` renames it. */
+  app.patch('/api/fleet/hosts/:name', async (c) => {
+    return mutation(services, async () => {
+      const name = c.req.param('name')
+      const body = await requireJsonBody(c)
+      const host = await services.fleet.updateHost(name, parseFleetHostPatchBody(body))
+      return c.json<FleetHostResponse>({ host })
+    })
+  })
+
+  /** Removes a host from `.skillbox/fleet.yaml`. */
+  app.delete('/api/fleet/hosts/:name', async (c) => {
+    return mutation(services, async () => {
+      const name = c.req.param('name')
+      await services.fleet.removeHost(name)
+      return c.json<FleetHostRemoveResponse>({ removed: true })
+    })
+  })
+
   /**
    * Runs `install` / `update` / `status` / `remove` / `enable` / `disable`
    * across the selected hosts over SSH. `remove`/`enable`/`disable` (and
@@ -331,7 +365,15 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   /** The open conflict session, if any — the resting state between syncs. */
   app.get('/api/sync/status', async (c) => {
-    const [session] = await services.sync.listConflicts()
+    const [[session], snapshot] = await Promise.all([
+      services.sync.listConflicts(),
+      services.sync.connectionState(),
+    ])
+    const connection: SyncConnectionDto = {
+      connected: snapshot.connected,
+      ...(snapshot.login === undefined ? {} : { login: snapshot.login }),
+      ...(snapshot.repository === undefined ? {} : { repository: snapshot.repository }),
+    }
     if (session !== undefined) {
       return c.json<SyncStatusResponse>({
         sync: {
@@ -340,9 +382,10 @@ export function createWebApp(options: WebAppOptions): Hono {
           conflictCount: session.conflicts.length,
           snapshotId: session.snapshotId,
         },
+        connection,
       })
     }
-    return c.json<SyncStatusResponse>({ sync: { kind: 'idle' } })
+    return c.json<SyncStatusResponse>({ sync: { kind: 'idle' }, connection })
   })
 
   app.post('/api/sync', async (c) => {
@@ -379,6 +422,12 @@ export function createWebApp(options: WebAppOptions): Hono {
   app.post('/api/sync/snapshots/:id/restore', async (c) => {
     await services.sync.restoreSnapshot(c.req.param('id'))
     return c.json({ restored: true })
+  })
+
+  /** Removes only local GitHub credentials/connection metadata — never touches the repository. */
+  app.post('/api/sync/disconnect', async (c) => {
+    await services.sync.disconnect()
+    return c.json<SyncDisconnectResponse>({ disconnected: true })
   })
 
   /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
@@ -658,6 +707,70 @@ function parseFleetRunBody(body: Record<string, unknown>): {
   }
 
   return { operation: operation as FleetOperationName, selector, options }
+}
+
+/* ---- /api/fleet/hosts body (fleet.yaml CRUD) ---- */
+
+function optionalStringField(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field]
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a non-empty string`)
+  }
+  return value
+}
+
+function optionalPositiveIntField(
+  body: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  const value = body[field]
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a positive integer`)
+  }
+  return value
+}
+
+/** Shared optional fields (`user`/`port`/`identityFile`/`remotePath`/`skillboxBin`/`tags`) across create and patch. */
+function parseFleetHostOptionalFields(
+  body: Record<string, unknown>,
+): Omit<FleetHostCreateRequest, 'name' | 'host'> {
+  const fields: Omit<FleetHostCreateRequest, 'name' | 'host'> = {}
+  const user = optionalStringField(body, 'user')
+  if (user !== undefined) fields.user = user
+  const port = optionalPositiveIntField(body, 'port')
+  if (port !== undefined) fields.port = port
+  const identityFile = optionalStringField(body, 'identityFile')
+  if (identityFile !== undefined) fields.identityFile = identityFile
+  const remotePath = optionalStringField(body, 'remotePath')
+  if (remotePath !== undefined) fields.remotePath = remotePath
+  const skillboxBin = optionalStringField(body, 'skillboxBin')
+  if (skillboxBin !== undefined) fields.skillboxBin = skillboxBin
+  const tags = optionalStringArrayField(body, 'tags')
+  if (tags !== undefined) fields.tags = tags
+  return fields
+}
+
+function parseFleetHostCreateBody(body: Record<string, unknown>): FleetHostCreateRequest {
+  return {
+    name: stringField(body, 'name'),
+    host: stringField(body, 'host'),
+    ...parseFleetHostOptionalFields(body),
+  }
+}
+
+function parseFleetHostPatchBody(body: Record<string, unknown>): FleetHostPatchRequest {
+  const patch: FleetHostPatchRequest = { ...parseFleetHostOptionalFields(body) }
+  const name = optionalStringField(body, 'name')
+  if (name !== undefined) patch.name = name
+  const host = optionalStringField(body, 'host')
+  if (host !== undefined) patch.host = host
+  return patch
 }
 
 /* ---- /api/sync + /api/conflicts helpers (RepositorySync) ---- */

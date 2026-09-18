@@ -4,11 +4,13 @@ import type { LinkStrategy, SettingsPatch } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
   useAgents,
+  useDisconnectSync,
   useHealth,
   useReconcile,
   useSaveSettings,
   useSettings,
   useStatus,
+  useSyncStatus,
 } from '../queries.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
 import { THEME_PREFERENCES, useThemePreference, type ThemePreference } from '../theme.js'
@@ -35,6 +37,8 @@ export function SettingsPage() {
   const statusQuery = useStatus()
   const settingsQuery = useSettings()
   const agentsQuery = useAgents()
+  const syncStatusQuery = useSyncStatus()
+  const disconnectSync = useDisconnectSync()
   const reconcile = useReconcile()
   const save = useSaveSettings()
   const [theme, setTheme] = useThemePreference()
@@ -197,6 +201,53 @@ export function SettingsPage() {
                 <StatRow label="Modified" value={String(statusQuery.data.modified.length)} />
                 <StatRow label="Broken" value={String(statusQuery.data.broken.length)} />
                 <StatRow label="Agents" value={String(statusQuery.data.agents.length)} />
+              </>
+            )}
+          </section>
+
+          <section className="settings-card">
+            <h2>GitHub</h2>
+            {syncStatusQuery.isError ? (
+              <ErrorState message={errorMessage(syncStatusQuery.error)} />
+            ) : syncStatusQuery.data === undefined ? null : (
+              <>
+                <StatRow
+                  label="Status"
+                  value={syncStatusQuery.data.connection.connected ? 'connected' : 'not connected'}
+                />
+                {syncStatusQuery.data.connection.login !== undefined && (
+                  <StatRow label="Account" value={syncStatusQuery.data.connection.login} mono />
+                )}
+                {syncStatusQuery.data.connection.repository !== undefined && (
+                  <StatRow
+                    label="Repository"
+                    value={syncStatusQuery.data.connection.repository}
+                    mono
+                  />
+                )}
+                {syncStatusQuery.data.connection.connected ? (
+                  <div className="form-actions" style={{ marginTop: 14 }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => disconnectSync.mutate()}
+                      disabled={disconnectSync.isPending}
+                    >
+                      {disconnectSync.isPending ? <span className="spinner" /> : null}
+                      Disconnect
+                    </button>
+                  </div>
+                ) : (
+                  <p className="field-hint">
+                    Run <code className="mono">skillbox connect</code> in a terminal on this machine
+                    to enable multi-device sync.
+                  </p>
+                )}
+                {disconnectSync.isError && (
+                  <div className="form-error" role="alert">
+                    {errorMessage(disconnectSync.error)}
+                  </div>
+                )}
               </>
             )}
           </section>

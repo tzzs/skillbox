@@ -117,6 +117,32 @@ class FakeHost implements RepositoryHostPort {
   async disconnect(): Promise<void> {}
 }
 
+describe('RepositorySyncService.connectionState', () => {
+  it('delegates to the host without starting or advancing a device flow', async () => {
+    const host = new FakeHost()
+    host.state = { state: 'not-connected', connected: false }
+    const service = new RepositorySyncService({ repositoryRoot: '/repo', git: new FakeGit(), host })
+
+    await expect(service.connectionState()).resolves.toEqual({
+      state: 'not-connected',
+      connected: false,
+    })
+    // startDeviceAuthorization throws on this fake if ever called — the
+    // resolved promise above already proves it wasn't.
+  })
+
+  it('reports the connected account once authorized', async () => {
+    const host = new FakeHost()
+    const service = new RepositorySyncService({ repositoryRoot: '/repo', git: new FakeGit(), host })
+
+    await expect(service.connectionState()).resolves.toEqual({
+      state: 'connected',
+      connected: true,
+      login: 'octocat',
+    })
+  })
+})
+
 describe('RepositorySyncService.connect', () => {
   it('binds a real local Git repository to a hermetic bare remote', async () => {
     await withTempDir(async (dir) => {

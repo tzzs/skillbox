@@ -225,6 +225,47 @@ const INSTALL_RESULT: InstallResult = {
   lockfileChanged: true,
 }
 
+describe('POST /api/skills', () => {
+  it('creates a skill without a description — the field is optional', async () => {
+    await withApp(async (app) => {
+      const response = await app.request('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'demo-skill' }),
+      })
+      expect(response.status).toBe(201)
+      const body = (await response.json()) as { created: { name: string } }
+      expect(body.created.name).toBe('demo-skill')
+    })
+  })
+
+  it('creates a skill with a description', async () => {
+    await withApp(async (app) => {
+      const response = await app.request('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'demo-skill', description: 'A demo skill' }),
+      })
+      expect(response.status).toBe(201)
+      const body = (await response.json()) as { created: { name: string } }
+      expect(body.created.name).toBe('demo-skill')
+    })
+  })
+
+  it('rejects a missing name', async () => {
+    await withApp(async (app) => {
+      const response = await app.request('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('INVALID_REQUEST')
+    })
+  })
+})
+
 describe('GET /api/registry/search', () => {
   it('returns the aggregated search results for a query', async () => {
     await withRegistryApp({ searchResults: SEARCH_RESULTS }, async (app) => {
@@ -1631,6 +1672,101 @@ describe('Fleet API', () => {
     })
     expect(commands).toEqual(["'skillbox' sync --multi-device"])
   })
+
+  it('POST /api/fleet/hosts adds a host, creating fleet.yaml as needed', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-hosts-'))
+    try {
+      const fleet = new FleetService({ configPath: join(configDir, 'fleet.yaml') })
+      await withFleetApp(fleet, async (app) => {
+        const response = await app.request('/api/fleet/hosts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'web-1', host: '10.0.0.11', tags: ['prod'] }),
+        })
+        expect(response.status).toBe(201)
+        const body = (await response.json()) as { host: unknown }
+        expect(body.host).toEqual({ name: 'web-1', host: '10.0.0.11', tags: ['prod'] })
+      })
+      expect((await fleet.listHosts()).map((host) => host.name)).toEqual(['web-1'])
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('POST /api/fleet/hosts answers FLEET_HOST_EXISTS (409) for a duplicate name', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-hosts-'))
+    try {
+      const fleet = new FleetService({ configPath: join(configDir, 'fleet.yaml') })
+      await fleet.addHost({ name: 'web-1', host: '10.0.0.11' })
+      await withFleetApp(fleet, async (app) => {
+        const response = await app.request('/api/fleet/hosts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'web-1', host: '10.0.0.99' }),
+        })
+        expect(response.status).toBe(409)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('FLEET_HOST_EXISTS')
+      })
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('PATCH /api/fleet/hosts/:name merges fields and can rename the host', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-hosts-'))
+    try {
+      const fleet = new FleetService({ configPath: join(configDir, 'fleet.yaml') })
+      await fleet.addHost({ name: 'web-1', host: '10.0.0.11', tags: ['prod'] })
+      await withFleetApp(fleet, async (app) => {
+        const response = await app.request('/api/fleet/hosts/web-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'web-1-renamed', host: '10.0.0.12' }),
+        })
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as { host: unknown }
+        expect(body.host).toEqual({ name: 'web-1-renamed', host: '10.0.0.12', tags: ['prod'] })
+      })
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('PATCH /api/fleet/hosts/:name answers FLEET_HOST_NOT_FOUND (404) for an unknown host', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-hosts-'))
+    try {
+      const fleet = new FleetService({ configPath: join(configDir, 'fleet.yaml') })
+      await withFleetApp(fleet, async (app) => {
+        const response = await app.request('/api/fleet/hosts/ghost', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host: '10.0.0.12' }),
+        })
+        expect(response.status).toBe(404)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('FLEET_HOST_NOT_FOUND')
+      })
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('DELETE /api/fleet/hosts/:name removes the host', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'skillbox-web-fleet-hosts-'))
+    try {
+      const fleet = new FleetService({ configPath: join(configDir, 'fleet.yaml') })
+      await fleet.addHost({ name: 'web-1', host: '10.0.0.11' })
+      await withFleetApp(fleet, async (app) => {
+        const response = await app.request('/api/fleet/hosts/web-1', { method: 'DELETE' })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ removed: true })
+      })
+      expect(await fleet.listHosts()).toEqual([])
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
 })
 
 /** A fake `RepositorySync`; individual methods throw unless overridden per test. */
@@ -1640,6 +1776,7 @@ function fakeRepositorySync(overrides: Partial<RepositorySync>): RepositorySync 
   }
   return {
     status: overrides.status ?? unimplemented('status'),
+    connectionState: overrides.connectionState ?? unimplemented('connectionState'),
     connect: overrides.connect ?? unimplemented('connect'),
     disconnect: overrides.disconnect ?? unimplemented('disconnect'),
     pull: overrides.pull ?? unimplemented('pull'),
@@ -1691,16 +1828,25 @@ const conflictSession: ConflictSession = {
 
 describe('Sync API', () => {
   it('GET /api/sync/status reports idle with no open conflict session', async () => {
-    const sync = fakeRepositorySync({ listConflicts: async () => [] })
+    const sync = fakeRepositorySync({
+      listConflicts: async () => [],
+      connectionState: async () => ({ state: 'connected', connected: true, login: 'octocat' }),
+    })
     await withSyncApp(sync, async (app) => {
       const response = await app.request('/api/sync/status')
       expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({ sync: { kind: 'idle' } })
+      expect(await response.json()).toEqual({
+        sync: { kind: 'idle' },
+        connection: { connected: true, login: 'octocat' },
+      })
     })
   })
 
   it('GET /api/sync/status reports the open conflict session', async () => {
-    const sync = fakeRepositorySync({ listConflicts: async () => [conflictSession] })
+    const sync = fakeRepositorySync({
+      listConflicts: async () => [conflictSession],
+      connectionState: async () => ({ state: 'not-connected', connected: false }),
+    })
     await withSyncApp(sync, async (app) => {
       const response = await app.request('/api/sync/status')
       expect(response.status).toBe(200)
@@ -1711,6 +1857,7 @@ describe('Sync API', () => {
           conflictCount: 1,
           snapshotId: 'snapshot-1',
         },
+        connection: { connected: false },
       })
     })
   })
@@ -1885,5 +2032,20 @@ describe('Sync API', () => {
       const body = (await response.json()) as { error: { code: string } }
       expect(body.error.code).toBe('GITHUB_NOT_CONNECTED')
     })
+  })
+
+  it('POST /api/sync/disconnect removes only local credentials/metadata', async () => {
+    let disconnects = 0
+    const sync = fakeRepositorySync({
+      disconnect: async () => {
+        disconnects += 1
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync/disconnect', { method: 'POST' })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ disconnected: true })
+    })
+    expect(disconnects).toBe(1)
   })
 })

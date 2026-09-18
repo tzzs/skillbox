@@ -2195,6 +2195,15 @@ code,
   box-shadow: var(--shadow-1);
 }
 
+.sync-card--warn {
+  border-color: var(--warn-line);
+  background: var(--warn-bg);
+}
+
+.sync-card--warn h2 {
+  color: var(--warn);
+}
+
 .sync-card h2 {
   margin: 0 0 var(--space-8);
   font-size: var(--text-18);

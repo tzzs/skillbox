@@ -76,4 +76,124 @@ describe('FleetService', () => {
       expect(result.results).toHaveLength(1)
       expect(result.results[0]).toMatchObject({ host: 'web-1', ok: true })
     }))
+
+  describe('addHost', () => {
+    it('creates fleet.yaml when none exists yet', async () =>
+      withTempDir(async (dir) => {
+        const configPath = path.join(dir, '.skillbox', 'fleet.yaml')
+        const service = new FleetService({ configPath })
+
+        const added = await service.addHost({ name: 'web-1', host: '10.0.0.11' })
+
+        expect(added).toEqual({ name: 'web-1', host: '10.0.0.11' })
+        expect((await service.listHosts()).map((host) => host.name)).toEqual(['web-1'])
+      }))
+
+    it('appends to an existing inventory', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await service.addHost({ name: 'web-3', host: '10.0.0.13' })
+
+        expect((await service.listHosts()).map((host) => host.name)).toEqual([
+          'web-1',
+          'web-2',
+          'web-3',
+        ])
+      }))
+
+    it('rejects a duplicate name with FLEET_HOST_EXISTS', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await expect(service.addHost({ name: 'web-1', host: '10.0.0.99' })).rejects.toSatisfy(
+          (error: unknown) => isSkillboxError(error) && error.code === ErrorCode.FLEET_HOST_EXISTS,
+        )
+      }))
+
+    it('rejects a host that fails schema validation with FLEET_CONFIG_INVALID', async () =>
+      withTempDir(async (dir) => {
+        const service = new FleetService({ configPath: path.join(dir, 'fleet.yaml') })
+
+        await expect(service.addHost({ name: '', host: '10.0.0.11' })).rejects.toSatisfy(
+          (error: unknown) =>
+            isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
+        )
+      }))
+  })
+
+  describe('updateHost', () => {
+    it('merges a patch into the existing host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        const updated = await service.updateHost('web-1', { host: '10.0.0.100' })
+
+        expect(updated).toMatchObject({ name: 'web-1', host: '10.0.0.100', tags: ['prod'] })
+        const hosts = await service.listHosts()
+        expect(hosts.find((host) => host.name === 'web-1')).toMatchObject({
+          host: '10.0.0.100',
+        })
+      }))
+
+    it('renames a host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await service.updateHost('web-1', { name: 'web-1-renamed' })
+
+        expect((await service.listHosts()).map((host) => host.name)).toEqual([
+          'web-1-renamed',
+          'web-2',
+        ])
+      }))
+
+    it('rejects a rename that collides with another host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await expect(service.updateHost('web-1', { name: 'web-2' })).rejects.toSatisfy(
+          (error: unknown) => isSkillboxError(error) && error.code === ErrorCode.FLEET_HOST_EXISTS,
+        )
+      }))
+
+    it('throws FLEET_HOST_NOT_FOUND for an unknown host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await expect(service.updateHost('ghost', { host: '1.2.3.4' })).rejects.toSatisfy(
+          (error: unknown) =>
+            isSkillboxError(error) && error.code === ErrorCode.FLEET_HOST_NOT_FOUND,
+        )
+      }))
+  })
+
+  describe('removeHost', () => {
+    it('removes a configured host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await service.removeHost('web-1')
+
+        expect((await service.listHosts()).map((host) => host.name)).toEqual(['web-2'])
+      }))
+
+    it('throws FLEET_HOST_NOT_FOUND for an unknown host', async () =>
+      withTempDir(async (dir) => {
+        const configPath = await writeFleetConfig(dir)
+        const service = new FleetService({ configPath })
+
+        await expect(service.removeHost('ghost')).rejects.toSatisfy(
+          (error: unknown) =>
+            isSkillboxError(error) && error.code === ErrorCode.FLEET_HOST_NOT_FOUND,
+        )
+      }))
+  })
 })

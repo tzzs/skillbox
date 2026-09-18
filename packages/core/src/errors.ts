@@ -88,6 +88,8 @@ export const ErrorCode = {
   FLEET_CONFIG_NOT_FOUND: 'FLEET_CONFIG_NOT_FOUND',
   FLEET_CONFIG_INVALID: 'FLEET_CONFIG_INVALID',
   FLEET_HOST_NOT_FOUND: 'FLEET_HOST_NOT_FOUND',
+  /** `fleet host add` (or a rename via `fleet host edit`) collided with an existing host name. */
+  FLEET_HOST_EXISTS: 'FLEET_HOST_EXISTS',
   FLEET_NO_HOSTS_SELECTED: 'FLEET_NO_HOSTS_SELECTED',
   FLEET_SSH_NOT_FOUND: 'FLEET_SSH_NOT_FOUND',
   /** At least one host failed its remote command; the run itself completed. */

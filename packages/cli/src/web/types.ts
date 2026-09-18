@@ -244,14 +244,27 @@ export type SyncOutcomeDto =
   | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
   | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
 
+/** GitHub connection snapshot — read-only, never starts a device flow. */
+export interface SyncConnectionDto {
+  connected: boolean
+  login?: string
+  repository?: string
+}
+
 /** Success shape of `GET /api/sync/status` (idle when there's no open conflict session). */
 export interface SyncStatusResponse {
   sync: { kind: 'idle' } | SyncOutcomeDto
+  connection: SyncConnectionDto
 }
 
 /** Success shape of `POST /api/sync` and `POST /api/conflicts/:id/resolve`. */
 export interface SyncResponse {
   sync: SyncOutcomeDto
+}
+
+/** Success shape of `POST /api/sync/disconnect`. */
+export interface SyncDisconnectResponse {
+  disconnected: true
 }
 
 /** Success shape of `GET /api/conflicts`. */
@@ -340,6 +353,31 @@ export interface RollbackRestoreResponse {
 /** Success shape of `GET /api/fleet/hosts`. */
 export interface FleetHostsResponse {
   hosts: FleetHostConfig[]
+}
+
+/** Request body of `POST /api/fleet/hosts`. */
+export interface FleetHostCreateRequest {
+  name: string
+  host: string
+  user?: string
+  port?: number
+  identityFile?: string
+  remotePath?: string
+  skillboxBin?: string
+  tags?: string[]
+}
+
+/** Request body of `PATCH /api/fleet/hosts/:name` — every field replaces the current value. */
+export type FleetHostPatchRequest = Partial<FleetHostCreateRequest>
+
+/** Success shape of `POST /api/fleet/hosts` and `PATCH /api/fleet/hosts/:name`. */
+export interface FleetHostResponse {
+  host: FleetHostConfig
+}
+
+/** Success shape of `DELETE /api/fleet/hosts/:name`. */
+export interface FleetHostRemoveResponse {
+  removed: true
 }
 
 /** Request body of `POST /api/fleet/run`. */

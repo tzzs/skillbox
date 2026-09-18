@@ -336,6 +336,12 @@ export interface FleetRunRequest {
   target?: FleetSkillTarget
 }
 
+/** Body of `POST /api/fleet/hosts`. */
+export type FleetHostInput = FleetHostConfig
+
+/** Body of `PATCH /api/fleet/hosts/:name` — every field replaces the current value; `name` renames the host. */
+export type FleetHostPatch = Partial<FleetHostConfig>
+
 /* ---- Multi-device sync (RepositorySync) ----
  * `connect`/`disconnect` stay CLI-only (`skillbox connect`) — the GitHub
  * device-flow handshake takes minutes and doesn't fit a request/response
@@ -348,6 +354,18 @@ export type SyncStatus =
   | { kind: 'completed'; automaticallyMerged: number; snapshotId?: string; retriedPushes: number }
   | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
   | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+
+/** GitHub connection snapshot — read-only, never starts a device flow. */
+export interface SyncConnection {
+  connected: boolean
+  login?: string
+  repository?: string
+}
+
+export interface SyncStatusView {
+  sync: SyncStatus
+  connection: SyncConnection
+}
 
 export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
 export type SyncConflictKind =
@@ -481,13 +499,17 @@ export interface ApiClient {
   /* Fleet API */
   fleetHosts(): Promise<FleetHostConfig[]>
   fleetRun(input: FleetRunRequest): Promise<FleetRunResult>
+  addFleetHost(input: FleetHostInput): Promise<FleetHostConfig>
+  updateFleetHost(name: string, patch: FleetHostPatch): Promise<FleetHostConfig>
+  removeFleetHost(name: string): Promise<void>
   /* Multi-device sync API */
-  syncStatus(): Promise<SyncStatus>
+  syncStatus(): Promise<SyncStatusView>
   sync(): Promise<SyncStatus>
   conflicts(): Promise<ConflictSessionView[]>
   conflict(id: string): Promise<ConflictSessionView>
   resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
   restoreSyncSnapshot(id: string): Promise<void>
+  disconnectSync(): Promise<void>
 }
 
 function encodeName(name: string): string {
@@ -681,9 +703,28 @@ export const api: ApiClient = {
     return response.result
   },
 
+  async addFleetHost(input) {
+    const response = await request<{ host: FleetHostConfig }>('/api/fleet/hosts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.host
+  },
+
+  async updateFleetHost(name, patch) {
+    const response = await request<{ host: FleetHostConfig }>(
+      `/api/fleet/hosts/${encodeURIComponent(name)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    )
+    return response.host
+  },
+
+  async removeFleetHost(name) {
+    await request<unknown>(`/api/fleet/hosts/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  },
+
   async syncStatus() {
-    const response = await request<{ sync: SyncStatus }>('/api/sync/status')
-    return response.sync
+    return request<SyncStatusView>('/api/sync/status')
   },
 
   async sync() {
@@ -718,5 +759,9 @@ export const api: ApiClient = {
 
   async restoreSyncSnapshot(id) {
     await request<unknown>(`/api/sync/snapshots/${encodeName(id)}/restore`, { method: 'POST' })
+  },
+
+  async disconnectSync() {
+    await request<unknown>('/api/sync/disconnect', { method: 'POST' })
   },
 }
