@@ -30,6 +30,12 @@ async function fixture(): Promise<{ root: string; local: string; other: string; 
   await fs.mkdir(seed)
   await git(seed, ['init', '--initial-branch=main'])
   await configure(seed)
+  // Disable line-ending normalization for every clone in this fixture (via
+  // .gitattributes, committed once here and inherited by every clone/checkout
+  // through history) — otherwise Windows git's default core.autocrlf=true
+  // rewrites the LF-only fixture content to CRLF on checkout, breaking the
+  // exact-byte assertions below on Windows CI.
+  await fs.writeFile(path.join(seed, '.gitattributes'), '* -text\n')
   await fs.writeFile(path.join(seed, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
   await fs.writeFile(path.join(seed, 'skillbox.lock'), 'lockfileVersion: 1\nskills: {}\n')
   await git(seed, ['add', '.'])
