@@ -13,7 +13,7 @@ import type {
 } from './types.js'
 import { SyncTransaction } from './sync-transaction.js'
 import { ConflictSessionStore } from './conflict-session-store.js'
-import { SnapshotService } from './snapshot-service.js'
+import { SnapshotService, type SyncSnapshot } from './snapshot-service.js'
 
 export interface RepositorySyncServiceOptions {
   repositoryRoot: string
@@ -289,6 +289,21 @@ export class RepositorySyncService implements RepositorySync {
       homeRoot: this.homeRoot,
       git: this.git,
     }).restore(snapshotId)
+  }
+
+  /** Restorable sync checkpoints for this repository, newest first (expired reported separately). */
+  async listSnapshots(): Promise<{
+    snapshots: SyncSnapshot[]
+    expired: SyncSnapshot[]
+  }> {
+    if (!hasSnapshotGit(this.git)) {
+      return { snapshots: [], expired: [] }
+    }
+    return new SnapshotService({
+      repositoryRoot: this.repositoryRoot,
+      homeRoot: this.homeRoot,
+      git: this.git,
+    }).list()
   }
 
   private async authorize(): Promise<'existing' | 'completed'> {

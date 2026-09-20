@@ -1,9 +1,10 @@
 import { Link, useNavigate } from 'react-router-dom'
-import { RefreshCw, ShieldCheck } from 'lucide-react'
+import { History, RefreshCw, ShieldCheck } from 'lucide-react'
 import { errorMessage } from '../format.js'
-import { useSync, useSyncStatus } from '../queries.js'
+import { useRestoreSyncSnapshot, useSync, useSyncSnapshots, useSyncStatus } from '../queries.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
 import { useDocumentTitle } from '../useDocumentTitle.js'
+import type { SyncSnapshotView } from '../api.js'
 
 /**
  * The safe, one-click entry point for multi-device synchronization.
@@ -133,6 +134,87 @@ export function SyncPage() {
         <ShieldCheck aria-hidden="true" /> Your local work is protected by a restore point before
         changes are applied.
       </div>
+
+      {connection.connected && <RestorePoints />}
     </section>
+  )
+}
+
+/**
+ * Restorable sync checkpoints (`GET /api/sync/snapshots`). Restoring rolls the
+ * managed skill files back to the pre-sync state, so each row confirms before
+ * it fires. Expired checkpoints are kept but not restorable.
+ */
+function RestorePoints() {
+  const snapshots = useSyncSnapshots()
+  const restore = useRestoreSyncSnapshot()
+
+  if (snapshots.isLoading) return <CenteredHint>Loading restore points…</CenteredHint>
+  if (snapshots.isError) return <ErrorState message={errorMessage(snapshots.error)} />
+  const list = snapshots.data ?? []
+  if (list.length === 0) return null
+
+  return (
+    <div className="sync-card">
+      <h2>
+        <History aria-hidden="true" width={16} height={16} /> Restore points
+      </h2>
+      <p className="sync-subtle">
+        Snapshots taken before each sync. Restoring one brings your skill files back to how they
+        looked beforehand.
+      </p>
+      <ul className="snapshot-list">
+        {list.map((snapshot) => (
+          <SnapshotRow
+            key={snapshot.id}
+            snapshot={snapshot}
+            restoring={restore.isPending && restore.variables === snapshot.id}
+            onRestore={() =>
+              restore.mutate(snapshot.id, {
+                onSuccess: () => void snapshots.refetch(),
+              })
+            }
+          />
+        ))}
+      </ul>
+      {restore.isError && <ErrorState message={errorMessage(restore.error)} />}
+    </div>
+  )
+}
+
+function SnapshotRow({
+  snapshot,
+  restoring,
+  onRestore,
+}: {
+  snapshot: SyncSnapshotView
+  restoring: boolean
+  onRestore: () => void
+}) {
+  const created = new Date(snapshot.createdAt).toLocaleString()
+  if (snapshot.expired) {
+    return (
+      <li className="snapshot-row snapshot-row--expired">
+        <span className="mono">{snapshot.revision}</span>
+        <span className="sync-subtle">{created}</span>
+        <span className="sync-subtle">Expired</span>
+      </li>
+    )
+  }
+  return (
+    <li className="snapshot-row">
+      <span className="mono">{snapshot.revision}</span>
+      <span className="sync-subtle">{created}</span>
+      <button
+        type="button"
+        className="btn btn--ghost"
+        disabled={restoring}
+        onClick={() => {
+          if (window.confirm(`Restore your skills to the state before ${created}?`)) onRestore()
+        }}
+      >
+        {restoring ? 'Restoring…' : 'Restore'}
+      </button>
+    </li>
   )
 }

@@ -1,4 +1,5 @@
 import { ErrorCode, SkillboxError } from '../errors.js'
+import { fleetHostConfigSchema } from './schema.js'
 import type { FleetHostConfig, FleetHostSelector } from './types.js'
 
 /**
@@ -74,5 +75,13 @@ export function parseAdHocHost(spec: string): FleetHostConfig {
   const config: FleetHostConfig = { name: trimmed, host: host as string }
   if (user !== undefined) config.user = user
   if (port !== undefined) config.port = Number.parseInt(port, 10)
-  return config
+  const validated = fleetHostConfigSchema.safeParse(config)
+  if (!validated.success) {
+    throw new SkillboxError(
+      ErrorCode.FLEET_CONFIG_INVALID,
+      `Invalid --ssh host "${spec}": ${validated.error.issues[0]?.message ?? 'failed validation'}`,
+      { context: { spec } },
+    )
+  }
+  return validated.data
 }

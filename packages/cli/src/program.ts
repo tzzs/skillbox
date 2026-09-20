@@ -699,28 +699,63 @@ export function buildProgram(ctx: CliContext): Command {
       '--multi-device',
       'use the recoverable multi-device sync engine (conflict sessions + restore points) instead — requires `skillbox connect`',
     )
-    .action(async (options: { multiDevice?: boolean }) =>
-      mutation(ctx, 'sync', async () => {
-        if (options.multiDevice === true) {
-          if (ctx.repositorySync === undefined) {
-            throw new SkillboxError(
-              ErrorCode.GITHUB_NOT_CONNECTED,
-              'Multi-device sync needs a connected GitHub account — run `skillbox connect` first.',
-            )
+    .option(
+      '--list-snapshots',
+      'with --multi-device: list restorable sync checkpoints instead of syncing',
+    )
+    .option(
+      '--restore-snapshot <id>',
+      'with --multi-device: restore a sync checkpoint by id instead of syncing',
+    )
+    .action(
+      async (options: {
+        multiDevice?: boolean
+        listSnapshots?: boolean
+        restoreSnapshot?: string
+      }) =>
+        mutation(ctx, 'sync', async () => {
+          if (options.multiDevice === true) {
+            if (ctx.repositorySync === undefined) {
+              throw new SkillboxError(
+                ErrorCode.GITHUB_NOT_CONNECTED,
+                'Multi-device sync needs a connected GitHub account — run `skillbox connect` first.',
+              )
+            }
+            if (options.restoreSnapshot !== undefined) {
+              await ctx.repositorySync.restoreSnapshot(options.restoreSnapshot)
+              ctx.out(`Restored sync restore point "${options.restoreSnapshot}".\n`)
+              return
+            }
+            if (options.listSnapshots === true) {
+              const { snapshots, expired } = await ctx.repositorySync.listSnapshots()
+              const rows = [
+                ...snapshots.map((snapshot) => [snapshot.id, snapshot.createdAt, 'restorable']),
+                ...expired.map((snapshot) => [snapshot.id, snapshot.createdAt, 'expired']),
+              ]
+              if (rows.length === 0) {
+                ctx.out(
+                  '(no sync restore points yet — one is created before every multi-device sync)\n',
+                )
+                return
+              }
+              ctx.out(
+                `${renderTable(['SNAPSHOT', 'CREATED', 'STATE'], rows)}\n\nRestore with: skillbox sync --multi-device --restore-snapshot <id>\n`,
+              )
+              return
+            }
+            const outcome = await ctx.repositorySync.sync()
+            ctx.out(renderSyncOutcome(outcome))
+            return
           }
-          const outcome = await ctx.repositorySync.sync()
-          ctx.out(renderSyncOutcome(outcome))
-          return
-        }
-        const result = await sync.sync()
-        ctx.out(
-          `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
-        )
-        if (result.problems.length > 0) {
-          ctx.out('\nReconcile problems\n')
-          reportProblems(ctx, result.problems)
-        }
-      }),
+          const result = await sync.sync()
+          ctx.out(
+            `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
+          )
+          if (result.problems.length > 0) {
+            ctx.out('\nReconcile problems\n')
+            reportProblems(ctx, result.problems)
+          }
+        }),
     )
 
   program
@@ -1204,6 +1239,7 @@ export function buildProgram(ctx: CliContext): Command {
         [],
       )
       .option('--concurrency <n>', 'maximum hosts contacted at once (default 4)')
+      .option('--retries <n>', 'extra attempts for hosts whose SSH connection failed (default 0)')
       .option('--dry-run', 'print the command that would run on each host without running it')
       .option('--json', 'emit JSON instead of a table')
   }
@@ -1268,6 +1304,12 @@ export function buildProgram(ctx: CliContext): Command {
     )
     .action(async (options: FleetCliOptions & { json?: boolean }) =>
       runFleetCommand('sync', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('ping'))
+    .description('Probe SSH connectivity to the selected fleet hosts without running skillbox')
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('ping', options),
     )
 
   addFleetSelectorOptions(fleetCommand.command('remove <name>'))

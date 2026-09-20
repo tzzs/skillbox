@@ -1,4 +1,11 @@
-import { SkillboxError, type SkillboxErrorCode } from '@skillbox/core'
+import { type SkillboxErrorCode } from '@skillbox/core'
+import {
+  asRecord,
+  coreExportUnavailable as unavailable,
+  loadSkillboxCore,
+  readString,
+  type CoreModuleLoader,
+} from '../core-module.js'
 import type {
   AbortMergeResult,
   ContinueMergeResult,
@@ -34,16 +41,8 @@ import type {
  *                                                (diff/ and merge/)
  */
 
-/** Loads the core package as an opaque module map (injectable in tests). */
-export type CoreModuleLoader = () => Promise<Record<string, unknown>>
-
-async function loadSkillboxCore(): Promise<Record<string, unknown>> {
-  try {
-    return (await import('@skillbox/core')) as unknown as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
+/** Re-exported so focused wiring tests keep importing the type from here. */
+export type { CoreModuleLoader }
 
 /**
  * CLI-level error codes until agents 1/2 land matching entries in
@@ -57,10 +56,6 @@ const LIFECYCLE_UNAVAILABLE = 'LIFECYCLE_UNAVAILABLE' as SkillboxErrorCode
 export const MERGE_CONFLICT_CODE = 'MERGE_CONFLICT' as SkillboxErrorCode
 /** CLI-level code thrown while the core lifecycle modules are in flight. */
 export const LIFECYCLE_UNAVAILABLE_CODE = LIFECYCLE_UNAVAILABLE
-
-function unavailable(code: SkillboxErrorCode, hint: string): SkillboxError {
-  return new SkillboxError(code, hint)
-}
 
 /** Options passed to every core lifecycle call; built once per input. */
 function coreOptions(input: {
@@ -80,17 +75,6 @@ function coreOptions(input: {
  * contract shapes, so the adapters keep working while agents 1/2 tune
  * their result objects.
  * ------------------------------------------------------------------ */
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined
-}
-
-function readString(record: Record<string, unknown> | undefined, key: string): string | undefined {
-  const value = record?.[key]
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
 
 /** Canonical display form of an upstream source (SPEC §23). */
 function formatUpstreamSource(value: unknown): string | undefined {

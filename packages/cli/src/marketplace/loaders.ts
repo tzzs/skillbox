@@ -1,6 +1,10 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { SkillboxError, type SkillboxErrorCode } from '@skillbox/core'
+import {
+  coreExportUnavailable as unavailable,
+  loadSkillboxCore,
+  type CoreModuleLoader,
+} from '../core-module.js'
 import type {
   InstallService,
   InstallSkillInput,
@@ -31,20 +35,8 @@ import type {
  * - `buildSkillboxHomeLayout` / `resolveSkillboxHome` (runtime/paths.js)
  */
 
-/** Loads the core package as an opaque module map (injectable in tests). */
-export type CoreModuleLoader = () => Promise<Record<string, unknown>>
-
-async function loadSkillboxCore(): Promise<Record<string, unknown>> {
-  try {
-    return (await import('@skillbox/core')) as unknown as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
-
-function unavailable(code: SkillboxErrorCode, hint: string): SkillboxError {
-  return new SkillboxError(code, hint)
-}
+/** Re-exported so focused wiring tests keep importing the type from here. */
+export type { CoreModuleLoader }
 
 /* ------------------------------------------------------------------ *
  * Source parser — @skillbox/core/registry

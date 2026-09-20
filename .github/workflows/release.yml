@@ -1,0 +1,105 @@
+name: Release
+
+# Publishes @skillbox/{shared,core,cli} to npm. Triggered by pushing a `v*`
+# tag (e.g. `v0.1.0`) or manually via workflow_dispatch. The apps/web SPA and
+# packages/testing are `private: true` and are skipped by `pnpm publish -r`.
+#
+# Publish order is shared → core → cli (pnpm publishes workspace deps first);
+# cli's `prepublishOnly` runs the full root build so `dist/web` is present,
+# then pack:verify asserts the tarball contents before anything ships.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Run every gate but stop before publishing (no artifacts leave CI)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # Required for npm provenance attestation (OIDC token minting).
+  id-token: write
+
+jobs:
+  verify:
+    name: Build / Test / Pack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: E2E (hermetic CLI journeys)
+        run: pnpm test:e2e
+
+      - name: Verify package contents
+        run: pnpm pack:verify
+
+  publish:
+    name: Publish to npm
+    needs: verify
+    if: github.event_name == 'push' || github.event.inputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The build is part of the publish gate here (not carried over from the
+      # verify job) because npm packs the working tree — dist/ must be fresh
+      # in this checkout.
+      - name: Build
+        run: pnpm build
+
+      - name: Publish (shared → core → cli)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Pass the workflow_dispatch input through env rather than
+          # interpolating it into the shell, and run a real publish only for a
+          # tag push or an explicit non-dry dispatch.
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          DISPATCH_DRY_RUN: ${{ github.event.inputs.dry-run }}
+        run: |
+          args=(--recursive --no-git-checks --access public --provenance)
+          if [ "$IS_DISPATCH" = "true" ] && [ "$DISPATCH_DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          pnpm publish "${args[@]}"

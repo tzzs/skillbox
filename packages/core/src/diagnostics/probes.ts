@@ -4,7 +4,7 @@ import { FilesystemService } from '../fs/filesystem-service.js'
 import { compareManifestToLockfile } from '../lockfile/consistency.js'
 import { readLockfile } from '../lockfile/index.js'
 import { readManifest } from '../manifest/index.js'
-import { createCredentialStore } from '../github/credential-store.js'
+import { createCredentialStore, describeCredentialStore } from '../github/credential-store.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { buildSkillboxHomeLayout } from '../runtime/paths.js'
@@ -158,12 +158,23 @@ export async function runDoctorProbes(context: DoctorProbeContext): Promise<Prob
 
   /* credential store */
   try {
-    const store = createCredentialStore({ secretsDir: path.join(layout.state, 'secrets') })
+    const secretsDir = path.join(layout.state, 'secrets')
+    const store = createCredentialStore({ secretsDir })
+    const description = describeCredentialStore({ secretsDir })
     const probeKey = { service: 'skillbox-doctor', account: 'probe' }
     await store.set(probeKey, 'probe')
     await store.get(probeKey)
     await store.delete(probeKey)
-    push({ name: 'credentials', ok: true, detail: 'credential store available' })
+    push(
+      description.encrypted
+        ? { name: 'credentials', ok: true, detail: `credential store: ${description.kind}` }
+        : {
+            name: 'credentials',
+            ok: false,
+            detail: `credential store: ${description.kind} (NOT encrypted at rest)`,
+            error: `Tokens are stored with the plaintext "${description.kind}" backend. Configure an OS keychain for secure storage.`,
+          },
+    )
   } catch (error) {
     push({ name: 'credentials', ok: false, error: messageOf(error) })
   }

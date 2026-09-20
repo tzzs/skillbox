@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { RefreshCw } from 'lucide-react'
-import type { LinkStrategy, SettingsPatch } from '../api.js'
+import { RefreshCw, Stethoscope } from 'lucide-react'
+import type { DoctorProbe, LinkStrategy, SettingsPatch } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
   useAgents,
   useDisconnectSync,
+  useDoctor,
   useHealth,
   useReconcile,
   useSaveSettings,
@@ -439,7 +440,73 @@ export function SettingsPage() {
           )}
         </div>
       </section>
+
+      <DiagnosticsCard />
     </section>
+  )
+}
+
+/**
+ * `skillbox doctor` over the web: runs every probe on demand and lists the
+ * results. The `credentials` probe names the active credential backend and
+ * fails when tokens are stored unencrypted, so a plaintext store surfaces as
+ * a warning here rather than staying invisible.
+ */
+function DiagnosticsCard() {
+  const doctor = useDoctor()
+  const report = doctor.data
+  const failed = report?.probes.filter((probe) => !probe.ok) ?? []
+
+  return (
+    <section className="settings-card" style={{ marginTop: 20 }}>
+      <h2>Diagnostics</h2>
+      <p className="page-description">
+        Check the environment, repository and credential storage. Same checks as{' '}
+        <code className="mono">skillbox doctor</code>.
+      </p>
+      <div className="form-actions" style={{ marginTop: 14 }}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          onClick={() => doctor.mutate()}
+          disabled={doctor.isPending}
+        >
+          {doctor.isPending ? <span className="spinner" /> : <Stethoscope aria-hidden="true" />}
+          Run diagnostics
+        </button>
+        {report !== undefined && (
+          <span className="saved-note">
+            {failed.length === 0
+              ? `All ${report.probes.length} checks passed`
+              : `${failed.length} of ${report.probes.length} checks flagged`}
+          </span>
+        )}
+      </div>
+      {doctor.isError && (
+        <div className="form-error" role="alert">
+          {errorMessage(doctor.error)}
+        </div>
+      )}
+      {report !== undefined && (
+        <ul className="doctor-probes">
+          {report.probes.map((probe) => (
+            <ProbeRow key={probe.name} probe={probe} />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function ProbeRow({ probe }: { probe: DoctorProbe }) {
+  return (
+    <li className={`doctor-probe${probe.ok ? '' : ' doctor-probe--fail'}`}>
+      <span className="doctor-probe__marker" aria-hidden="true">
+        {probe.ok ? '✓' : '✗'}
+      </span>
+      <span className="doctor-probe__name">{probe.name}</span>
+      <span className="doctor-probe__detail">{probe.detail ?? probe.error ?? ''}</span>
+    </li>
   )
 }
 

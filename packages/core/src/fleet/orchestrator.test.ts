@@ -58,6 +58,13 @@ describe('buildRemoteCommand', () => {
     expect(buildRemoteCommand(host, 'sync')).toBe("'skillbox' sync --multi-device")
   })
 
+  it('builds ping as a bare no-op without touching skillbox', () => {
+    const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
+    expect(buildRemoteCommand(host, 'ping')).toBe('true')
+    const withPath: FleetHostConfig = { name: 'h', host: '1.2.3.4', remotePath: '/srv/skills' }
+    expect(buildRemoteCommand(withPath, 'ping')).toBe("cd '/srv/skills' && true")
+  })
+
   it('throws FLEET_TARGET_REQUIRED for remove/enable/disable without a target', () => {
     const host: FleetHostConfig = { name: 'h', host: '1.2.3.4' }
     for (const operation of ['remove', 'enable', 'disable'] as const) {
@@ -80,7 +87,10 @@ describe('buildRemoteCommand', () => {
 
 /** A scripted `ssh` spawn: `-V` (isInstalled) always succeeds; exec calls are dispatched per destination. */
 function scriptedSpawn(
-  byDestination: Record<string, Awaited<ReturnType<SshSpawn>> | (() => Promise<never>)>,
+  byDestination: Record<
+    string,
+    Awaited<ReturnType<SshSpawn>> | (() => Awaited<ReturnType<SshSpawn>>)
+  >,
 ): { spawn: SshSpawn; calls: string[][] } {
   const calls: string[][] = []
   const spawn: SshSpawn = async (args) => {
@@ -176,5 +186,51 @@ describe('runFleetOperation', () => {
 
     expect(calls).toHaveLength(0)
     expect(result.results[0]).toMatchObject({ ok: true, stdout: "'skillbox' install" })
+  })
+
+  it('retries connection failures (exit 255) up to `retries` times', async () => {
+    let attempts = 0
+    const { spawn, calls } = scriptedSpawn({
+      'a.example': () => {
+        attempts += 1
+        if (attempts < 3) {
+          return { exitCode: 255, stdout: '', stderr: 'connection refused' }
+        }
+        return { exitCode: 0, stdout: 'recovered\n', stderr: '' }
+      },
+    })
+    const ssh = new SshClient({ spawn })
+    const sleeps: number[] = []
+
+    const result = await runFleetOperation([hostA], 'install', ssh, {
+      retries: 2,
+      sleepBeforeRetry: async (attempt) => {
+        sleeps.push(attempt)
+      },
+    })
+
+    expect(result.results[0]).toMatchObject({ ok: true, stdout: 'recovered\n' })
+    expect(calls.filter((args) => args[0] !== '-V')).toHaveLength(3)
+    expect(sleeps).toEqual([1, 2])
+  })
+
+  it('gives up after `retries` and never retries a real remote exit code', async () => {
+    const { spawn, calls } = scriptedSpawn({
+      'a.example': { exitCode: 255, stdout: '', stderr: 'still down' },
+      'b.example': { exitCode: 1, stdout: '', stderr: 'command failed' },
+    })
+    const ssh = new SshClient({ spawn })
+
+    const result = await runFleetOperation([hostA, hostB], 'install', ssh, {
+      retries: 1,
+      sleepBeforeRetry: async () => {},
+    })
+
+    const byHost = Object.fromEntries(result.results.map((entry) => [entry.host, entry]))
+    expect(byHost.a?.ok).toBe(false)
+    expect(byHost.b).toMatchObject({ ok: false, exitCode: 1 })
+    const execs = calls.filter((args) => args[0] !== '-V')
+    expect(execs.filter((args) => args.includes('a.example'))).toHaveLength(2)
+    expect(execs.filter((args) => args.includes('b.example'))).toHaveLength(1)
   })
 })

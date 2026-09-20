@@ -14,6 +14,7 @@ import type {
   GitStatusResult,
   GitTransportAuth,
 } from '../git/index.js'
+import type { SyncSnapshot } from './snapshot-service.js'
 
 export interface SyncRequest {
   /** A presentation-only label for the device initiating the sync. */
@@ -137,6 +138,8 @@ export interface RepositorySync {
   getConflict(sessionId: string): Promise<ConflictSession>
   resolveConflicts(input: ResolveConflictsRequest): Promise<SyncOutcome>
   restoreSnapshot(snapshotId: string): Promise<void>
+  /** Restorable sync checkpoints for this repository; expired ones reported separately. */
+  listSnapshots(): Promise<{ snapshots: SyncSnapshot[]; expired: SyncSnapshot[] }>
 }
 
 export interface RepositoryGitPort {

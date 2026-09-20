@@ -36,6 +36,7 @@ export const queryKeys = {
   outdated: ['registry', 'outdated'],
   fleetHosts: ['fleet', 'hosts'],
   syncStatus: ['sync', 'status'],
+  syncSnapshots: ['sync', 'snapshots'],
   conflicts: ['sync', 'conflicts'],
   conflict: (id: string) => ['sync', 'conflicts', id],
 } as const
@@ -172,6 +173,7 @@ export function useRemoveSkill() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
       void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+      void queryClient.invalidateQueries({ queryKey: ['rollbacks'] })
     },
   })
 }
@@ -297,15 +299,75 @@ export function useInstallRegistrySkill() {
 
 /**
  * Live event stream (GAP §4.4): subscribes to the web server's SSE endpoint
- * and reports the latest core event (install/reconcile progress) for a
- * lightweight activity indicator.
+ * and returns a short feed of recent core-flow events (install / reconcile /
+ * sync / security) for a global activity indicator. Entries expire from the
+ * list after a few seconds so the feed reflects what's happening now rather
+ * than accumulating forever.
  */
-export function useEventStream(): { latest: string | null } {
-  const [latest, setLatest] = useState<string | null>(null)
+export type ActivityTone = 'info' | 'success' | 'error'
+
+export interface ActivityEvent {
+  key: number
+  message: string
+  tone: ActivityTone
+}
+
+const ACTIVITY_TTL_MS = 7000
+const ACTIVITY_MAX = 4
+
+function describeEvent(type: string, data: Record<string, unknown>): ActivityEvent['message'] {
+  const alias = typeof data.alias === 'string' ? data.alias : ''
+  switch (type) {
+    case 'install:phase':
+      return `Installing ${alias || 'skill'} · ${String(data.phase ?? '')}`
+    case 'install:completed':
+      return `Installed ${alias || 'skill'}`
+    case 'install:failed':
+      return `Install failed: ${alias || 'skill'}`
+    case 'reconcile:started':
+      return 'Reconciling repository…'
+    case 'reconcile:completed':
+      return `Reconciled · ${String(data.problems ?? 0)} problem(s)`
+    case 'sync:step':
+      return `Sync · ${String(data.step ?? '')}: ${String(data.status ?? '')}`
+    case 'sync:completed':
+      return 'Sync finished'
+    case 'security:finding':
+      return `Security · ${String(data.count ?? '')} ${String(data.severity ?? '')} finding(s)`
+    default:
+      return type
+  }
+}
+
+function toneFor(type: string, data: Record<string, unknown>): ActivityTone {
+  if (type === 'install:failed') return 'error'
+  if (type === 'security:finding' && data.severity === 'high') return 'error'
+  if (type === 'install:completed' || type === 'sync:completed') return 'success'
+  if (type === 'reconcile:completed' && Number(data.problems ?? 0) > 0) return 'error'
+  return 'info'
+}
+
+export function useEventStream(): ActivityEvent[] {
+  const [events, setEvents] = useState<ActivityEvent[]>([])
   useEffect(() => {
     const source = new EventSource('/api/events')
-    const show = (event: MessageEvent): void => {
-      setLatest(`${event.type}: ${event.data}`)
+    let seq = 0
+    const record = (type: string, raw: string): void => {
+      let data: Record<string, unknown> = {}
+      try {
+        data = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        data = {}
+      }
+      const entry: ActivityEvent = {
+        key: seq++,
+        message: describeEvent(type, data),
+        tone: toneFor(type, data),
+      }
+      setEvents((previous) => [...previous, entry].slice(-ACTIVITY_MAX))
+      setTimeout(() => {
+        setEvents((previous) => previous.filter((item) => item.key !== entry.key))
+      }, ACTIVITY_TTL_MS)
     }
     for (const type of [
       'install:phase',
@@ -313,12 +375,15 @@ export function useEventStream(): { latest: string | null } {
       'install:failed',
       'reconcile:started',
       'reconcile:completed',
+      'sync:step',
+      'sync:completed',
+      'security:finding',
     ]) {
-      source.addEventListener(type, show)
+      source.addEventListener(type, (event) => record(type, (event as MessageEvent).data))
     }
     return () => source.close()
   }, [])
-  return { latest }
+  return events
 }
 
 export function skillsForAgent(agentId: string, skills: SkillStatusEntry[]): SkillStatusEntry[] {
@@ -333,6 +398,8 @@ function invalidateSkillViews(queryClient: ReturnType<typeof useQueryClient>, na
   void queryClient.invalidateQueries({ queryKey: queryKeys.skillDiff(name) })
   void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
   void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+  // Lifecycle ops record recovery backups; keep the rollback list fresh.
+  void queryClient.invalidateQueries({ queryKey: ['rollbacks'] })
 }
 
 /**
@@ -372,10 +439,16 @@ export function useFleetHosts() {
   })
 }
 
-/** Runs `install` / `update` / `status` across the selected hosts over SSH. */
+/**
+ * Runs `install` / `update` / `status` / `sync` / `ping` across the selected
+ * hosts over SSH. Pass a `signal` alongside the request to let the caller
+ * abandon the in-flight batch (the client stops waiting; the server finishes
+ * the already-dispatched hosts on its own).
+ */
 export function useFleetRun() {
   return useMutation({
-    mutationFn: (input: FleetRunRequest) => api.fleetRun(input),
+    mutationFn: ({ signal, ...input }: FleetRunRequest & { signal?: AbortSignal }) =>
+      api.fleetRun(input, signal),
   })
 }
 
@@ -419,12 +492,22 @@ export function useSyncStatus() {
   return useQuery({ queryKey: queryKeys.syncStatus, queryFn: () => api.syncStatus() })
 }
 
+/** Restorable sync checkpoints (live newest-first, then expired). */
+export function useSyncSnapshots(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.syncSnapshots,
+    queryFn: () => api.syncSnapshots(),
+    enabled,
+  })
+}
+
 export function useSync() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: () => api.sync(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncSnapshots })
       void queryClient.invalidateQueries({ queryKey: queryKeys.conflicts })
     },
   })
@@ -463,6 +546,7 @@ export function useRestoreSyncSnapshot() {
     mutationFn: (snapshotId: string) => api.restoreSyncSnapshot(snapshotId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncSnapshots })
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
       void queryClient.invalidateQueries({ queryKey: queryKeys.status })
@@ -479,4 +563,11 @@ export function useDisconnectSync() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
     },
   })
+}
+
+/* ---- Diagnostics ---- */
+
+/** Runs the full doctor report on demand (a manual action, not a background query). */
+export function useDoctor() {
+  return useMutation({ mutationFn: () => api.doctor() })
 }

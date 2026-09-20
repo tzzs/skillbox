@@ -122,6 +122,36 @@ describe('FleetService', () => {
             isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
         )
       }))
+
+    it('accepts plain, IPv4 and bracketed-IPv6 hosts', async () =>
+      withTempDir(async (dir) => {
+        const service = new FleetService({ configPath: path.join(dir, 'fleet.yaml') })
+
+        await expect(service.addHost({ name: 'a', host: 'web.example' })).resolves.toBeTruthy()
+        await expect(service.addHost({ name: 'b', host: '[fd12::3]' })).resolves.toBeTruthy()
+      }))
+
+    it('rejects ssh-option-injection hosts and identity files', async () =>
+      withTempDir(async (dir) => {
+        const service = new FleetService({ configPath: path.join(dir, 'fleet.yaml') })
+
+        await expect(
+          service.addHost({ name: 'evil', host: '-oProxyCommand=touch /tmp/x' }),
+        ).rejects.toSatisfy(
+          (error: unknown) =>
+            isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
+        )
+        await expect(
+          service.addHost({
+            name: 'k',
+            host: 'h.example',
+            identityFile: '-oStrictHostKeyChecking=no',
+          }),
+        ).rejects.toSatisfy(
+          (error: unknown) =>
+            isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
+        )
+      }))
   })
 
   describe('updateHost', () => {
