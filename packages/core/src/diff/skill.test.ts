@@ -13,6 +13,7 @@ import type {
   ResolvedSource,
 } from '../registry/types.js'
 import { diffSkill } from './skill.js'
+import { createSkillSourceResolver, type SkillSourceAdapter } from '../sources/index.js'
 
 /**
  * Provider that serves per-revision fixture directories: `download` copies the
@@ -61,6 +62,75 @@ async function writeFileRecursive(dir: string, relative: string, content: string
 }
 
 describe('diffSkill', () => {
+  it('resolves upstream revisions through an injected canonical source resolver', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      const localDir = path.join(repoRoot, 'skills', 'foo')
+      const baseFixture = path.join(dir, 'fixtures', 'rev1')
+      const latestFixture = path.join(dir, 'fixtures', 'rev2')
+      await fs.mkdir(repoRoot)
+      await writeFileRecursive(localDir, 'SKILL.md', '# Foo (local)\n')
+      await writeFileRecursive(baseFixture, 'SKILL.md', '# Foo\n')
+      await writeFileRecursive(latestFixture, 'SKILL.md', '# Foo (latest)\n')
+
+      const source = { type: 'local' as const, path: 'skills/foo' }
+      await writeManifest(
+        repoRoot,
+        addSkill(emptyManifest(), 'foo', {
+          source,
+          mode: 'forked',
+          upstream: { type: 'github', repo: 'acme/foo', path: 'skills/foo' },
+        }),
+      )
+      const lockfile = emptyLockfile()
+      const locked = createLockedSkill({
+        mode: 'forked',
+        source,
+        integrity: await computeSkillIntegrity(localDir),
+      })
+      locked.upstream = {
+        source: { type: 'github', repo: 'acme/foo', path: 'skills/foo' },
+        baseRevision: 'rev1',
+        latestRevision: 'rev2',
+      }
+      lockfile.skills.foo = locked
+      await writeLockfile(repoRoot, lockfile)
+
+      const fixtures = new Map([
+        ['rev1', baseFixture],
+        ['rev2', latestFixture],
+      ])
+      const adapter: SkillSourceAdapter = {
+        type: 'github',
+        capabilities: { resolve: false, download: false, latest: true, materialize: true },
+        latest: async () => 'rev2',
+        materialize: async (upstream, revision, targetDir) => {
+          // Adapters receive a full canonical source but materialize the
+          // selected skill root, not a repository root that consumers trim a
+          // second time.
+          expect(upstream).toMatchObject({ type: 'github', path: 'skills/foo' })
+          const fixture = fixtures.get(revision)
+          if (fixture === undefined) throw new Error(`unknown revision ${revision}`)
+          await fs.cp(fixture, targetDir, { recursive: true })
+        },
+      }
+
+      const result = await diffSkill('foo', {
+        repositoryRoot: repoRoot,
+        homeRoot,
+        sourceResolver: createSkillSourceResolver({ adapters: [adapter] }),
+      })
+
+      expect(result.views.map((view) => view.label)).toEqual([
+        'Base vs Local',
+        'Local vs Latest',
+        'Base vs Latest',
+      ])
+      expect(result.unchanged).toBe(false)
+    })
+  })
+
   it('produces the three forked views Base/Local/Latest', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')

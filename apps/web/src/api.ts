@@ -295,7 +295,19 @@ export interface FleetHostConfig {
   tags?: string[]
 }
 
-export type FleetOperationName = 'install' | 'update' | 'status'
+export type FleetOperationName =
+  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
+
+/** A skill (and, for enable/disable, agent) a Fleet run targets. */
+export interface FleetSkillTarget {
+  name: string
+  /** Required for enable/disable. */
+  agent?: string
+  /** remove only: also delete the skill's files, not just its manifest entry. */
+  deleteFiles?: boolean
+  /** update only: confirm a HIGH-risk update non-interactively. */
+  yes?: boolean
+}
 
 export interface FleetHostResult {
   host: string
@@ -320,6 +332,69 @@ export interface FleetRunRequest {
   ssh?: string[]
   concurrency?: number
   dryRun?: boolean
+  /** Required for remove/enable/disable; optional for update (targets one skill). */
+  target?: FleetSkillTarget
+}
+
+/** Body of `POST /api/fleet/hosts`. */
+export type FleetHostInput = FleetHostConfig
+
+/** Body of `PATCH /api/fleet/hosts/:name` — every field replaces the current value; `name` renames the host. */
+export type FleetHostPatch = Partial<FleetHostConfig>
+
+/* ---- Multi-device sync (RepositorySync) ----
+ * `connect`/`disconnect` stay CLI-only (`skillbox connect`) — the GitHub
+ * device-flow handshake takes minutes and doesn't fit a request/response
+ * cycle. This client only covers day-to-day sync once already connected.
+ */
+
+/** Presentation-only state returned by the sync API. */
+export type SyncStatus =
+  | { kind: 'idle' }
+  | { kind: 'completed'; automaticallyMerged: number; snapshotId?: string; retriedPushes: number }
+  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
+  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+
+/** GitHub connection snapshot — read-only, never starts a device flow. */
+export interface SyncConnection {
+  connected: boolean
+  login?: string
+  repository?: string
+}
+
+export interface SyncStatusView {
+  sync: SyncStatus
+  connection: SyncConnection
+}
+
+export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
+export type SyncConflictKind =
+  'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
+
+export interface SyncConflictView {
+  id: string
+  type: SyncConflictKind
+  skillAlias?: string
+  path?: string
+  field?: string
+  basePreview?: string
+  localPreview?: string
+  remotePreview?: string
+  allowedResolutions: ConflictChoice[]
+  recommendedResolution?: ConflictChoice
+  destructive: boolean
+}
+
+export interface ConflictSessionView {
+  id: string
+  snapshotId: string
+  createdAt: string
+  expiresAt: string
+  conflicts: SyncConflictView[]
+}
+
+export interface ResolveSyncConflictsInput {
+  resolutions: Record<string, ConflictChoice>
 }
 
 export interface ApiErrorBody {
@@ -345,7 +420,18 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * A sync conflict or a safely-paused sync is an expected workflow result,
+ * not an API failure — the server deliberately answers those with 409/423
+ * instead of 200. `acceptedStatuses` lets those specific calls treat such a
+ * response as a normal body instead of throwing; every other non-2xx status
+ * still becomes an `ApiError`.
+ */
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  acceptedStatuses: readonly number[] = [],
+): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -362,7 +448,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     body = undefined
   }
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
     const envelope = body as ApiErrorBody | undefined
     if (envelope?.error !== undefined) {
       const { code, message, recoverable } = envelope.error
@@ -413,6 +499,17 @@ export interface ApiClient {
   /* Fleet API */
   fleetHosts(): Promise<FleetHostConfig[]>
   fleetRun(input: FleetRunRequest): Promise<FleetRunResult>
+  addFleetHost(input: FleetHostInput): Promise<FleetHostConfig>
+  updateFleetHost(name: string, patch: FleetHostPatch): Promise<FleetHostConfig>
+  removeFleetHost(name: string): Promise<void>
+  /* Multi-device sync API */
+  syncStatus(): Promise<SyncStatusView>
+  sync(): Promise<SyncStatus>
+  conflicts(): Promise<ConflictSessionView[]>
+  conflict(id: string): Promise<ConflictSessionView>
+  resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
+  restoreSyncSnapshot(id: string): Promise<void>
+  disconnectSync(): Promise<void>
 }
 
 function encodeName(name: string): string {
@@ -604,5 +701,67 @@ export const api: ApiClient = {
       body: JSON.stringify(input),
     })
     return response.result
+  },
+
+  async addFleetHost(input) {
+    const response = await request<{ host: FleetHostConfig }>('/api/fleet/hosts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.host
+  },
+
+  async updateFleetHost(name, patch) {
+    const response = await request<{ host: FleetHostConfig }>(
+      `/api/fleet/hosts/${encodeURIComponent(name)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    )
+    return response.host
+  },
+
+  async removeFleetHost(name) {
+    await request<unknown>(`/api/fleet/hosts/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  },
+
+  async syncStatus() {
+    return request<SyncStatusView>('/api/sync/status')
+  },
+
+  async sync() {
+    const response = await request<{ sync: SyncStatus }>(
+      '/api/sync',
+      { method: 'POST' },
+      [409, 423],
+    )
+    return response.sync
+  },
+
+  async conflicts() {
+    const response = await request<{ conflicts: ConflictSessionView[] }>('/api/conflicts')
+    return response.conflicts
+  },
+
+  async conflict(id) {
+    const response = await request<{ conflict: ConflictSessionView }>(
+      `/api/conflicts/${encodeName(id)}`,
+    )
+    return response.conflict
+  },
+
+  async resolveConflicts(id, input) {
+    const response = await request<{ sync: SyncStatus }>(
+      `/api/conflicts/${encodeName(id)}/resolve`,
+      { method: 'POST', body: JSON.stringify(input) },
+      [409, 423],
+    )
+    return response.sync
+  },
+
+  async restoreSyncSnapshot(id) {
+    await request<unknown>(`/api/sync/snapshots/${encodeName(id)}/restore`, { method: 'POST' })
+  },
+
+  async disconnectSync() {
+    await request<unknown>('/api/sync/disconnect', { method: 'POST' })
   },
 }

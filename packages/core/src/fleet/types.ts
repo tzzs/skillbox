@@ -24,7 +24,24 @@ export const FLEET_CONFIG_VERSION = 1 as const
 export type FleetConfig = z.infer<typeof fleetConfigSchema>
 
 /** Remote command Fleet knows how to run. */
-export type FleetOperationName = 'install' | 'update' | 'status'
+export type FleetOperationName =
+  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
+
+/**
+ * A single skill (and, for `enable`/`disable`, agent) a Fleet run acts on.
+ * Required for `remove`/`enable`/`disable`; `update` accepts it optionally
+ * (targets one managed skill instead of every outdated one); `install` and
+ * `status` ignore it.
+ */
+export interface FleetSkillTarget {
+  name: string
+  /** Required for `enable`/`disable`. */
+  agent?: string
+  /** `remove` only: also delete the skill's files, not just its manifest entry. */
+  deleteFiles?: boolean
+  /** `update` only: confirm a HIGH-risk update non-interactively (Fleet always runs unattended). */
+  yes?: boolean
+}
 
 /** Which configured/ad-hoc hosts a Fleet run targets. */
 export interface FleetHostSelector {
@@ -61,4 +78,6 @@ export interface FleetRunOptions {
   timeoutMs?: number
   /** Report the command that would run on each host without executing it. */
   dryRun?: boolean
+  /** The skill (and, for enable/disable, agent) this run targets. */
+  target?: FleetSkillTarget
 }

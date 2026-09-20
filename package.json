@@ -16,7 +16,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "skillbox": "skillbox",
-    "pack:verify": "node scripts/verify-package.mjs"
+    "pack:verify": "node scripts/verify-package.mjs",
+    "release:smoke": "node scripts/pack-install-smoke.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -6,14 +6,25 @@ import {
   defaultEventBus,
   parseAdHocHost,
   withRuntimeLock,
+  type ConflictResolution,
+  type ConflictSession,
   type FleetHostSelector,
   type FleetOperationName,
   type FleetRunOptions,
+  type FleetSkillTarget,
   type RuntimeConfig,
   type RollbackResult,
+  type SyncConflict,
+  type SyncOutcome,
 } from '@skillbox/core'
 import type {
   AgentsResponse,
+  ConflictResponse,
+  ConflictsResponse,
+  FleetHostCreateRequest,
+  FleetHostPatchRequest,
+  FleetHostRemoveResponse,
+  FleetHostResponse,
   FleetHostsResponse,
   FleetRunResponse,
   HealthResponse,
@@ -29,6 +40,10 @@ import type {
   SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
+  SyncConnectionDto,
+  SyncDisconnectResponse,
+  SyncResponse,
+  SyncStatusResponse,
   WebAppOptions,
   WebServices,
 } from './types.js'
@@ -131,7 +146,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const body = await requireJsonBody(c)
       const name = stringField(body, 'name')
-      const description = stringField(body, 'description')
+      const description = optionalStringField(body, 'description')
       const input: { name: string; description?: string } = { name }
       if (description !== undefined) {
         input.description = description
@@ -293,18 +308,126 @@ export function createWebApp(options: WebAppOptions): Hono {
     return c.json<FleetHostsResponse>({ hosts })
   })
 
+  /** Adds a host to `.skillbox/fleet.yaml`, creating the file if needed. */
+  app.post('/api/fleet/hosts', async (c) => {
+    return mutation(services, async () => {
+      const body = await requireJsonBody(c)
+      const host = await services.fleet.addHost(parseFleetHostCreateBody(body))
+      return c.json<FleetHostResponse>({ host }, 201)
+    })
+  })
+
+  /** Merges the given fields into the named host; `name` renames it. */
+  app.patch('/api/fleet/hosts/:name', async (c) => {
+    return mutation(services, async () => {
+      const name = c.req.param('name')
+      const body = await requireJsonBody(c)
+      const host = await services.fleet.updateHost(name, parseFleetHostPatchBody(body))
+      return c.json<FleetHostResponse>({ host })
+    })
+  })
+
+  /** Removes a host from `.skillbox/fleet.yaml`. */
+  app.delete('/api/fleet/hosts/:name', async (c) => {
+    return mutation(services, async () => {
+      const name = c.req.param('name')
+      await services.fleet.removeHost(name)
+      return c.json<FleetHostRemoveResponse>({ removed: true })
+    })
+  })
+
   /**
-   * Runs `install` / `update` / `status` across the selected hosts over SSH.
-   * A per-host failure is reported inside `result.results` (200), never as an
-   * HTTP error — only a structural problem (bad selection, no local `ssh`)
-   * throws. No local runtime state is touched, so this route skips the
-   * mutation lock.
+   * Runs `install` / `update` / `status` / `remove` / `enable` / `disable`
+   * across the selected hosts over SSH. `remove`/`enable`/`disable` (and
+   * optionally `update`) target one skill via `body.target`. A per-host
+   * failure is reported inside `result.results` (200), never as an HTTP
+   * error — only a structural problem (bad selection, missing target, no
+   * local `ssh`) throws. No local runtime state is touched, so this route
+   * skips the mutation lock.
    */
   app.post('/api/fleet/run', async (c) => {
     const body = await requireJsonBody(c)
     const { operation, selector, options } = parseFleetRunBody(body)
     const result = await services.fleet.run(operation, selector, options)
     return c.json<FleetRunResponse>({ result })
+  })
+
+  /* ---- Multi-device sync API (RepositorySync) ----
+   * `connect`/`disconnect` stay CLI-only (`skillbox connect`): the GitHub
+   * device-flow handshake can take minutes and doesn't fit a single
+   * request/response cycle. Once a device is connected, these routes cover
+   * day-to-day sync + conflict resolution. A `conflicts` or `blocked`
+   * outcome is a normal, expected result of `sync` — not a thrown error —
+   * so it's reported as 409/423 with a JSON body, never the M10.8 error
+   * envelope; only a genuine failure (not connected, git unavailable, ...)
+   * throws through `app.onError`.
+   */
+
+  /** The open conflict session, if any — the resting state between syncs. */
+  app.get('/api/sync/status', async (c) => {
+    const [[session], snapshot] = await Promise.all([
+      services.sync.listConflicts(),
+      services.sync.connectionState(),
+    ])
+    const connection: SyncConnectionDto = {
+      connected: snapshot.connected,
+      ...(snapshot.login === undefined ? {} : { login: snapshot.login }),
+      ...(snapshot.repository === undefined ? {} : { repository: snapshot.repository }),
+    }
+    if (session !== undefined) {
+      return c.json<SyncStatusResponse>({
+        sync: {
+          kind: 'conflicts',
+          sessionId: session.id,
+          conflictCount: session.conflicts.length,
+          snapshotId: session.snapshotId,
+        },
+        connection,
+      })
+    }
+    return c.json<SyncStatusResponse>({ sync: { kind: 'idle' }, connection })
+  })
+
+  app.post('/api/sync', async (c) => {
+    const outcome = await services.sync.sync()
+    return c.json<SyncResponse>(
+      { sync: presentSyncOutcome(outcome) },
+      toStatusCode(syncOutcomeStatus(outcome)),
+    )
+  })
+
+  app.get('/api/conflicts', async (c) => {
+    const sessions = await services.sync.listConflicts()
+    return c.json<ConflictsResponse>({ conflicts: sessions.map(presentConflictSession) })
+  })
+
+  app.get('/api/conflicts/:id', async (c) => {
+    const session = await services.sync.getConflict(c.req.param('id'))
+    return c.json<ConflictResponse>({ conflict: presentConflictSession(session) })
+  })
+
+  app.post('/api/conflicts/:id/resolve', async (c) => {
+    const body = await requireJsonBody(c)
+    const resolutions = requireResolutionsField(body)
+    const outcome = await services.sync.resolveConflicts({
+      sessionId: c.req.param('id'),
+      resolutions,
+    })
+    return c.json<SyncResponse>(
+      { sync: presentSyncOutcome(outcome) },
+      toStatusCode(syncOutcomeStatus(outcome)),
+    )
+  })
+
+  app.post('/api/sync/snapshots/:id/restore', async (c) => {
+    await services.sync.restoreSnapshot(c.req.param('id'))
+    return c.json({ restored: true })
+  })
+
+  /** Removes only local GitHub credentials/connection metadata — never touches the repository. */
+  app.post('/api/sync/disconnect', async (c) => {
+    await services.sync.disconnect()
+    return c.json<SyncDisconnectResponse>({ disconnected: true })
   })
 
   /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */
@@ -458,7 +581,65 @@ function allowPolicyField(body: Record<string, unknown>): 'safe' | 'all' {
 
 /* ---- /api/fleet/run body (multi-host SSH orchestration) ---- */
 
-const FLEET_OPERATIONS: ReadonlySet<string> = new Set(['install', 'update', 'status'])
+const FLEET_OPERATIONS: ReadonlySet<string> = new Set([
+  'install',
+  'update',
+  'status',
+  'remove',
+  'enable',
+  'disable',
+  'sync',
+])
+
+const FLEET_TARGET_REQUIRED_OPERATIONS: ReadonlySet<string> = new Set([
+  'remove',
+  'enable',
+  'disable',
+])
+
+/** Parses `body.target`, required for remove/enable/disable, optional (single-skill) for update. */
+function parseFleetTarget(
+  body: Record<string, unknown>,
+  operation: string,
+): FleetSkillTarget | undefined {
+  const raw = body['target']
+  if (raw === undefined) {
+    if (FLEET_TARGET_REQUIRED_OPERATIONS.has(operation)) {
+      throw new WebApiError('INVALID_REQUEST', `Field "target" is required for "${operation}"`)
+    }
+    return undefined
+  }
+  if (typeof raw !== 'object' || raw === null) {
+    throw new WebApiError('INVALID_REQUEST', 'Field "target" must be an object')
+  }
+  const { name, agent, deleteFiles, yes } = raw as Record<string, unknown>
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new WebApiError('INVALID_REQUEST', 'Field "target.name" must be a non-empty string')
+  }
+  const target: FleetSkillTarget = { name }
+  if ((operation === 'enable' || operation === 'disable') && typeof agent !== 'string') {
+    throw new WebApiError('INVALID_REQUEST', `Field "target.agent" is required for "${operation}"`)
+  }
+  if (agent !== undefined) {
+    if (typeof agent !== 'string') {
+      throw new WebApiError('INVALID_REQUEST', 'Field "target.agent" must be a string')
+    }
+    target.agent = agent
+  }
+  if (deleteFiles !== undefined) {
+    if (typeof deleteFiles !== 'boolean') {
+      throw new WebApiError('INVALID_REQUEST', 'Field "target.deleteFiles" must be a boolean')
+    }
+    target.deleteFiles = deleteFiles
+  }
+  if (yes !== undefined) {
+    if (typeof yes !== 'boolean') {
+      throw new WebApiError('INVALID_REQUEST', 'Field "target.yes" must be a boolean')
+    }
+    target.yes = yes
+  }
+  return target
+}
 
 /** Like {@link stringArrayField}, but the field is optional and may be `[]`. */
 function optionalStringArrayField(
@@ -485,7 +666,10 @@ function parseFleetRunBody(body: Record<string, unknown>): {
 } {
   const operation = body['operation']
   if (typeof operation !== 'string' || !FLEET_OPERATIONS.has(operation)) {
-    throw new WebApiError('INVALID_REQUEST', 'Field "operation" must be install/update/status')
+    throw new WebApiError(
+      'INVALID_REQUEST',
+      'Field "operation" must be install/update/status/remove/enable/disable/sync',
+    )
   }
 
   const hosts = optionalStringArrayField(body, 'hosts')
@@ -517,8 +701,179 @@ function parseFleetRunBody(body: Record<string, unknown>): {
     }
     options.dryRun = dryRun
   }
+  const target = parseFleetTarget(body, operation)
+  if (target !== undefined) {
+    options.target = target
+  }
 
   return { operation: operation as FleetOperationName, selector, options }
+}
+
+/* ---- /api/fleet/hosts body (fleet.yaml CRUD) ---- */
+
+function optionalStringField(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field]
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a non-empty string`)
+  }
+  return value
+}
+
+function optionalPositiveIntField(
+  body: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  const value = body[field]
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new WebApiError('INVALID_REQUEST', `Field "${field}" must be a positive integer`)
+  }
+  return value
+}
+
+/** Shared optional fields (`user`/`port`/`identityFile`/`remotePath`/`skillboxBin`/`tags`) across create and patch. */
+function parseFleetHostOptionalFields(
+  body: Record<string, unknown>,
+): Omit<FleetHostCreateRequest, 'name' | 'host'> {
+  const fields: Omit<FleetHostCreateRequest, 'name' | 'host'> = {}
+  const user = optionalStringField(body, 'user')
+  if (user !== undefined) fields.user = user
+  const port = optionalPositiveIntField(body, 'port')
+  if (port !== undefined) fields.port = port
+  const identityFile = optionalStringField(body, 'identityFile')
+  if (identityFile !== undefined) fields.identityFile = identityFile
+  const remotePath = optionalStringField(body, 'remotePath')
+  if (remotePath !== undefined) fields.remotePath = remotePath
+  const skillboxBin = optionalStringField(body, 'skillboxBin')
+  if (skillboxBin !== undefined) fields.skillboxBin = skillboxBin
+  const tags = optionalStringArrayField(body, 'tags')
+  if (tags !== undefined) fields.tags = tags
+  return fields
+}
+
+function parseFleetHostCreateBody(body: Record<string, unknown>): FleetHostCreateRequest {
+  return {
+    name: stringField(body, 'name'),
+    host: stringField(body, 'host'),
+    ...parseFleetHostOptionalFields(body),
+  }
+}
+
+function parseFleetHostPatchBody(body: Record<string, unknown>): FleetHostPatchRequest {
+  const patch: FleetHostPatchRequest = { ...parseFleetHostOptionalFields(body) }
+  const name = optionalStringField(body, 'name')
+  if (name !== undefined) patch.name = name
+  const host = optionalStringField(body, 'host')
+  if (host !== undefined) patch.host = host
+  return patch
+}
+
+/* ---- /api/sync + /api/conflicts helpers (RepositorySync) ---- */
+
+const CONFLICT_RESOLUTIONS: ReadonlySet<string> = new Set([
+  'local',
+  'remote',
+  'keep-both',
+  'merged',
+  'delete',
+  'restore',
+])
+
+/** Validates `body.resolutions`: a non-empty map of conflict id → resolution choice. */
+function requireResolutionsField(
+  body: Record<string, unknown>,
+): Record<string, ConflictResolution> {
+  const value = body['resolutions']
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new WebApiError('INVALID_REQUEST', 'Field "resolutions" must be an object')
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length === 0) {
+    throw new WebApiError('INVALID_REQUEST', 'Field "resolutions" must not be empty')
+  }
+  const resolutions: Record<string, ConflictResolution> = {}
+  for (const [conflictId, resolution] of entries) {
+    if (typeof resolution !== 'string' || !CONFLICT_RESOLUTIONS.has(resolution)) {
+      throw new WebApiError(
+        'INVALID_REQUEST',
+        `Field "resolutions.${conflictId}" must be one of ${[...CONFLICT_RESOLUTIONS].join('/')}`,
+      )
+    }
+    resolutions[conflictId] = resolution as ConflictResolution
+  }
+  return resolutions
+}
+
+/** A `conflicts`/`blocked` sync outcome is a normal result, reported via HTTP status, not thrown. */
+function syncOutcomeStatus(outcome: SyncOutcome): number {
+  if (outcome.kind === 'completed') return 200
+  if (outcome.kind === 'conflicts') return 409
+  return 423
+}
+
+function presentSyncOutcome(outcome: SyncOutcome): SyncResponse['sync'] {
+  if (outcome.kind === 'completed') {
+    return {
+      kind: 'completed',
+      automaticallyMerged: outcome.summary.automaticallyMerged,
+      retriedPushes: outcome.summary.retriedPushes,
+      ...(outcome.summary.createdSnapshotId === undefined
+        ? {}
+        : { snapshotId: outcome.summary.createdSnapshotId }),
+    }
+  }
+  if (outcome.kind === 'conflicts') {
+    return {
+      kind: 'conflicts',
+      sessionId: outcome.session.id,
+      conflictCount: outcome.session.conflicts.length,
+      snapshotId: outcome.session.snapshotId,
+    }
+  }
+  return {
+    kind: 'blocked',
+    reason: outcome.reason,
+    message: outcome.recovery.message,
+    retryable: outcome.recovery.retryable,
+    ...(outcome.recovery.snapshotId === undefined
+      ? {}
+      : { snapshotId: outcome.recovery.snapshotId }),
+  }
+}
+
+function presentConflictSession(session: ConflictSession): ConflictResponse['conflict'] {
+  return {
+    id: session.id,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    snapshotId: session.snapshotId,
+    conflicts: session.conflicts.map(presentSyncConflict),
+  }
+}
+
+function presentSyncConflict(
+  conflict: SyncConflict,
+): ConflictResponse['conflict']['conflicts'][number] {
+  return {
+    id: conflict.id,
+    type: conflict.type,
+    ...(conflict.skillAlias === undefined ? {} : { skillAlias: conflict.skillAlias }),
+    ...(conflict.path === undefined ? {} : { path: conflict.path }),
+    ...(conflict.field === undefined ? {} : { field: conflict.field }),
+    ...(conflict.base?.preview === undefined ? {} : { basePreview: conflict.base.preview }),
+    ...(conflict.local?.preview === undefined ? {} : { localPreview: conflict.local.preview }),
+    ...(conflict.remote?.preview === undefined ? {} : { remotePreview: conflict.remote.preview }),
+    allowedResolutions: conflict.allowedResolutions,
+    ...(conflict.recommendedResolution === undefined
+      ? {}
+      : { recommendedResolution: conflict.recommendedResolution }),
+    destructive: conflict.destructive,
+  }
 }
 
 function toStatusCode(status: number): ContentfulStatusCode {

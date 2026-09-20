@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Skillbox</title>
     <meta name="description" content="Manage the skills your AI agents use." />
+    <!--
+      Two theme-color candidates so the browser chrome (status bar, tab
+      strip) matches --bg before any JS runs, for the common case of
+      following the OS. An explicit in-app theme override replaces these
+      with a single unconditional tag in the inline script below.
+    -->
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -14,11 +22,21 @@
     <script>
       // Apply the persisted theme before the stylesheet loads so the first
       // paint is never a flash of the wrong theme. "system" needs no
-      // attribute — the CSS falls back to prefers-color-scheme.
+      // attribute — the CSS falls back to prefers-color-scheme, and the
+      // static theme-color tags above already track it.
       try {
         var theme = localStorage.getItem('skillbox-theme')
         if (theme === 'light' || theme === 'dark') {
           document.documentElement.dataset.theme = theme
+          // An explicit choice overrides the OS: replace both media-scoped
+          // theme-color tags with one unconditional tag.
+          document.querySelectorAll('meta[name="theme-color"]').forEach(function (meta) {
+            meta.remove()
+          })
+          var meta = document.createElement('meta')
+          meta.name = 'theme-color'
+          meta.content = theme === 'dark' ? '#000000' : '#ffffff'
+          document.head.appendChild(meta)
         }
       } catch (error) {
         // localStorage unavailable — keep the default (follow the OS).

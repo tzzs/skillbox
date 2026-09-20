@@ -12,6 +12,7 @@ import type { RegistrySearchResult } from '../api.js'
 import { errorMessage } from '../format.js'
 import { useRegistrySearch } from '../queries.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 type SortOption = 'popularity' | 'recently-updated'
 
@@ -22,6 +23,7 @@ type SortOption = 'popularity' | 'recently-updated'
  * result over to the Skill Install Page.
  */
 export function ExplorePage() {
+  useDocumentTitle('Explore')
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortOption>('popularity')

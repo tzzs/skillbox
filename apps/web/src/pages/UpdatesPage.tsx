@@ -5,6 +5,7 @@ import { ApiError, type OutdatedSkill } from '../api.js'
 import { errorMessage } from '../format.js'
 import { useInstallRegistrySkill, useOutdated } from '../queries.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 /**
  * M16.3 — Updates — installed skills that are behind their upstream revision
@@ -12,6 +13,7 @@ import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
  * button that re-runs the install transaction for the same source/agents.
  */
 export function UpdatesPage() {
+  useDocumentTitle('Updates')
   const outdatedQuery = useOutdated()
   const update = useInstallRegistrySkill()
   const [updatingName, setUpdatingName] = useState<string | undefined>(undefined)

@@ -16,7 +16,7 @@ export const runtimeConfigSchema = z.object({
     .object({
       port: z.number().int().positive().max(65535).optional(),
       /** Bind address used by the Web server (defaults to localhost). */
-      host: z.string().min(1).optional(),
+      host: z.string().trim().min(1).optional(),
       open: z.boolean().optional(),
     })
     .optional(),
@@ -27,7 +27,7 @@ export const runtimeConfigSchema = z.object({
       z.object({
         path: z.string().min(1).optional(),
         /** Multiple skill roots override adapter-discovered directories. */
-        skillDirectories: z.array(z.string().min(1)).min(1).optional(),
+        skillDirectories: z.array(z.string().trim().min(1)).min(1).optional(),
         executable: z.string().min(1).optional(),
       }),
     )

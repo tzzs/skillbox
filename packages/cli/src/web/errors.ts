@@ -68,8 +68,27 @@ const STATUS_BY_CODE: Partial<Record<SkillboxErrorCode, number>> = {
   [ErrorCode.FLEET_CONFIG_NOT_FOUND]: 404,
   [ErrorCode.FLEET_CONFIG_INVALID]: 400,
   [ErrorCode.FLEET_HOST_NOT_FOUND]: 404,
+  [ErrorCode.FLEET_HOST_EXISTS]: 409,
   [ErrorCode.FLEET_NO_HOSTS_SELECTED]: 400,
   [ErrorCode.FLEET_SSH_NOT_FOUND]: 503,
+  /* Multi-device sync (RepositorySync): missing GitHub auth or a stale
+     conflict session are client-side states to resolve, not server faults. */
+  [ErrorCode.GITHUB_NOT_CONNECTED]: 400,
+  [ErrorCode.GITHUB_UNAVAILABLE]: 503,
+  [ErrorCode.GITHUB_AUTHORIZATION_DENIED]: 403,
+  [ErrorCode.GITHUB_AUTHORIZATION_EXPIRED]: 400,
+  [ErrorCode.GITHUB_AUTH_FAILED]: 401,
+  [ErrorCode.GIT_REMOTE_CONFLICT]: 409,
+  [ErrorCode.GIT_CONFLICT]: 409,
+  [ErrorCode.GIT_DIRTY]: 409,
+  [ErrorCode.GIT_PUSH_REJECTED]: 409,
+  [ErrorCode.GIT_AUTH_FAILED]: 401,
+  [ErrorCode.GIT_UNAVAILABLE]: 503,
+  [ErrorCode.SYNC_CONFLICT_SESSION_NOT_FOUND]: 404,
+  [ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED]: 410,
+  [ErrorCode.SYNC_INVALID_CONFLICT_RESOLUTION]: 400,
+  [ErrorCode.SYNC_VALIDATION_FAILED]: 409,
+  [ErrorCode.SYNC_SNAPSHOT_NOT_FOUND]: 404,
 }
 
 /** Issues a prudent person could resolve via Reconcile or a retry. */
@@ -94,6 +113,13 @@ const RECOVERABLE: ReadonlySet<string> = new Set<string>([
   ErrorCode.INSTALL_AGENT_LINK_FAILED,
   /* Fleet: installing ssh locally (or adding fleet.yaml/hosts) is a retry. */
   ErrorCode.FLEET_SSH_NOT_FOUND,
+  /* Sync: transient GitHub/git unreachability, or reauthorizing after an
+     expired device-flow session, are both plain retries. */
+  ErrorCode.GITHUB_UNAVAILABLE,
+  ErrorCode.GITHUB_AUTHORIZATION_EXPIRED,
+  ErrorCode.GIT_UNAVAILABLE,
+  /* An expired conflict session just needs a fresh `sync` to reopen it. */
+  ErrorCode.SYNC_CONFLICT_SESSION_EXPIRED,
 ])
 
 export interface ApiErrorResult {

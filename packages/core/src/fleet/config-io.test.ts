@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { loadFleetConfig } from './config-io.js'
+import { loadFleetConfig, saveFleetConfig } from './config-io.js'
 import { ErrorCode, isSkillboxError } from '../errors.js'
 import { withTempDir } from '../fs/test-utils.js'
 
@@ -80,5 +80,49 @@ describe('loadFleetConfig', () => {
       await expect(loadFleetConfig(configPath)).rejects.toSatisfy(
         (error: unknown) => isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
       )
+    }))
+})
+
+describe('saveFleetConfig', () => {
+  it('creates the parent directory and writes a document loadFleetConfig can read back', async () =>
+    withTempDir(async (dir) => {
+      const configPath = path.join(dir, '.skillbox', 'fleet.yaml')
+      await saveFleetConfig(configPath, {
+        version: 1,
+        hosts: [{ name: 'web-1', host: '10.0.0.11', tags: ['prod'] }],
+      })
+
+      const reloaded = await loadFleetConfig(configPath)
+      expect(reloaded.hosts).toEqual([{ name: 'web-1', host: '10.0.0.11', tags: ['prod'] }])
+    }))
+
+  it('overwrites an existing file', async () =>
+    withTempDir(async (dir) => {
+      const configPath = path.join(dir, 'fleet.yaml')
+      await saveFleetConfig(configPath, {
+        version: 1,
+        hosts: [{ name: 'web-1', host: '10.0.0.11' }],
+      })
+      await saveFleetConfig(configPath, { version: 1, hosts: [] })
+
+      const reloaded = await loadFleetConfig(configPath)
+      expect(reloaded.hosts).toEqual([])
+    }))
+
+  it('throws FLEET_CONFIG_INVALID instead of writing a document with duplicate host names', async () =>
+    withTempDir(async (dir) => {
+      const configPath = path.join(dir, 'fleet.yaml')
+      await expect(
+        saveFleetConfig(configPath, {
+          version: 1,
+          hosts: [
+            { name: 'web-1', host: '10.0.0.11' },
+            { name: 'web-1', host: '10.0.0.12' },
+          ],
+        }),
+      ).rejects.toSatisfy(
+        (error: unknown) => isSkillboxError(error) && error.code === ErrorCode.FLEET_CONFIG_INVALID,
+      )
+      await expect(fs.stat(configPath)).rejects.toThrow()
     }))
 })

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Plus } from 'lucide-react'
 import { errorMessage } from '../format.js'
 import { useAgents, useCreateSkill } from '../queries.js'
+import { useDocumentTitle } from '../useDocumentTitle.js'
 
 /**
  * M11.3 + GAP 1.4 — Create Skill — scaffolds a new skill with an optional
@@ -10,6 +11,7 @@ import { useAgents, useCreateSkill } from '../queries.js'
  * only). On success the UI navigates to the new skill's detail page.
  */
 export function CreateSkillPage() {
+  useDocumentTitle('New skill')
   const navigate = useNavigate()
   const create = useCreateSkill()
   const agentsQuery = useAgents()

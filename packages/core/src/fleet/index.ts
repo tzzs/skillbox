@@ -1,4 +1,4 @@
-export { loadFleetConfig } from './config-io.js'
+export { loadFleetConfig, saveFleetConfig } from './config-io.js'
 export { buildRemoteCommand, runFleetOperation } from './orchestrator.js'
 export { parseAdHocHost, selectHosts } from './select.js'
 export { FLEET_CONFIG_FILE_NAME, fleetConfigSchema, fleetHostConfigSchema } from './schema.js'
@@ -18,4 +18,5 @@ export {
   type FleetOperationName,
   type FleetRunOptions,
   type FleetRunResult,
+  type FleetSkillTarget,
 } from './types.js'

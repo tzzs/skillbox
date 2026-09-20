@@ -9,6 +9,8 @@ import {
   type CredentialStore,
 } from '../github/index.js'
 import { RuntimeConfigService } from '../runtime/index.js'
+import { createDefaultAgentRegistry } from '../agent/index.js'
+import { SkillService } from '../services/index.js'
 import { RepositorySyncService } from './repository-sync.js'
 import type { RepositorySyncEvent } from './types.js'
 
@@ -53,8 +55,16 @@ export function createRepositorySync(options: CreateRepositorySyncOptions): Repo
   })
   return new RepositorySyncService({
     repositoryRoot: options.repositoryRoot,
+    homeRoot: options.homeRoot,
     git: new GitClient(),
     host,
+    reconcile: async () => {
+      await new SkillService({
+        repositoryRoot: options.repositoryRoot,
+        homeRoot: options.homeRoot,
+        registry: createDefaultAgentRegistry(),
+      }).install()
+    },
     ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
   })
 }

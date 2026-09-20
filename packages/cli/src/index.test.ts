@@ -21,6 +21,55 @@ function capture(): CliDeps & { out(): string; err(): string } {
   }
 }
 
+/** A fully-stubbed `RepositorySync`; override individual methods per test. */
+function repositorySyncStub(): RepositorySync {
+  return {
+    connectionState: async () => ({ state: 'connected', connected: true, login: 'octocat' }),
+    connect: async () => ({
+      authorization: 'existing',
+      account: { login: 'octocat' },
+      repository: {
+        id: 1,
+        name: 'skillbox-skills',
+        owner: 'octocat',
+        fullName: 'octocat/skillbox-skills',
+        private: true,
+        defaultBranch: 'main',
+        htmlUrl: 'https://github.com/octocat/skillbox-skills',
+        cloneUrl: 'https://github.com/octocat/skillbox-skills.git',
+        action: 'reused',
+      },
+      local: {
+        initialized: false,
+        remote: {
+          name: 'origin',
+          url: 'https://github.com/octocat/skillbox-skills.git',
+          action: 'unchanged',
+        },
+      },
+    }),
+    disconnect: async () => undefined,
+    status: async () => {
+      throw new Error('not used')
+    },
+    pull: async () => undefined,
+    push: async () => undefined,
+    sync: async () => ({
+      kind: 'completed',
+      summary: { automaticallyMerged: 0, retriedPushes: 0 },
+    }),
+    listConflicts: async () => [],
+    getConflict: async () => {
+      throw new Error('not used')
+    },
+    resolveConflicts: async () => ({
+      kind: 'completed',
+      summary: { automaticallyMerged: 0, retriedPushes: 0 },
+    }),
+    restoreSnapshot: async () => undefined,
+  }
+}
+
 describe('cli', () => {
   it('prints the version for --version', async () => {
     const io = capture()
@@ -68,45 +117,72 @@ describe('cli', () => {
   it('routes connect and disconnect through the Core RepositorySync seam', async () => {
     const io = capture()
     let disconnects = 0
-    const repositorySync = {
-      connect: async () => ({
-        authorization: 'existing' as const,
-        account: { login: 'octocat' },
-        repository: {
-          id: 1,
-          name: 'skillbox-skills',
-          owner: 'octocat',
-          fullName: 'octocat/skillbox-skills',
-          private: true,
-          defaultBranch: 'main',
-          htmlUrl: 'https://github.com/octocat/skillbox-skills',
-          cloneUrl: 'https://github.com/octocat/skillbox-skills.git',
-          action: 'reused' as const,
-        },
-        local: {
-          initialized: false,
-          remote: {
-            name: 'origin' as const,
-            url: 'https://github.com/octocat/skillbox-skills.git',
-            action: 'unchanged' as const,
-          },
-        },
-      }),
+    const repositorySync: RepositorySync = {
+      ...repositorySyncStub(),
       disconnect: async () => {
         disconnects += 1
       },
-      status: async () => {
-        throw new Error('not used')
-      },
-      pull: async () => undefined,
-      push: async () => undefined,
-      sync: async () => undefined,
-    } satisfies RepositorySync
+    }
 
     expect(await main(['connect'], { ...io, repositorySync })).toBe(0)
     expect(io.out()).toContain('octocat/skillbox-skills')
     expect(await main(['disconnect'], { ...io, repositorySync })).toBe(0)
     expect(disconnects).toBe(1)
+  })
+
+  it('routes `sync --multi-device` through the Core RepositorySync seam', async () => {
+    const conflictsSync = {
+      ...repositorySyncStub(),
+      sync: async () => ({
+        kind: 'conflicts' as const,
+        session: {
+          version: 1 as const,
+          id: 'session-1',
+          repositoryId: 'r1',
+          baseRevision: 'a',
+          localRevision: 'b',
+          remoteRevision: 'c',
+          snapshotId: 'snap-9',
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          conflicts: [
+            {
+              id: 'c1',
+              type: 'content' as const,
+              allowedResolutions: ['local' as const, 'remote' as const],
+              destructive: true,
+            },
+          ],
+        },
+      }),
+    } satisfies RepositorySync
+
+    const io = capture()
+    expect(await main(['sync', '--multi-device'], { ...io, repositorySync: conflictsSync })).toBe(0)
+    expect(io.out()).toContain('1 change(s) need a decision')
+    expect(io.out()).toContain('session-1')
+  })
+
+  it('rejects `sync --multi-device` up front when no RepositorySync is wired', async () => {
+    // `buildContext` only skips constructing a real RepositorySync when a
+    // gitProvider/githubProvider override is supplied instead — matching how
+    // the legacy sync/pull/push tests simulate "not connected".
+    const unimplemented = (name: string) => async () => {
+      throw new Error(`gitProvider.${name} was not stubbed for this test`)
+    }
+    const io = capture()
+    const exit = await main(['sync', '--multi-device'], {
+      ...io,
+      gitProvider: {
+        status: unimplemented('status'),
+        pull: unimplemented('pull'),
+        commit: unimplemented('commit'),
+        push: unimplemented('push'),
+      },
+    })
+    expect(exit).toBe(ExitCode.GENERIC)
+    expect(io.err()).toContain('GitHub')
+    expect(io.err()).toContain('skillbox connect')
   })
 
   it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {
@@ -360,6 +436,82 @@ describe('cli', () => {
           durationMs: expect.any(Number),
         },
       ])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('adds, edits, and removes hosts in .skillbox/fleet.yaml via `fleet host`', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-fleet-host-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+
+      const fleet = new FleetService({ configPath: path.join(repo, '.skillbox', 'fleet.yaml') })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        fleet,
+      })
+
+      const addIo = capture()
+      expect(
+        await main(
+          ['fleet', 'host', 'add', 'web-1', '10.0.0.11', '--tag', 'prod', '--json'],
+          deps(addIo),
+        ),
+      ).toBe(0)
+      expect((JSON.parse(addIo.out()) as { host: FleetHostConfig }).host).toEqual({
+        name: 'web-1',
+        host: '10.0.0.11',
+        tags: ['prod'],
+      })
+
+      const duplicateIo = capture()
+      const duplicateExit = await main(
+        ['fleet', 'host', 'add', 'web-1', '10.0.0.99'],
+        deps(duplicateIo),
+      )
+      expect(duplicateExit).not.toBe(0)
+      expect(duplicateIo.err()).toContain('web-1')
+
+      const editIo = capture()
+      expect(
+        await main(
+          [
+            'fleet',
+            'host',
+            'edit',
+            'web-1',
+            '--rename',
+            'web-1-renamed',
+            '--host',
+            '10.0.0.12',
+            '--json',
+          ],
+          deps(editIo),
+        ),
+      ).toBe(0)
+      expect((JSON.parse(editIo.out()) as { host: FleetHostConfig }).host).toMatchObject({
+        name: 'web-1-renamed',
+        host: '10.0.0.12',
+      })
+
+      const listIo = capture()
+      await main(['fleet', 'list', '--json'], deps(listIo))
+      expect(
+        (JSON.parse(listIo.out()) as { hosts: FleetHostConfig[] }).hosts.map((h) => h.name),
+      ).toEqual(['web-1-renamed'])
+
+      const removeIo = capture()
+      expect(
+        await main(['fleet', 'host', 'remove', 'web-1-renamed', '--json'], deps(removeIo)),
+      ).toBe(0)
+      expect(JSON.parse(removeIo.out())).toEqual({ removed: 'web-1-renamed' })
+      expect(await fleet.listHosts()).toEqual([])
     } finally {
       await fs.rm(base, { recursive: true, force: true })
     }

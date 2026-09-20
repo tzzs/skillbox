@@ -21,12 +21,15 @@ import {
   withRuntimeLock,
   type AgentDetectionSummary,
   type AgentRegistry,
+  type FleetHostConfig,
   type FleetOperationName,
   type FleetService,
+  type FleetSkillTarget,
   type MigrateFileReport,
   type ReconcileProblem,
   type RepositorySync,
   type RepositorySyncEvent,
+  type SyncOutcome,
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
@@ -223,6 +226,44 @@ function renderRepositorySyncEvent(out: (chunk: string) => void, event: Reposito
         `Waiting for authorization\n`,
     )
   }
+}
+
+/**
+ * `skillbox sync --multi-device` result. A `conflicts` outcome is a normal,
+ * expected stopping point — not a failure — so this only informs, it never
+ * throws; resolving conflicts is a Web-only flow (`skillbox web`, then
+ * `/sync/conflicts/:id`) since it needs an interactive side-by-side compare.
+ */
+function renderSyncOutcome(outcome: SyncOutcome): string {
+  if (outcome.kind === 'completed') {
+    const { automaticallyMerged, retriedPushes, createdSnapshotId } = outcome.summary
+    const lines = [
+      `\nSync complete · ${automaticallyMerged} change${automaticallyMerged === 1 ? '' : 's'} merged automatically`,
+    ]
+    if (retriedPushes > 0) {
+      lines.push(
+        `  retried  ${retriedPushes} push${retriedPushes === 1 ? '' : 'es'} after another device pushed first`,
+      )
+    }
+    if (createdSnapshotId !== undefined) {
+      lines.push(`  restore point  ${createdSnapshotId}`)
+    }
+    return `${lines.join('\n')}\n`
+  }
+  if (outcome.kind === 'conflicts') {
+    return (
+      `\n${outcome.session.conflicts.length} change(s) need a decision.\n` +
+      `  session  ${outcome.session.id}\n` +
+      `  Run \`skillbox web\` and open /sync/conflicts/${outcome.session.id} to resolve.\n`
+    )
+  }
+  return (
+    `\nSync paused safely: ${outcome.recovery.message}\n` +
+    `  retryable  ${outcome.recovery.retryable ? 'yes' : 'no'}\n` +
+    (outcome.recovery.snapshotId === undefined
+      ? ''
+      : `  restore point  ${outcome.recovery.snapshotId}\n`)
+  )
 }
 
 /** Resolves the marketplace service, merging CLI-provided overrides + defaults. */
@@ -654,8 +695,23 @@ export function buildProgram(ctx: CliContext): Command {
   program
     .command('sync')
     .description('Sync skills: Scan → Detect → Secret Scan → Pull → Resolve → Commit → Push')
-    .action(async () =>
+    .option(
+      '--multi-device',
+      'use the recoverable multi-device sync engine (conflict sessions + restore points) instead — requires `skillbox connect`',
+    )
+    .action(async (options: { multiDevice?: boolean }) =>
       mutation(ctx, 'sync', async () => {
+        if (options.multiDevice === true) {
+          if (ctx.repositorySync === undefined) {
+            throw new SkillboxError(
+              ErrorCode.GITHUB_NOT_CONNECTED,
+              'Multi-device sync needs a connected GitHub account — run `skillbox connect` first.',
+            )
+          }
+          const outcome = await ctx.repositorySync.sync()
+          ctx.out(renderSyncOutcome(outcome))
+          return
+        }
         const result = await sync.sync()
         ctx.out(
           `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
@@ -905,15 +961,29 @@ export function buildProgram(ctx: CliContext): Command {
     })
 
   program
-    .command('update <name>')
+    .command('update [name]')
     .description(
-      'Update a managed skill to the latest upstream revision; agent links are preserved (M16.2)',
+      'Update a managed skill to the latest upstream revision (M16.2); with no [name], updates every outdated managed skill. Agent links are preserved.',
     )
     .option('--yes', 'confirm HIGH-risk updates without prompting (CI)')
-    .action(async (name: string, options: { yes?: boolean }) =>
+    .action(async (name: string | undefined, options: { yes?: boolean }) =>
       mutation(ctx, 'update', async () => {
-        const outcome = await marketplace.update({ name, yes: options.yes === true })
-        ctx.out(`${renderUpdateSummary(outcome)}\n`)
+        if (name !== undefined) {
+          const outcome = await marketplace.update({ name, yes: options.yes === true })
+          ctx.out(`${renderUpdateSummary(outcome)}\n`)
+          return
+        }
+        const outdated = (await marketplace.outdated()).filter(
+          (entry) => entry.status === 'outdated',
+        )
+        if (outdated.length === 0) {
+          ctx.out('Every managed skill is already up to date.\n')
+          return
+        }
+        for (const entry of outdated) {
+          const outcome = await marketplace.update({ name: entry.name, yes: options.yes === true })
+          ctx.out(`${renderUpdateSummary(outcome)}\n`)
+        }
       }),
     )
 
@@ -1022,6 +1092,107 @@ export function buildProgram(ctx: CliContext): Command {
       ctx.out(`${renderFleetHostsTable(hosts)}\n`)
     })
 
+  interface FleetHostCliOptions {
+    user?: string
+    port?: string
+    identityFile?: string
+    remotePath?: string
+    skillboxBin?: string
+    tag?: string[]
+    json?: boolean
+  }
+
+  /** Shared `--user`/`--port`/`--identity-file`/`--remote-path`/`--skillbox-bin`/`--tag` options for `fleet host add`/`edit`. */
+  function addFleetHostFieldOptions(command: Command): Command {
+    return command
+      .option('-u, --user <user>', 'SSH user')
+      .option('-p, --port <port>', 'SSH port')
+      .option('-i, --identity-file <path>', 'SSH private key path')
+      .option('--remote-path <path>', 'directory to cd into before running skillbox on this host')
+      .option('--skillbox-bin <bin>', 'skillbox binary name/path on this host (default: skillbox)')
+      .option('--tag <tag>', 'tag for this host (repeatable)', collect, [])
+      .option('--json', 'emit JSON instead of a table')
+  }
+
+  function parsePort(raw: string | undefined): number | undefined {
+    if (raw === undefined) {
+      return undefined
+    }
+    const port = Number(raw)
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new SkillboxError(
+        ErrorCode.INVALID_MANIFEST,
+        `--port must be a positive integer, got "${raw}"`,
+      )
+    }
+    return port
+  }
+
+  function fleetHostFieldsFromOptions(
+    options: FleetHostCliOptions,
+  ): Omit<FleetHostConfig, 'name' | 'host'> {
+    const fields: Omit<FleetHostConfig, 'name' | 'host'> = {}
+    if (options.user !== undefined) fields.user = options.user
+    const port = parsePort(options.port)
+    if (port !== undefined) fields.port = port
+    if (options.identityFile !== undefined) fields.identityFile = options.identityFile
+    if (options.remotePath !== undefined) fields.remotePath = options.remotePath
+    if (options.skillboxBin !== undefined) fields.skillboxBin = options.skillboxBin
+    if (options.tag !== undefined && options.tag.length > 0) fields.tags = options.tag
+    return fields
+  }
+
+  function renderFleetHostResult(host: FleetHostConfig, json: boolean | undefined): void {
+    if (json === true) {
+      printJson(ctx.out, { host })
+      return
+    }
+    ctx.out(`${renderFleetHostsTable([host])}\n`)
+  }
+
+  const fleetHostCommand = fleetCommand
+    .command('host')
+    .description('Add, edit, or remove hosts in .skillbox/fleet.yaml')
+
+  addFleetHostFieldOptions(fleetHostCommand.command('add <name> <host>'))
+    .description('Add a host to .skillbox/fleet.yaml')
+    .action(async (name: string, host: string, options: FleetHostCliOptions) =>
+      mutation(ctx, 'fleet-host-add', async () => {
+        const added = await fleet.addHost({ name, host, ...fleetHostFieldsFromOptions(options) })
+        renderFleetHostResult(added, options.json)
+      }),
+    )
+
+  addFleetHostFieldOptions(fleetHostCommand.command('edit <name>'))
+    .option('--rename <name>', 'new name for this host')
+    .option('--host <host>', 'new hostname/IP')
+    .description('Edit a host in .skillbox/fleet.yaml')
+    .action(
+      async (name: string, options: FleetHostCliOptions & { rename?: string; host?: string }) =>
+        mutation(ctx, 'fleet-host-edit', async () => {
+          const patch: Partial<FleetHostConfig> = { ...fleetHostFieldsFromOptions(options) }
+          if (options.rename !== undefined) patch.name = options.rename
+          if (options.host !== undefined) patch.host = options.host
+          const updated = await fleet.updateHost(name, patch)
+          renderFleetHostResult(updated, options.json)
+        }),
+    )
+
+  fleetHostCommand
+    .command('remove <name>')
+    .description('Remove a host from .skillbox/fleet.yaml')
+    .option('--json', 'emit JSON instead of a table')
+    .action(async (name: string, options: { json?: boolean }) =>
+      mutation(ctx, 'fleet-host-remove', async () => {
+        await fleet.removeHost(name)
+        if (options.json === true) {
+          printJson(ctx.out, { removed: name })
+        } else {
+          ctx.out(`Removed fleet host "${name}"\n`)
+        }
+      }),
+    )
+
   function addFleetSelectorOptions(command: Command): Command {
     return command
       .option('--host <name>', 'select a configured host by name (repeatable)', collect, [])
@@ -1040,12 +1211,13 @@ export function buildProgram(ctx: CliContext): Command {
   async function runFleetCommand(
     operation: FleetOperationName,
     options: FleetCliOptions & { json?: boolean },
+    target?: FleetSkillTarget,
   ): Promise<void> {
-    const result = await fleet.run(
-      operation,
-      selectorFromOptions(options),
-      runOptionsFromOptions(options),
-    )
+    const runOptions = runOptionsFromOptions(options)
+    if (target !== undefined) {
+      runOptions.target = target
+    }
+    const result = await fleet.run(operation, selectorFromOptions(options), runOptions)
     if (options.json === true) {
       printJson(ctx.out, result)
     } else {
@@ -1067,16 +1239,57 @@ export function buildProgram(ctx: CliContext): Command {
       runFleetCommand('install', options),
     )
 
-  addFleetSelectorOptions(fleetCommand.command('update'))
-    .description('Run `skillbox update` on the selected fleet hosts over SSH')
-    .action(async (options: FleetCliOptions & { json?: boolean }) =>
-      runFleetCommand('update', options),
+  addFleetSelectorOptions(fleetCommand.command('update [name]'))
+    .description(
+      'Run `skillbox update` on the selected fleet hosts over SSH; with [name], updates only that managed skill',
+    )
+    .option('--yes', 'confirm a HIGH-risk update without prompting')
+    .action(
+      async (
+        name: string | undefined,
+        options: FleetCliOptions & { json?: boolean; yes?: boolean },
+      ) =>
+        runFleetCommand(
+          'update',
+          options,
+          name === undefined ? undefined : { name, yes: options.yes === true },
+        ),
     )
 
   addFleetSelectorOptions(fleetCommand.command('status'))
     .description('Run `skillbox status` on the selected fleet hosts over SSH')
     .action(async (options: FleetCliOptions & { json?: boolean }) =>
       runFleetCommand('status', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('sync'))
+    .description(
+      'Run `skillbox sync --multi-device` on the selected fleet hosts over SSH — each host must already be `skillbox connect`-ed',
+    )
+    .action(async (options: FleetCliOptions & { json?: boolean }) =>
+      runFleetCommand('sync', options),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('remove <name>'))
+    .description('Remove a skill (config only by default) on the selected fleet hosts over SSH')
+    .option('-f, --delete-files', 'also delete files from each host repository')
+    .action(
+      async (name: string, options: FleetCliOptions & { json?: boolean; deleteFiles?: boolean }) =>
+        runFleetCommand('remove', options, { name, deleteFiles: options.deleteFiles === true }),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('enable <name>'))
+    .description('Enable a skill for an agent on the selected fleet hosts over SSH')
+    .requiredOption('-a, --agent <agent>', 'agent id (e.g. claude, codex)')
+    .action(async (name: string, options: FleetCliOptions & { json?: boolean; agent: string }) =>
+      runFleetCommand('enable', options, { name, agent: options.agent }),
+    )
+
+  addFleetSelectorOptions(fleetCommand.command('disable <name>'))
+    .description('Disable a skill for an agent on the selected fleet hosts over SSH')
+    .requiredOption('-a, --agent <agent>', 'agent to disable the skill for')
+    .action(async (name: string, options: FleetCliOptions & { json?: boolean; agent: string }) =>
+      runFleetCommand('disable', options, { name, agent: options.agent }),
     )
 
   // M10/M11 — the `web` subcommand is registered by the web module; the

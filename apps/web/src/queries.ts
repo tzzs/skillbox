@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
+  type FleetHostInput,
+  type FleetHostPatch,
   type FleetRunRequest,
   type InstallInput,
   type LifecycleOperationResult,
   type MergeAction,
   type RegistrySearchParams,
+  type ResolveSyncConflictsInput,
   type SettingsPatch,
   type SkillStatusEntry,
 } from './api.js'
@@ -32,6 +35,9 @@ export const queryKeys = {
   ],
   outdated: ['registry', 'outdated'],
   fleetHosts: ['fleet', 'hosts'],
+  syncStatus: ['sync', 'status'],
+  conflicts: ['sync', 'conflicts'],
+  conflict: (id: string) => ['sync', 'conflicts', id],
 } as const
 
 export function useHealth() {
@@ -170,14 +176,67 @@ export function useRemoveSkill() {
   })
 }
 
+interface ToggleSkillContext {
+  previousSkill: SkillStatusEntry | undefined
+  previousSkills: SkillStatusEntry[] | undefined
+}
+
+/**
+ * Flips the button label/icon the instant it's clicked instead of waiting on
+ * the round trip — this is the most-clicked mutation in the app, so a
+ * flipped-then-flipped-back flash on error is a better trade than a spinner
+ * on every click. Rolled back from the snapshot in `onError`.
+ */
 export function useToggleSkill() {
   const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (input: { name: string; agent: string; enable: boolean }) =>
+  return useMutation<
+    Awaited<ReturnType<typeof api.enableSkill>>,
+    unknown,
+    { name: string; agent: string; enable: boolean },
+    ToggleSkillContext
+  >({
+    mutationFn: (input) =>
       input.enable
         ? api.enableSkill(input.name, input.agent)
         : api.disableSkill(input.name, input.agent),
-    onSuccess: (_data, input) => {
+    onMutate: async (input) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: queryKeys.skill(input.name) }),
+        queryClient.cancelQueries({ queryKey: queryKeys.skills }),
+      ])
+      const previousSkill = queryClient.getQueryData<SkillStatusEntry>(queryKeys.skill(input.name))
+      const previousSkills = queryClient.getQueryData<SkillStatusEntry[]>(queryKeys.skills)
+      const applyToggle = (agents: string[]): string[] =>
+        input.enable
+          ? agents.includes(input.agent)
+            ? agents
+            : [...agents, input.agent]
+          : agents.filter((agent) => agent !== input.agent)
+      if (previousSkill !== undefined) {
+        queryClient.setQueryData<SkillStatusEntry>(queryKeys.skill(input.name), {
+          ...previousSkill,
+          agents: applyToggle(previousSkill.agents),
+        })
+      }
+      if (previousSkills !== undefined) {
+        queryClient.setQueryData<SkillStatusEntry[]>(
+          queryKeys.skills,
+          previousSkills.map((skill) =>
+            skill.name === input.name ? { ...skill, agents: applyToggle(skill.agents) } : skill,
+          ),
+        )
+      }
+      return { previousSkill, previousSkills }
+    },
+    onError: (_error, input, context) => {
+      if (context?.previousSkill !== undefined) {
+        queryClient.setQueryData(queryKeys.skill(input.name), context.previousSkill)
+      }
+      if (context?.previousSkills !== undefined) {
+        queryClient.setQueryData(queryKeys.skills, context.previousSkills)
+      }
+    },
+    onSettled: (_data, _error, input) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skill(input.name) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
       void queryClient.invalidateQueries({ queryKey: queryKeys.status })
@@ -317,5 +376,107 @@ export function useFleetHosts() {
 export function useFleetRun() {
   return useMutation({
     mutationFn: (input: FleetRunRequest) => api.fleetRun(input),
+  })
+}
+
+/** Adds a host to `.skillbox/fleet.yaml`, creating the file if needed. */
+export function useAddFleetHost() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: FleetHostInput) => api.addFleetHost(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.fleetHosts })
+    },
+  })
+}
+
+/** Edits a host in `.skillbox/fleet.yaml`; `patch.name` renames it. */
+export function useUpdateFleetHost() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, patch }: { name: string; patch: FleetHostPatch }) =>
+      api.updateFleetHost(name, patch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.fleetHosts })
+    },
+  })
+}
+
+/** Removes a host from `.skillbox/fleet.yaml`. */
+export function useRemoveFleetHost() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => api.removeFleetHost(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.fleetHosts })
+    },
+  })
+}
+
+/* ---- Multi-device sync API (RepositorySync) ---- */
+
+export function useSyncStatus() {
+  return useQuery({ queryKey: queryKeys.syncStatus, queryFn: () => api.syncStatus() })
+}
+
+export function useSync() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.sync(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conflicts })
+    },
+  })
+}
+
+export function useConflict(id: string | undefined) {
+  const sessionId = id ?? ''
+  return useQuery({
+    queryKey: queryKeys.conflict(sessionId),
+    queryFn: () => api.conflict(sessionId),
+    enabled: sessionId !== '',
+  })
+}
+
+export function useResolveConflicts(sessionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: ResolveSyncConflictsInput) => api.resolveConflicts(sessionId, input),
+    onSuccess: () => {
+      for (const key of [
+        queryKeys.syncStatus,
+        queryKeys.conflicts,
+        queryKeys.skills,
+        queryKeys.agents,
+        queryKeys.status,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
+  })
+}
+
+export function useRestoreSyncSnapshot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (snapshotId: string) => api.restoreSyncSnapshot(snapshotId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    },
+  })
+}
+
+/** Removes only local GitHub credentials/connection metadata — never touches the repository. */
+export function useDisconnectSync() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.disconnectSync(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus })
+    },
   })
 }

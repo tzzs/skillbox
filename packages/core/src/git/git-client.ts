@@ -116,6 +116,12 @@ export interface GitMaterializeResult {
   headRev: string
 }
 
+/** A file read from an immutable Git tree. Paths are always repository-relative. */
+export interface GitTreeFile {
+  path: string
+  content: Uint8Array
+}
+
 function authOptions(auth: GitTransportAuth | undefined): { auth?: GitTransportAuth } {
   return auth === undefined ? {} : { auth }
 }
@@ -545,6 +551,27 @@ export class GitClient {
     return { hash: head }
   }
 
+  /** Stages only repository-relative managed paths for a later commit. */
+  async stage(repositoryRoot: string, files: readonly string[]): Promise<void> {
+    await this.runGit(repositoryRoot, ['add', '-A', '--', ...files])
+  }
+
+  /** Records the remote parent while leaving the semantic transaction to stage managed files. */
+  async beginSemanticMerge(repositoryRoot: string, otherRevision: string): Promise<void> {
+    await this.runGit(repositoryRoot, [
+      'merge',
+      '--no-commit',
+      '--no-ff',
+      '-s',
+      'ours',
+      otherRevision,
+    ])
+  }
+
+  async abortMerge(repositoryRoot: string): Promise<void> {
+    await this.runGit(repositoryRoot, ['merge', '--abort'])
+  }
+
   /**
    * `git diff --name-status [refA [refB]]`. Change detection between two
    * revisions (defaults to comparing the worktree against the index).
@@ -582,6 +609,74 @@ export class GitClient {
   async revParse(repositoryRoot: string, rev: string): Promise<string> {
     const result = await this.runGit(repositoryRoot, ['rev-parse', rev])
     return result.stdout.trim()
+  }
+
+  /** Returns the merge base of two validated revisions. */
+  async mergeBase(repositoryRoot: string, left: string, right: string): Promise<string> {
+    const result = await this.runGit(repositoryRoot, ['merge-base', left, right])
+    return result.stdout.trim()
+  }
+
+  /** Reads a single repository-relative file from an immutable revision. */
+  async readFileAtRevision(
+    repositoryRoot: string,
+    revision: string,
+    relativePath: string,
+  ): Promise<Uint8Array> {
+    const normalized = relativePath.replaceAll('\\', '/')
+    if (
+      normalized.length === 0 ||
+      normalized.startsWith('/') ||
+      normalized.split('/').includes('..')
+    ) {
+      throw new SkillboxError(ErrorCode.UNSAFE_PATH, 'Git tree path must be repository-relative', {
+        context: { relativePath },
+      })
+    }
+    const result = await this.runGit(repositoryRoot, ['show', `${revision}:${normalized}`])
+    return Buffer.from(result.stdout, 'utf8')
+  }
+
+  /** Lists regular files in an immutable revision without checking it out. */
+  async listFilesAtRevision(repositoryRoot: string, revision: string): Promise<string[]> {
+    const result = await this.runGit(repositoryRoot, ['ls-tree', '-r', '--name-only', revision])
+    return result.stdout.split(/\r?\n/).filter((entry) => entry.length > 0)
+  }
+
+  /** Creates a private Skillbox ref that retains a revision for recovery. */
+  async createPrivateRef(repositoryRoot: string, name: string, revision: string): Promise<void> {
+    if (!/^refs\/skillbox\/[a-z0-9/_-]+$/i.test(name)) {
+      throw new SkillboxError(ErrorCode.UNSAFE_PATH, 'Private ref must be under refs/skillbox', {
+        context: { name },
+      })
+    }
+    await this.runGit(repositoryRoot, ['update-ref', name, revision])
+  }
+
+  async deletePrivateRef(repositoryRoot: string, name: string): Promise<void> {
+    if (!/^refs\/skillbox\/[a-z0-9/_-]+$/i.test(name)) {
+      throw new SkillboxError(ErrorCode.UNSAFE_PATH, 'Private ref must be under refs/skillbox', {
+        context: { name },
+      })
+    }
+    await this.runGit(repositoryRoot, ['update-ref', '-d', name])
+  }
+
+  /** Materializes an immutable revision into an isolated linked worktree. */
+  async createWorktree(repositoryRoot: string, targetDir: string, revision: string): Promise<void> {
+    await this.filesystem.mkdir(path.dirname(targetDir))
+    await this.runGit(repositoryRoot, [
+      'worktree',
+      'add',
+      '--detach',
+      '--force',
+      targetDir,
+      revision,
+    ])
+  }
+
+  async removeWorktree(repositoryRoot: string, targetDir: string): Promise<void> {
+    await this.runGit(repositoryRoot, ['worktree', 'remove', '--force', targetDir])
   }
 
   /**

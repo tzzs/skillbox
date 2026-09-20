@@ -64,6 +64,37 @@ export class FilesystemService {
     }
   }
 
+  /**
+   * Atomically creates a file without replacing an existing entry.
+   *
+   * This is the filesystem primitive used by cross-process locks. A `false`
+   * result means another process (or an existing file) already owns the path;
+   * all other failures remain typed filesystem errors. Keep this method public
+   * and non-final so callers can provide fault-injection filesystem doubles.
+   */
+  async writeFileExclusive(
+    target: string,
+    data: string | Uint8Array,
+    options: WriteFileOptions = {},
+  ): Promise<boolean> {
+    try {
+      const writeOptions: FsWriteFileOptions = { flag: 'wx' }
+      if (options.encoding !== undefined) {
+        writeOptions.encoding = options.encoding
+      }
+      if (options.mode !== undefined) {
+        writeOptions.mode = options.mode
+      }
+      await fs.writeFile(target, data, writeOptions)
+      return true
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'EEXIST') {
+        return false
+      }
+      throw toFsError(error, `Failed to exclusively write "${target}"`, target)
+    }
+  }
+
   async mkdir(target: string, recursive = true): Promise<string | undefined> {
     try {
       return await fs.mkdir(target, { recursive })
