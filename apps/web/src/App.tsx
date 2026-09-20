@@ -1,6 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { Library, Bot, Settings, Compass, ArrowUpCircle, RefreshCw, Server } from 'lucide-react'
-import { useHealth } from './queries.js'
+import { useEventStream, useHealth } from './queries.js'
 import { AgentsPage } from './pages/AgentsPage.js'
 import { ConflictResolutionPage } from './pages/ConflictResolutionPage.js'
 import { CreateSkillPage } from './pages/CreateSkillPage.js'
@@ -100,6 +100,29 @@ export function App() {
           <Route path="/skills/:name/diff" element={<DiffPage />} />
         </Routes>
       </main>
+
+      <ActivityFeed />
+    </div>
+  )
+}
+
+/**
+ * Global activity indicator: surfaces long-running core flows (install,
+ * reconcile, sync, security scan) as they stream over the server's SSE bus,
+ * so progress is visible from any page — not just the one that started it.
+ */
+function ActivityFeed() {
+  const events = useEventStream()
+  if (events.length === 0) {
+    return null
+  }
+  return (
+    <div className="activity-feed" role="status" aria-live="polite">
+      {events.map((event) => (
+        <div key={event.key} className={`activity-toast activity-toast--${event.tone}`}>
+          {event.message}
+        </div>
+      ))}
     </div>
   )
 }

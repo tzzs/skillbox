@@ -27,7 +27,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "lint": "eslint src bin --max-warnings 0",
-    "format": "prettier --write src bin"
+    "format": "prettier --write src bin",
+    "prepublishOnly": "pnpm --workspace-root build && pnpm --workspace-root pack:verify"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",

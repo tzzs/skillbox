@@ -25,7 +25,7 @@ export type FleetConfig = z.infer<typeof fleetConfigSchema>
 
 /** Remote command Fleet knows how to run. */
 export type FleetOperationName =
-  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
+  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync' | 'ping'
 
 /**
  * A single skill (and, for `enable`/`disable`, agent) a Fleet run acts on.
@@ -80,4 +80,8 @@ export interface FleetRunOptions {
   dryRun?: boolean
   /** The skill (and, for enable/disable, agent) this run targets. */
   target?: FleetSkillTarget
+  /** Extra attempts for hosts whose SSH *connection* failed (exit 255 / timeout). */
+  retries?: number
+  /** Test seam for the pause before a connection retry (receives the 1-based attempt). */
+  sleepBeforeRetry?: (attempt: number) => Promise<void>
 }

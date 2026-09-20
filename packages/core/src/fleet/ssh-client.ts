@@ -103,6 +103,20 @@ export class SshClient {
     }
     args.push(destination(host), remoteCommand)
 
+    // Last line of defence behind the schema validation: a value that ssh
+    // would parse as an option (option injection) fails the host instead of
+    // reaching the spawn.
+    const unsafe = [host.identityFile, destination(host)].find(
+      (value) => value !== undefined && value.startsWith('-'),
+    )
+    if (unsafe !== undefined) {
+      return {
+        exitCode: null,
+        stdout: '',
+        stderr: `Refused to pass "${unsafe}" to ssh: values starting with "-" are treated as options.`,
+      }
+    }
+
     try {
       return await this.spawn(args, options)
     } catch (error) {

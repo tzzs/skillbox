@@ -89,6 +89,25 @@ describe('SshClient', () => {
     )
   })
 
+  it('refuses to pass option-injection values to ssh without spawning', async () => {
+    let spawned = false
+    const client = new SshClient({
+      spawn: async () => {
+        spawned = true
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+    })
+
+    const result = await client.exec(
+      { name: 'evil', host: '-oProxyCommand=touch /tmp/x' },
+      'skillbox update',
+    )
+
+    expect(spawned).toBe(false)
+    expect(result.exitCode).toBeNull()
+    expect(result.stderr).toMatch(/Refused to pass/)
+  })
+
   describe('isInstalled', () => {
     it('is true when ssh -V responds', async () => {
       const client = new SshClient({

@@ -24,6 +24,7 @@ import type {
   SecretScanner,
   SyncGitTransport,
 } from './providers.js'
+import { loadSkillboxCore, type CoreModuleLoader } from '../core-module.js'
 
 /**
  * Default providers for the sync pipeline. Each factory adapts the real core
@@ -34,16 +35,8 @@ import type {
  * loaders remain only as compatibility seams for focused wiring tests.
  */
 
-/** Loads the core package as an opaque module map (injectable in tests). */
-export type CoreModuleLoader = () => Promise<Record<string, unknown>>
-
-async function loadSkillboxCore(): Promise<Record<string, unknown>> {
-  try {
-    return (await import('@skillbox/core')) as unknown as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
+/** Re-exported so focused wiring tests keep importing the type from here. */
+export type { CoreModuleLoader }
 
 function unavailable(code: 'GIT_UNAVAILABLE' | 'GITHUB_UNAVAILABLE', hint: string): SkillboxError {
   return new SkillboxError(ErrorCode[code], hint)

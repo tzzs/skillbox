@@ -2238,6 +2238,70 @@ code,
   border-radius: var(--radius-sm);
   background: var(--ok-bg);
 }
+.snapshot-list {
+  list-style: none;
+  margin: var(--space-10) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.snapshot-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.snapshot-row .mono {
+  min-width: 8ch;
+}
+.snapshot-row .sync-subtle {
+  flex: 1;
+}
+.snapshot-row--expired {
+  opacity: 0.6;
+}
+.doctor-probes {
+  list-style: none;
+  margin: var(--space-14) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.doctor-probe {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  font-size: var(--text-12-5);
+}
+.doctor-probe__marker {
+  width: 1.2em;
+  color: var(--ok);
+  font-weight: 600;
+}
+.doctor-probe--fail .doctor-probe__marker {
+  color: var(--danger);
+}
+.doctor-probe__name {
+  min-width: 12ch;
+  font-weight: 500;
+}
+.doctor-probe__detail {
+  color: var(--text-3);
+}
+.doctor-probe--fail .doctor-probe__detail {
+  color: var(--danger);
+}
+.fleet-run-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-14);
+  margin-bottom: var(--space-14);
+}
 .conflict-list {
   display: flex;
   flex-direction: column;
@@ -2478,4 +2542,118 @@ code,
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---- Global activity feed (SSE) ---- */
+.activity-feed {
+  position: fixed;
+  right: var(--space-16, 16px);
+  bottom: var(--space-16, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8, 8px);
+  z-index: 60;
+  max-width: 320px;
+}
+.activity-toast {
+  padding: var(--space-8, 8px) var(--space-12, 12px);
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--line);
+  background: var(--surface-raised, var(--surface, #fff));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  font-size: var(--text-12-5, 12.5px);
+  animation: activity-in 160ms ease-out;
+}
+.activity-toast--success {
+  border-color: var(--ok-line, var(--line));
+}
+.activity-toast--error {
+  border-color: var(--danger, #c00);
+  color: var(--danger, #c00);
+}
+@keyframes activity-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- Segmented toggle + Markdown preview ---- */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.segmented__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6, 6px);
+  padding: 6px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--text-12-5, 12.5px);
+  cursor: pointer;
+}
+.segmented__btn svg {
+  width: 14px;
+  height: 14px;
+}
+.segmented__btn.is-active {
+  background: var(--surface-2, rgba(0, 0, 0, 0.05));
+  color: var(--text-1);
+  font-weight: 500;
+}
+.markdown-box {
+  padding: var(--space-14, 14px) var(--space-16, 16px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface, transparent);
+  overflow-x: auto;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.25;
+}
+.markdown p {
+  margin: 0.6em 0;
+  line-height: 1.6;
+}
+.markdown__list {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+.markdown__code {
+  margin: 0.8em 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  overflow-x: auto;
+  font-size: var(--text-12-5, 12.5px);
+}
+.markdown__inline-code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--surface-2, rgba(0, 0, 0, 0.06));
+  font-size: 0.92em;
+}
+.markdown__quote {
+  margin: 0.8em 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+  color: var(--text-2);
 }

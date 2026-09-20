@@ -37,6 +37,7 @@ import type {
   RepositorySync,
   ResolvedSource,
   SyncOutcome,
+  SyncSnapshot,
 } from '@skillbox/core'
 import type {
   DiffService,
@@ -1786,6 +1787,12 @@ function fakeRepositorySync(overrides: Partial<RepositorySync>): RepositorySync 
     getConflict: overrides.getConflict ?? unimplemented('getConflict'),
     resolveConflicts: overrides.resolveConflicts ?? unimplemented('resolveConflicts'),
     restoreSnapshot: overrides.restoreSnapshot ?? unimplemented('restoreSnapshot'),
+    listSnapshots:
+      overrides.listSnapshots ??
+      (async () => ({
+        snapshots: [],
+        expired: [],
+      })),
   }
 }
 
@@ -2017,6 +2024,55 @@ describe('Sync API', () => {
       expect(response.status).toBe(200)
       expect(await response.json()).toEqual({ restored: true })
       expect(restoredId).toBe('snap-9')
+    })
+  })
+
+  it('GET /api/sync/snapshots lists live checkpoints newest-first, then expired ones', async () => {
+    const snapshot = (id: string, revision: string): SyncSnapshot => ({
+      version: 1,
+      id,
+      repositoryKey: 'repo-key',
+      repositoryIdentity: 'repo-key',
+      createdAt: `2026-01-0${id === 'b' ? '2' : '1'}T00:00:00.000Z`,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ref: `refs/skillbox/snapshots/${id}`,
+      revision,
+      managedPaths: ['skillbox.yaml', 'skillbox.lock', 'skills'],
+    })
+    const sync = fakeRepositorySync({
+      listSnapshots: async () => ({
+        snapshots: [snapshot('b', 'abcdef1234567890'), snapshot('a', '9988776655443322')],
+        expired: [snapshot('x', '1122334455667788')],
+      }),
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync/snapshots')
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        snapshots: [
+          {
+            id: 'b',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            revision: 'abcdef12',
+            expired: false,
+          },
+          {
+            id: 'a',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            revision: '99887766',
+            expired: false,
+          },
+          {
+            id: 'x',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            revision: '11223344',
+            expired: true,
+          },
+        ],
+      })
     })
   })
 

@@ -17,8 +17,10 @@ export function UpdatesPage() {
   const outdatedQuery = useOutdated()
   const update = useInstallRegistrySkill()
   const [updatingName, setUpdatingName] = useState<string | undefined>(undefined)
+  const [batch, setBatch] = useState<{ done: number; total: number; failed: number } | null>(null)
 
   const rows = outdatedQuery.data ?? []
+  const highRiskCount = rows.filter((row) => row.securityRisk === 'high').length
 
   const runUpdate = (row: OutdatedSkill) => {
     setUpdatingName(row.name)
@@ -29,6 +31,42 @@ export function UpdatesPage() {
       },
     )
   }
+
+  /**
+   * Updates every outdated skill sequentially through the `safe` policy, so a
+   * high-risk revision is blocked rather than installed and the batch keeps
+   * going. The count in the confirm dialog tells the user how many will be
+   * held back before anything runs.
+   */
+  const updateAll = async () => {
+    const message =
+      highRiskCount > 0
+        ? `Update all ${rows.length} skill(s)? ${highRiskCount} high-risk revision(s) will be skipped by the safety policy.`
+        : `Update all ${rows.length} skill(s)?`
+    if (!window.confirm(message)) {
+      return
+    }
+    setBatch({ done: 0, total: rows.length, failed: 0 })
+    let done = 0
+    let failed = 0
+    for (const row of rows) {
+      setUpdatingName(row.name)
+      try {
+        await update.mutateAsync({
+          source: row.source,
+          targetAgents: row.agents,
+          allowPolicy: 'safe',
+        })
+      } catch {
+        failed += 1
+      }
+      done += 1
+      setBatch({ done, total: rows.length, failed })
+    }
+    setUpdatingName(undefined)
+  }
+
+  const batchRunning = batch !== null && updatingName !== undefined
 
   return (
     <section className="page">
@@ -44,7 +82,28 @@ export function UpdatesPage() {
                 : `${rows.length} skill${rows.length === 1 ? '' : 's'} behind their latest revision`}
           </p>
         </div>
+        {rows.length > 0 && (
+          <div className="page-actions">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => void updateAll()}
+              disabled={update.isPending}
+              title="Update every outdated skill (high-risk revisions are skipped by the safety policy)"
+            >
+              {batchRunning ? <span className="spinner" /> : <ArrowUpCircle aria-hidden="true" />}
+              {batch !== null ? `Updating ${batch.done}/${batch.total}` : 'Update all'}
+            </button>
+          </div>
+        )}
       </header>
+
+      {batch !== null && !batchRunning && (
+        <p className="page-description path-muted">
+          Batch finished — {batch.total - batch.failed} updated
+          {batch.failed > 0 ? `, ${batch.failed} skipped or failed` : ''}.
+        </p>
+      )}
 
       {update.isError && (
         <div className="form-error" role="alert">

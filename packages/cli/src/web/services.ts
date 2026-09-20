@@ -33,6 +33,7 @@ import {
   type SkillboxLockfile,
   type SkillboxManifest,
   type SkillDiff,
+  type UpstreamRevisionProvider,
 } from '@skillbox/core'
 import { SkillboxHome } from '@skillbox/core'
 import type {
@@ -99,6 +100,17 @@ export interface CreateWebServicesOptions {
 }
 
 /**
+ * Live upstream-revision lookup for status `outdated` detection: resolves each
+ * normalized source's provider on the process-wide `defaultRegistry` and asks
+ * it for the latest revision. StatusService already swallows provider errors,
+ * so an unreachable registry degrades to the lockfile's recorded revision.
+ */
+const upstreamRevisionProvider: UpstreamRevisionProvider = {
+  getLatestRevision: (source) =>
+    defaultRegistry.resolveProvider(source.type).getLatestRevision(source),
+}
+
+/**
  * Builds the Core service bundle behind the web API (M10.6: every route goes
  * through Core services — never through direct file access).
  */
@@ -122,6 +134,7 @@ export function createWebServices(options: CreateWebServicesOptions): WebService
     status: new StatusService({
       repositoryRoot,
       registry,
+      provider: upstreamRevisionProvider,
     }),
     search: options.search ?? createSearchService(),
     updates: options.updates ?? createUpdatesService(repositoryRoot),

@@ -5,6 +5,7 @@ import {
   BackupService,
   defaultEventBus,
   parseAdHocHost,
+  runDoctor,
   withRuntimeLock,
   type ConflictResolution,
   type ConflictSession,
@@ -16,17 +17,21 @@ import {
   type RollbackResult,
   type SyncConflict,
   type SyncOutcome,
+  type SyncSnapshot,
 } from '@skillbox/core'
 import type {
   AgentsResponse,
   ConflictResponse,
   ConflictsResponse,
+  SyncSnapshotDto,
+  SyncSnapshotsResponse,
   FleetHostCreateRequest,
   FleetHostPatchRequest,
   FleetHostRemoveResponse,
   FleetHostResponse,
   FleetHostsResponse,
   FleetRunResponse,
+  DoctorResponse,
   HealthResponse,
   InstallResponse,
   LifecycleOperationResult,
@@ -138,6 +143,22 @@ export function createWebApp(options: WebAppOptions): Hono {
       await services.config.save(merged)
       return c.json<SettingsResponse>({ settings: merged })
     })
+  })
+
+  /**
+   * Diagnostics entry (`skillbox doctor` over HTTP). Read-only: runs every
+   * probe against the live services and returns the full report. The
+   * `credentials` probe names the active credential backend and flags it when
+   * tokens are stored unencrypted, so the Settings page can surface a warning.
+   */
+  app.get('/api/doctor', async (c) => {
+    const report = await runDoctor({
+      repositoryRoot: services.repositoryRoot,
+      homeRoot: services.homeRoot,
+      registry: services.registry,
+      version: info.version,
+    })
+    return c.json<DoctorResponse>({ report })
   })
 
   /* ---- mutating API (M10.7) ---- */
@@ -424,6 +445,23 @@ export function createWebApp(options: WebAppOptions): Hono {
     return c.json({ restored: true })
   })
 
+  /** Restorable sync checkpoints (live first, newest → oldest; expired last). */
+  app.get('/api/sync/snapshots', async (c) => {
+    const { snapshots, expired } = await services.sync.listSnapshots()
+    const present = (snapshot: SyncSnapshot, isExpired: boolean): SyncSnapshotDto => ({
+      id: snapshot.id,
+      createdAt: snapshot.createdAt,
+      expiresAt: snapshot.expiresAt,
+      revision: snapshot.revision.slice(0, 8),
+      expired: isExpired,
+    })
+    const rows = [
+      ...snapshots.map((s) => present(s, false)),
+      ...expired.map((s) => present(s, true)),
+    ]
+    return c.json<SyncSnapshotsResponse>({ snapshots: rows })
+  })
+
   /** Removes only local GitHub credentials/connection metadata — never touches the repository. */
   app.post('/api/sync/disconnect', async (c) => {
     await services.sync.disconnect()
@@ -589,6 +627,7 @@ const FLEET_OPERATIONS: ReadonlySet<string> = new Set([
   'enable',
   'disable',
   'sync',
+  'ping',
 ])
 
 const FLEET_TARGET_REQUIRED_OPERATIONS: ReadonlySet<string> = new Set([
@@ -668,7 +707,7 @@ function parseFleetRunBody(body: Record<string, unknown>): {
   if (typeof operation !== 'string' || !FLEET_OPERATIONS.has(operation)) {
     throw new WebApiError(
       'INVALID_REQUEST',
-      'Field "operation" must be install/update/status/remove/enable/disable/sync',
+      'Field "operation" must be install/update/status/remove/enable/disable/sync/ping',
     )
   }
 
@@ -700,6 +739,13 @@ function parseFleetRunBody(body: Record<string, unknown>): {
       throw new WebApiError('INVALID_REQUEST', 'Field "dryRun" must be a boolean')
     }
     options.dryRun = dryRun
+  }
+  const retries = body['retries']
+  if (retries !== undefined) {
+    if (typeof retries !== 'number' || !Number.isInteger(retries) || retries < 0) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "retries" must be a non-negative integer')
+    }
+    options.retries = retries
   }
   const target = parseFleetTarget(body, operation)
   if (target !== undefined) {

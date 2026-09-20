@@ -66,6 +66,9 @@ const OPERATION_ARGS: Record<FleetOperationName, (target?: FleetSkillTarget) => 
     // the host must already be `skillbox connect`-ed (Tier 2: reuses the
     // Tier 3 engine instead of a parallel local/remote diff mechanism).
     sync: () => ['sync', '--multi-device'],
+    // Connectivity probe: reach the host and run the shell's no-op. Proves
+    // ssh + authentication work without requiring skillbox on the remote.
+    ping: () => ['true'],
   }
 
 /** The exact command Fleet will run on `host` for `operation`. */
@@ -75,6 +78,9 @@ export function buildRemoteCommand(
   target?: FleetSkillTarget,
 ): string {
   const bin = host.skillboxBin ?? 'skillbox'
+  if (operation === 'ping') {
+    return host.remotePath === undefined ? 'true' : `cd ${shellQuote(host.remotePath)} && true`
+  }
   const args = OPERATION_ARGS[operation](target).map((arg, index) =>
     // Only quote the skill/agent names the caller supplied — the flags
     // (`install`, `--agent`, `--delete-files`, ...) are our own literals.
@@ -149,7 +155,20 @@ export async function runFleetOperation(
 
       try {
         const spawnOptions = options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }
-        const outcome = await ssh.exec(host, command, spawnOptions)
+        const retries = Math.max(0, options.retries ?? 0)
+        let outcome = await ssh.exec(host, command, spawnOptions)
+        let attempt = 0
+        // Exit code 255 is ssh's own "connection failed" signal (and null
+        // means the process was killed/timed out) — both are transient, so
+        // the host gets re-tried before being declared failed. A non-zero
+        // remote command exit is a real result and never retries.
+        while (attempt < retries && (outcome.exitCode === 255 || outcome.exitCode === null)) {
+          attempt += 1
+          if (options.sleepBeforeRetry !== undefined) {
+            await options.sleepBeforeRetry(attempt)
+          }
+          outcome = await ssh.exec(host, command, spawnOptions)
+        }
         results[index] = {
           host: host.name,
           ok: outcome.exitCode === 0,

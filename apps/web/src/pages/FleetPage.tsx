@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import {
   Activity,
   ArrowLeftRight,
@@ -6,8 +6,10 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Square,
   Trash2,
   X,
+  Zap,
 } from 'lucide-react'
 import type {
   FleetHostConfig,
@@ -173,8 +175,14 @@ export function FleetPage() {
   const [editDraft, setEditDraft] = useState<HostDraft>(EMPTY_HOST_DRAFT)
   const [confirmingRemoveHost, setConfirmingRemoveHost] = useState<string | undefined>(undefined)
   const [portInvalid, setPortInvalid] = useState(false)
+  const [dryRun, setDryRun] = useState(false)
+  const [retries, setRetries] = useState('')
+  const runController = useRef<AbortController | null>(null)
 
   const hosts = hostsQuery.data ?? []
+  const parsedRetries = retries.trim() === '' ? undefined : Number(retries)
+  const retriesInvalid =
+    parsedRetries !== undefined && (!Number.isInteger(parsedRetries) || parsedRetries < 0)
 
   function submitAddHost(event: FormEvent): void {
     event.preventDefault()
@@ -236,16 +244,38 @@ export function FleetPage() {
   }
 
   function runOperation(operation: FleetOperationName): void {
+    if (retriesInvalid) {
+      return
+    }
     // Keep the previous result on screen while this one is in flight — e.g.
     // a per-skill action re-running `status` afterward — so the tables don't
     // flash empty and back.
+    const controller = new AbortController()
+    runController.current = controller
     run.mutate(
-      { operation, ...(selected.size > 0 ? { hosts: [...selected] } : {}) },
-      { onSuccess: setResult },
+      {
+        operation,
+        ...(selected.size > 0 ? { hosts: [...selected] } : {}),
+        ...(dryRun ? { dryRun: true } : {}),
+        ...(parsedRetries !== undefined ? { retries: parsedRetries } : {}),
+        signal: controller.signal,
+      },
+      {
+        onSuccess: setResult,
+        onSettled: () => {
+          runController.current = null
+        },
+      },
     )
   }
 
-  const actionsDisabled = run.isPending || hosts.length === 0
+  function cancelRun(): void {
+    runController.current?.abort()
+    runController.current = null
+    run.reset()
+  }
+
+  const actionsDisabled = run.isPending || hosts.length === 0 || retriesInvalid
 
   return (
     <section className="page">
@@ -311,8 +341,63 @@ export function FleetPage() {
             {run.isPending ? <span className="spinner" /> : <Download aria-hidden="true" />}
             Install
           </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={actionsDisabled}
+            onClick={() => runOperation('ping')}
+            title="Verify SSH reachability on the selected hosts (`true` over SSH, no skillbox needed)"
+          >
+            {run.isPending ? <span className="spinner" /> : <Zap aria-hidden="true" />}
+            Ping
+          </button>
+          {run.isPending && (
+            <button
+              type="button"
+              className="btn btn--danger"
+              onClick={cancelRun}
+              title="Stop waiting for this batch (already-dispatched hosts keep running on the server)"
+            >
+              <Square aria-hidden="true" />
+              Cancel
+            </button>
+          )}
         </div>
       </header>
+
+      <div className="fleet-run-controls">
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={dryRun}
+            onChange={(event) => setDryRun(event.target.checked)}
+          />
+          <span>Dry run (show the command without executing)</span>
+        </label>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="field-label" htmlFor="fleet-retries">
+            Retries
+          </label>
+          <input
+            id="fleet-retries"
+            className="field-input"
+            style={{ width: 90 }}
+            type="number"
+            min={0}
+            step={1}
+            inputMode="numeric"
+            value={retries}
+            onChange={(event) => setRetries(event.target.value)}
+            placeholder="0"
+            aria-label="Extra attempts for hosts whose SSH connection failed"
+          />
+        </div>
+        {retriesInvalid && (
+          <span className="field-error" role="alert">
+            Retries must be a whole number of 0 or more.
+          </span>
+        )}
+      </div>
 
       {run.isError && (
         <div className="form-error" role="alert">

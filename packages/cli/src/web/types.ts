@@ -2,6 +2,7 @@ import type {
   AgentRegistry,
   BackupRecord,
   ConflictResolution,
+  DoctorReport,
   FleetHostConfig,
   FleetRunResult,
   FleetService,
@@ -275,6 +276,26 @@ export interface ConflictsResponse {
 /** Success shape of `GET /api/conflicts/:id`. */
 export interface ConflictResponse {
   conflict: ConflictSessionDto
+}
+
+/** One row of `GET /api/sync/snapshots` — a restorable sync checkpoint. */
+export interface SyncSnapshotDto {
+  id: string
+  createdAt: string
+  expiresAt: string
+  /** Short (8-char) pre-sync commit the checkpoint restores toward. */
+  revision: string
+  expired: boolean
+}
+
+/** Success shape of `GET /api/sync/snapshots`. */
+export interface SyncSnapshotsResponse {
+  snapshots: SyncSnapshotDto[]
+}
+
+/** Success shape of `GET /api/doctor` — the full diagnostics report + the active credential backend. */
+export interface DoctorResponse {
+  report: DoctorReport
 }
 
 /** Unified error envelope required by M10.8. */

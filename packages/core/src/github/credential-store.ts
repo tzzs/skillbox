@@ -411,6 +411,39 @@ export function createCredentialStore(
   }
 }
 
+export type CredentialStoreKind =
+  'keychain' | 'credential-manager' | 'secret-service' | 'file' | 'memory'
+
+export interface CredentialStoreDescription {
+  /** Which backend `createCredentialStore` would return for this environment. */
+  kind: CredentialStoreKind
+  /** False for the plaintext file store and the ephemeral memory store. */
+  encrypted: boolean
+}
+
+/** Which backend `createCredentialStore` picks, and whether it encrypts at rest. */
+export function describeCredentialStore(
+  options: CredentialStoreFactoryOptions = {},
+): CredentialStoreDescription {
+  const storeEnv = process.env.SKILLBOX_CREDENTIAL_STORE
+  if (options.memory === true || storeEnv === 'memory') {
+    return { kind: 'memory', encrypted: false }
+  }
+  if (options.file === true || storeEnv === 'file') {
+    return { kind: 'file', encrypted: false }
+  }
+  switch (options.platform ?? process.platform) {
+    case 'win32':
+      return { kind: 'credential-manager', encrypted: true }
+    case 'darwin':
+      return { kind: 'keychain', encrypted: true }
+    case 'linux':
+      return { kind: 'secret-service', encrypted: true }
+    default:
+      return { kind: 'memory', encrypted: false }
+  }
+}
+
 /** `~/.skillbox/state/secrets` by default. */
 function defaultWindowsSecretsDirPath(): string {
   return path.join(os.homedir(), '.skillbox', 'state', 'secrets')

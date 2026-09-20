@@ -10,6 +10,7 @@ export interface FleetCliOptions {
   tag?: string[]
   ssh?: string[]
   concurrency?: string
+  retries?: string
   dryRun?: boolean
 }
 
@@ -39,6 +40,12 @@ export function runOptionsFromOptions(options: FleetCliOptions): FleetRunOptions
   }
   if (options.dryRun === true) {
     runOptions.dryRun = true
+  }
+  if (options.retries !== undefined) {
+    const parsed = Number.parseInt(options.retries, 10)
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      runOptions.retries = parsed
+    }
   }
   return runOptions
 }

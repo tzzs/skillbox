@@ -291,20 +291,29 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 
 ## 6. 发布与验收缺口
 
-### 6.1 npm 发布配置（部分落地）
+### 6.1 npm 发布配置（已闭环）
 
 - ✅ cli / core / shared / root 已补齐 `license`（MIT）/ `repository` / `homepage` / `bugs` metadata；
   root 新增 `pnpm pack:verify`（`scripts/verify-package.mjs`：`npm pack --dry-run` 断言 bin/dist/
   dist/web 完整，并报告 private/workspace 两个发布 blocker）
 - ✅ cli / core / shared 已移除 private blocker，CLI workspace 依赖已改为发布版本范围 `^0.1.0`；
-  `pack:verify` 已确认无 workspace blocker。仍需发布时配置 npm provenance 与实际 token。
+  `pack:verify` 已确认无 workspace blocker
+- ✅ **`prepublishOnly` 门禁**：shared / core 各自 `pnpm build`；cli `pnpm --workspace-root build &&
+pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，单独 `tsc -b` 不生成前端资源，
+  故 cli 发布前必须触发全量根构建 + 内容校验）
+- ✅ **`.github/workflows/release.yml`**：`v*` tag 推送或 `workflow_dispatch` 触发；`verify` job 跑
+  lint/typecheck/test/build/test:e2e/pack:verify 六道门禁，`publish` job `needs: verify` 后
+  `pnpm publish -r --no-git-checks --access public --provenance`（`id-token: write` + `NPM_TOKEN`），
+  发布顺序 shared → core → cli；apps/web 与 packages/testing 因 `private: true` 被 `-r` 跳过；
+  workflow_dispatch 默认 `dry-run: true`（只跑门禁不发布）
 
 ### 6.2 README / Release Metadata（部分修复）
 
 - ✅ README CI badge 已替换为 `tzzs/skillbox` 实际地址
 - ✅ README Roadmap 已更新：0.2/0.3 标记已落地、0.4 部分落地、E2E 状态、Git 运行时依赖；
   `INSTALLATION.md` 系统要求同步
-- repository/homepage/bugs/license metadata 已补齐；provenance 需在真实 npm 发布环境中启用
+- repository/homepage/bugs/license metadata 已补齐；provenance 由 `.github/workflows/release.yml`
+  的 `id-token: write` + `--provenance` 在 CI 发布时自动启用（§6.1）
 
 ### 6.3 E2E 验收与自动化（大部分落地）
 
@@ -542,7 +551,7 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 
 ### Wave 4 — 发布与扩展
 
-1. npm pack / publish 配置（§6.1）
+1. ✅ npm pack / publish 配置与 CI 发布流水线（§6.1：`prepublishOnly` + `release.yml`）
 2. doctor / debug bundle / Event Bus / logging 贯穿（§3.5、§4.4、§4.5）
 3. Gemini / OpenCode 等 Agent adapters（§5）
 4. 视需求拆分 Web Server 或实现 Fullscreen TUI（§5）
@@ -563,3 +572,32 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 - **过时注释清理（§7.1）**：`install/transaction.ts` provider TODO、`marketplace/types.ts`
   updateSkill TODO 更新为现状描述
 - 验证：core 782/782、CLI 296/296、e2e 12/12、typecheck / lint / build ✅
+
+### 9.21 本轮（2026-09-20，HEAD `8885f35`）交付 —— Fleet / 多设备同步 / 发布流水线
+
+> 本文基线原为 `03a48f59`（2026-08-14）。此后 master 合入 Fleet 主机 CRUD、多设备同步 UI、
+> 远程同步等能力（提交 `3057edd`、`a10206f`）。本轮在此基础上完成一次代码 + UI 优化清单（8 项），
+> 并把发布流水线补全。
+
+- **Fleet SSH 安全 + 一致性（#1）**：host 名称/地址格式校验、SSH 选项注入防护（`parseAdHoc` /
+  schema 约束 argv 不进 shell）、操作失败重试
+- **多设备同步快照闭环（#2、#5）**：快照列表 API + UI；`fleet ping` 三端（CLI / Web API / UI）；
+  Fleet run 实时进度与中止经 SSE 事件流回推
+- **CLI loader 收敛（#3，§7.2 债务）**：新增 `packages/cli/src/core-module.ts` 集中
+  `loadSkillboxCore` / `coreExportUnavailable` / `asRecord` / `readString`，三处 loaders
+  （skill-lifecycle / marketplace / sync）改为复用（保留各自 `CoreModuleLoader` 重导出与
+  sync 专用 `unavailable`）；`StatusService` 注入 `UpstreamRevisionProvider`（走
+  `defaultRegistry`）实现实时 outdated 检测，provider 报错回退锁存 `latestRevision`
+- **Web UI（#4）**：Updates 批量更新、Skill 详情 Markdown 预览（不注入 raw HTML）、
+  rollbacks 失效修复
+- **全局 SSE activity + Web doctor 入口 + fleet dry-run 确认（#5、#6）**
+- **Fleet hermetic E2E + 凭据后端暴露（#7）**：`packages/testing/src/e2e-fleet.test.ts` 4 例
+  （无 fleet.yaml 拒跑 / host CRUD / `--dry-run` 渲染远程命令 / 未连接仓库空快照列表，全程无
+  SSH/网络）；`describeCredentialStore` 暴露后端类型 + 加密标志，doctor credentials 探针把明文
+  FileCredentialStore 判为失败并告警
+- **发布流水线（#8，§6.1）**：`prepublishOnly` 门禁 + `.github/workflows/release.yml`
+  （tag/dispatch → verify 六道门禁 → provenance 发布 shared→core→cli）
+- 验证（本机 git 2.47.3）：**typecheck ✅ / lint ✅ / build ✅ / pack:verify ✅**；
+  core 906/906、CLI 345/345、e2e 17/17（含 fleet 4 例）
+- 仍缺：三平台 manual acceptance 证据（Windows/macOS/Linux 真实 Agent 目录 + OS keychain）；
+  TUI OperationRuntime journal 实时订阅（§4.4 残余）

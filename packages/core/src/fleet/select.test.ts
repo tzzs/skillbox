@@ -85,4 +85,12 @@ describe('parseAdHocHost', () => {
   it('rejects an empty spec', () => {
     expect(() => parseAdHocHost('')).toThrowError()
   })
+
+  it('rejects an ssh-option-injection host', () => {
+    expect(() => parseAdHocHost('-oProxyCommand=touch /tmp/evil')).toThrowError()
+  })
+
+  it('rejects a user that would be parsed as an ssh option', () => {
+    expect(() => parseAdHocHost('-oProxyCommand=x@h.example')).toThrowError()
+  })
 })

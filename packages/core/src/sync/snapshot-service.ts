@@ -160,6 +160,50 @@ export class SnapshotService {
     await fs.rm(this.directoryFor(id), { recursive: true, force: true })
   }
 
+  /**
+   * Live (non-expired) snapshots for this repository, newest first. Expired
+   * entries are reported separately instead of silently disappearing — the
+   * restore point is still on disk until pruned and users need to know a
+   * pending recovery option is about to lapse.
+   */
+  async list(): Promise<{ snapshots: SyncSnapshot[]; expired: SyncSnapshot[] }> {
+    let ids: string[]
+    try {
+      ids = (await fs.readdir(path.join(this.snapshotsRoot, this.key))).filter(isSafeIdName)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { snapshots: [], expired: [] }
+      throw error
+    }
+    const snapshots: SyncSnapshot[] = []
+    const expired: SyncSnapshot[] = []
+    for (const id of ids) {
+      let raw: string
+      try {
+        raw = await fs.readFile(this.snapshotPath(id), 'utf8')
+      } catch {
+        continue
+      }
+      let value: unknown
+      try {
+        value = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (!isSyncSnapshot(value) || value.repositoryKey !== this.key) continue
+      if (Date.parse(value.expiresAt) <= this.now()) {
+        expired.push(value)
+      } else {
+        snapshots.push(value)
+      }
+    }
+    const newestFirst = (a: SyncSnapshot, b: SyncSnapshot): number =>
+      Date.parse(b.createdAt) - Date.parse(a.createdAt)
+    return {
+      snapshots: snapshots.sort(newestFirst),
+      expired: expired.sort(newestFirst),
+    }
+  }
+
   private directoryFor(id: string): string {
     return path.join(this.snapshotsRoot, this.key, id)
   }
@@ -203,9 +247,15 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 function assertSafeId(id: string): void {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id)) {
+  if (!isSafeIdName(id)) {
     throw new SkillboxError(ErrorCode.UNSAFE_PATH, 'Invalid sync restore-point identifier')
   }
+}
+
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/
+
+function isSafeIdName(name: string): boolean {
+  return SAFE_ID_PATTERN.test(name)
 }
 
 function sanitizedMetadata(metadata: Record<string, unknown>): Record<string, unknown> {

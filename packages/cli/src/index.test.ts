@@ -24,6 +24,7 @@ function capture(): CliDeps & { out(): string; err(): string } {
 /** A fully-stubbed `RepositorySync`; override individual methods per test. */
 function repositorySyncStub(): RepositorySync {
   return {
+    listSnapshots: async () => ({ snapshots: [], expired: [] }),
     connectionState: async () => ({ state: 'connected', connected: true, login: 'octocat' }),
     connect: async () => ({
       authorization: 'existing',

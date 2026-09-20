@@ -6,4 +6,6 @@ coverage/
 *.log
 .env
 .DS_Store
-.pnpm-store/
+# Scratch home created when SKILLBOX_HOME is set to a relative path.
+/state/
+/packages/*/state/

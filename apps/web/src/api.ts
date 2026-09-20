@@ -296,7 +296,7 @@ export interface FleetHostConfig {
 }
 
 export type FleetOperationName =
-  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
+  'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync' | 'ping'
 
 /** A skill (and, for enable/disable, agent) a Fleet run targets. */
 export interface FleetSkillTarget {
@@ -331,6 +331,8 @@ export interface FleetRunRequest {
   tags?: string[]
   ssh?: string[]
   concurrency?: number
+  /** Extra attempts for hosts whose SSH connection failed (exit 255 / timeout). */
+  retries?: number
   dryRun?: boolean
   /** Required for remove/enable/disable; optional for update (targets one skill). */
   target?: FleetSkillTarget
@@ -367,6 +369,15 @@ export interface SyncStatusView {
   connection: SyncConnection
 }
 
+/** One restorable sync checkpoint from `GET /api/sync/snapshots`. */
+export interface SyncSnapshotView {
+  id: string
+  createdAt: string
+  expiresAt: string
+  revision: string
+  expired: boolean
+}
+
 export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
 export type SyncConflictKind =
   'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
@@ -395,6 +406,22 @@ export interface ConflictSessionView {
 
 export interface ResolveSyncConflictsInput {
   resolutions: Record<string, ConflictChoice>
+}
+
+/* ---- Diagnostics (`GET /api/doctor`) ---- */
+
+/** One probe result from the doctor report. */
+export interface DoctorProbe {
+  name: string
+  ok: boolean
+  detail?: string
+  error?: string
+}
+
+export interface DoctorReport {
+  generatedAt: string
+  skillboxVersion: string
+  probes: DoctorProbe[]
 }
 
 export interface ApiErrorBody {
@@ -498,18 +525,21 @@ export interface ApiClient {
   restoreRollback(id: string): Promise<RollbackResult>
   /* Fleet API */
   fleetHosts(): Promise<FleetHostConfig[]>
-  fleetRun(input: FleetRunRequest): Promise<FleetRunResult>
+  fleetRun(input: FleetRunRequest, signal?: AbortSignal): Promise<FleetRunResult>
   addFleetHost(input: FleetHostInput): Promise<FleetHostConfig>
   updateFleetHost(name: string, patch: FleetHostPatch): Promise<FleetHostConfig>
   removeFleetHost(name: string): Promise<void>
   /* Multi-device sync API */
   syncStatus(): Promise<SyncStatusView>
   sync(): Promise<SyncStatus>
+  syncSnapshots(): Promise<SyncSnapshotView[]>
   conflicts(): Promise<ConflictSessionView[]>
   conflict(id: string): Promise<ConflictSessionView>
   resolveConflicts(id: string, input: ResolveSyncConflictsInput): Promise<SyncStatus>
   restoreSyncSnapshot(id: string): Promise<void>
   disconnectSync(): Promise<void>
+  /* Diagnostics */
+  doctor(): Promise<DoctorReport>
 }
 
 function encodeName(name: string): string {
@@ -695,10 +725,11 @@ export const api: ApiClient = {
     return response.hosts
   },
 
-  async fleetRun(input) {
+  async fleetRun(input, signal) {
     const response = await request<{ result: FleetRunResult }>('/api/fleet/run', {
       method: 'POST',
       body: JSON.stringify(input),
+      ...(signal === undefined ? {} : { signal }),
     })
     return response.result
   },
@@ -725,6 +756,11 @@ export const api: ApiClient = {
 
   async syncStatus() {
     return request<SyncStatusView>('/api/sync/status')
+  },
+
+  async syncSnapshots() {
+    const response = await request<{ snapshots: SyncSnapshotView[] }>('/api/sync/snapshots')
+    return response.snapshots
   },
 
   async sync() {
@@ -763,5 +799,10 @@ export const api: ApiClient = {
 
   async disconnectSync() {
     await request<unknown>('/api/sync/disconnect', { method: 'POST' })
+  },
+
+  async doctor() {
+    const response = await request<{ report: DoctorReport }>('/api/doctor')
+    return response.report
   },
 }

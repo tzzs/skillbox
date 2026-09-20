@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Check, Code, Eye, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
 import type { AgentSummary, LifecycleOperationResult, MergeAction } from '../api.js'
 import { errorMessage } from '../format.js'
 import {
@@ -16,6 +16,7 @@ import {
   useRollbacks,
 } from '../queries.js'
 import { AgentTags, ModePill, SkillPath, StatusPill } from '../components/Pills.js'
+import { MarkdownPreview } from '../components/MarkdownPreview.js'
 import { CenteredHint, ErrorState } from '../components/States.js'
 import { useDocumentTitle } from '../useDocumentTitle.js'
 
@@ -37,6 +38,7 @@ export function SkillDetailPage() {
   const save = useSaveSkillContent()
 
   const [editing, setEditing] = useState(false)
+  const [preview, setPreview] = useState(true)
   const [draft, setDraft] = useState('')
   const [dirty, setDirty] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -201,36 +203,67 @@ export function SkillDetailPage() {
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              className="btn"
-              onClick={startEdit}
-              disabled={contentQuery.isError}
-            >
-              <Pencil aria-hidden="true" />
-              Edit
-            </button>
+            <>
+              <div className="segmented" role="group" aria-label="Markdown view">
+                <button
+                  type="button"
+                  className={`segmented__btn${preview ? ' is-active' : ''}`}
+                  onClick={() => setPreview(true)}
+                  aria-pressed={preview}
+                >
+                  <Eye aria-hidden="true" />
+                  Preview
+                </button>
+                <button
+                  type="button"
+                  className={`segmented__btn${!preview ? ' is-active' : ''}`}
+                  onClick={() => setPreview(false)}
+                  aria-pressed={!preview}
+                >
+                  <Code aria-hidden="true" />
+                  Source
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  startEdit()
+                  setPreview(false)
+                }}
+                disabled={contentQuery.isError}
+              >
+                <Pencil aria-hidden="true" />
+                Edit
+              </button>
+            </>
           )}
         </div>
-        <div className="editor-box" style={{ marginTop: 14 }}>
-          <textarea
-            value={editorTouched}
-            onChange={(event) => {
-              if (editing) {
-                setDraft(event.target.value)
-                setDirty(true)
-              }
-            }}
-            onKeyDown={(event) => {
-              if (editing && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault()
-                saveEdit()
-              }
-            }}
-            readOnly={!editing}
-            aria-label={`Markdown for ${skill.name}`}
-          />
-        </div>
+        {!editing && preview ? (
+          <div className="markdown-box" style={{ marginTop: 14 }}>
+            <MarkdownPreview source={contentQuery.data?.markdown ?? ''} />
+          </div>
+        ) : (
+          <div className="editor-box" style={{ marginTop: 14 }}>
+            <textarea
+              value={editorTouched}
+              onChange={(event) => {
+                if (editing) {
+                  setDraft(event.target.value)
+                  setDirty(true)
+                }
+              }}
+              onKeyDown={(event) => {
+                if (editing && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault()
+                  saveEdit()
+                }
+              }}
+              readOnly={!editing}
+              aria-label={`Markdown for ${skill.name}`}
+            />
+          </div>
+        )}
         {save.isSuccess && (
           <p className="saved-note">
             Saved — status is now “{save.data.status === 'ready' ? 'ready' : 'modified'}”.
