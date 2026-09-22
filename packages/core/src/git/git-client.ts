@@ -242,6 +242,9 @@ export class GitClient {
             repositoryRoot,
             exitCode: result.exitCode,
             stderr,
+            // Several git outcomes report on stdout only (`nothing to commit`),
+            // so callers need both streams to classify the failure.
+            stdout: result.stdout,
           },
           cause: new Error(stderr),
         },

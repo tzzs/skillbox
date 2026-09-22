@@ -52,6 +52,15 @@ function isNotARepositoryError(error: unknown): boolean {
   return typeof stderr === 'string' && stderr.includes('not a git repository')
 }
 
+/** True when a failed `git commit` reported that the given paths had no changes. */
+function isNothingToCommitError(error: unknown): boolean {
+  if (!(error instanceof SkillboxError)) {
+    return false
+  }
+  const output = [error.message, error.context?.['stderr'], error.context?.['stdout']].join('\n')
+  return output.includes('nothing to commit') || output.includes('nothing added to commit')
+}
+
 function gitUnavailable(hint: string): SkillboxError {
   return new SkillboxError(ErrorCode.GIT_UNAVAILABLE, hint)
 }
@@ -155,12 +164,9 @@ class GitClientAdapter implements GitProvider {
       const result = await this.client.commit(this.repositoryRoot, message, paths)
       return { committed: true, message, shortHash: result.hash.slice(0, 7) }
     } catch (error) {
-      // git aborts with "nothing to commit" when none of the paths changed.
-      const stderr = error instanceof Error ? ((error as { stderr?: string }).stderr ?? '') : ''
-      if (
-        error instanceof SkillboxError &&
-        (error.message.includes('nothing to commit') || stderr.includes('nothing to commit'))
-      ) {
+      // git aborts with "nothing to commit" when none of the paths changed,
+      // and says so on stdout — which core surfaces through the error context.
+      if (isNothingToCommitError(error)) {
         return { committed: false, message }
       }
       throw error

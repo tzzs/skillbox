@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRegistry,
@@ -34,6 +36,8 @@ import {
 } from './index.js'
 
 const REPO = 'C:\\repo'
+
+const execFileP = promisify(execFile)
 
 function reconcileResult(root: string): ReconcileResult {
   return {
@@ -519,6 +523,43 @@ describe('loaders (wiring points)', () => {
       committed: false,
       message: 'skillbox: sync',
     })
+  })
+
+  it('drives a real git working tree through the shipped core GitClient', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-git-wiring-'))
+    try {
+      const git = async (args: string[]): Promise<string> =>
+        (await execFileP('git', ['-C', root, ...args])).stdout
+      await git(['init', '-b', 'main'])
+      await git(['config', 'user.email', 'skillbox@example.test'])
+      await git(['config', 'user.name', 'skillbox'])
+      await fs.writeFile(path.join(root, 'skillbox.yaml'), 'skills: {}\n')
+      await git(['add', 'skillbox.yaml'])
+      await git(['commit', '-m', 'init'])
+      await fs.writeFile(path.join(root, 'skillbox.yaml'), 'skills:\n  demo: {}\n')
+      await fs.writeFile(path.join(root, 'notes.md'), 'untracked\n')
+
+      const provider = createDefaultGitProvider(root)
+      const report = await provider.status()
+      expect(report).toMatchObject({ isRepository: true, branch: 'main' })
+      expect(report.changedFiles).toContain('skillbox.yaml')
+      expect(report.conflicts).toEqual([])
+
+      const committed = await provider.commit('skillbox: sync 1 change', ['skillbox.yaml'])
+      expect(committed).toMatchObject({ committed: true, message: 'skillbox: sync 1 change' })
+      expect(committed.shortHash).toMatch(/^[0-9a-f]{7}$/)
+      // Re-running the same commit has nothing left to stage.
+      expect(await provider.commit('skillbox: sync 1 change', ['skillbox.yaml'])).toMatchObject({
+        committed: false,
+      })
+
+      const after = await provider.status()
+      expect(after.changedFiles).not.toContain('skillbox.yaml')
+      // Only the named paths are committed; everything else stays dirty.
+      expect(after.changedFiles).toContain('notes.md')
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 
   it('default GitHub provider reads the shipped core connection state', async () => {
