@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import {
   FilesystemService,
   isSkillboxError,
+  MANIFEST_FILE_NAME,
   RuntimeConfigService,
   withRuntimeLock,
   SkillboxHome,
@@ -160,6 +161,10 @@ export class InteractiveSession {
     return !(await this.filesystem.exists(this.markerPath))
   }
 
+  private async hasRepositoryManifest(): Promise<boolean> {
+    return this.filesystem.exists(path.join(this.ctx.repositoryRoot, MANIFEST_FILE_NAME))
+  }
+
   private async markOnboarded(): Promise<void> {
     const serialized = JSON.stringify({ onboarded: true }, null, 2)
     await this.filesystem.writeFile(this.markerPath, `${serialized}\n`)
@@ -192,7 +197,14 @@ export class InteractiveSession {
       }
     }
 
-    await this.syncNow()
+    // A skipped import in a folder with no manifest leaves nothing to
+    // materialise, and `install()` fails on that repository outright — which
+    // would end the first run before the menu and before the marker below.
+    if (await this.hasRepositoryManifest()) {
+      await this.syncNow()
+    } else {
+      this.prompts.info('Nothing to sync yet - import or create a skill from the menu.')
+    }
 
     this.prompts.note(
       [
