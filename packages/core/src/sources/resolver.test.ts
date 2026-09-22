@@ -43,6 +43,8 @@ describe('canonical skill sources', () => {
     expect(serialize(parse('git:git@git.example.test:owner/repo.git'))).toBe(
       'git:git@git.example.test:owner/repo.git',
     )
+    // scp-style without a path separator: the `@` stays inside the URL.
+    expect(serialize(parse('git:user@host:repo.git'))).toBe('git:user@host:repo.git')
     expect(serialize(parse('registry:example/owner/package#2.0.0'))).toBe(
       'registry:example/owner/package#2.0.0',
     )

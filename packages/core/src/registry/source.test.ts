@@ -209,6 +209,28 @@ describe('parseSource', () => {
     })
   })
 
+  it('parses git: skill subdirectory expressions (url@path)', () => {
+    expect(parseSource('git:https://git.example.com/org/repo.git@skills/demo')).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+      path: 'skills/demo',
+    })
+    expect(parseSource('git:https://git.example.com/org/repo.git@skills/demo#main')).toEqual({
+      type: 'git',
+      url: 'https://git.example.com/org/repo.git',
+      path: 'skills/demo',
+      ref: 'main',
+    })
+    // An `@` inside the URL itself (scp-style user@host) stays part of the URL.
+    expect(parseSource('git:git@git.example.com:org/repo.git')).toEqual({
+      type: 'git',
+      url: 'git@git.example.com:org/repo.git',
+    })
+    expect(() => parseSource('git:https://git.example.com/org/repo.git@../evil')).toThrow(
+      /"\.\." segments/,
+    )
+  })
+
   it('round-trips git sources through string / manifest / normalized forms', () => {
     const normalized = parseSource('git:https://git.example.com/org/repo.git#main')
     expect(sourceToString(normalized)).toBe('git:https://git.example.com/org/repo.git#main')
@@ -221,6 +243,13 @@ describe('parseSource', () => {
     expect(fromManifestSource(manifest)).toEqual(normalized)
     expect(normalizeSourceString('git:https://git.example.com/org/repo.git#main')).toBe(
       'git:https://git.example.com/org/repo.git#main',
+    )
+    const withPath = parseSource('git:https://git.example.com/org/repo.git@skills/demo#main')
+    expect(sourceToString(withPath)).toBe(
+      'git:https://git.example.com/org/repo.git@skills/demo#main',
+    )
+    expect(normalizeSourceString('git:https://git.example.com/org/repo.git@skills/demo#main')).toBe(
+      'git:https://git.example.com/org/repo.git@skills/demo#main',
     )
   })
 

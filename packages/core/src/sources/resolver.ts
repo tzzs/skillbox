@@ -51,10 +51,23 @@ function parseGit(input: string): CanonicalSkillSource {
   const hashIndex = expression.lastIndexOf('#')
   const withoutRef = hashIndex === -1 ? expression : expression.slice(0, hashIndex)
   const ref = hashIndex === -1 ? undefined : expression.slice(hashIndex + 1)
-  // An SSH transport URL itself can contain `git@host`; only an `@` after the
-  // final path separator denotes the optional skill subdirectory.
+  // `git:<url>[@<skill path>][#<ref>]` — the optional skill subdirectory is
+  // what follows the last `@`. The split only applies when the part before
+  // the `@` looks like a URL with a host path (a `/` after the scheme), and
+  // the part after it has no `:` (scp-style `git@host:repo` stays one URL,
+  // as do authenticated `https://token@host/...` URLs). Keep this rule in
+  // sync with the registry parser in registry/source.ts.
   const lastAtIndex = withoutRef.lastIndexOf('@')
-  const atIndex = lastAtIndex > withoutRef.lastIndexOf('/') ? lastAtIndex : -1
+  let atIndex = -1
+  if (lastAtIndex !== -1) {
+    const before = withoutRef.slice(0, lastAtIndex)
+    const after = withoutRef.slice(lastAtIndex + 1)
+    const schemeEnd = before.indexOf('://')
+    const hasHostPath = before.includes('/', schemeEnd === -1 ? 0 : schemeEnd + 3)
+    if (hasHostPath && after.length > 0 && !after.includes(':')) {
+      atIndex = lastAtIndex
+    }
+  }
   const url = atIndex === -1 ? withoutRef : withoutRef.slice(0, atIndex)
   const skillPath = atIndex === -1 ? undefined : withoutRef.slice(atIndex + 1)
 
