@@ -1,11 +1,26 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
-  coreExportUnavailable as unavailable,
-  loadSkillboxCore,
-  type CoreModuleLoader,
-} from '../core-module.js'
+  buildSkillboxHomeLayout,
+  clearCache,
+  defaultRegistry,
+  GitHubProvider,
+  GitSourceProvider,
+  installSkill,
+  LocalProvider,
+  parseSource,
+  registerProvider,
+  resolveProvider,
+  resolveSkillboxHome,
+  scanSkillForSecurity,
+  SkillsShProvider,
+  updateSkill,
+  type InstallSkillOptions,
+  type RegistryProvider as CoreRegistryProvider,
+  type UpdateSkillOptions,
+} from '@skillbox/core'
 import type {
+  InstallResult,
   InstallService,
   InstallSkillInput,
   NormalizedSource,
@@ -20,140 +35,118 @@ import type {
 } from './types.js'
 
 /**
- * V0.3 Marketplace — default provider loaders (CLI layer).
+ * V0.3 Marketplace — default adapters over `@skillbox/core` (CLI layer).
  *
- * Follows the V0.2 sync convention (`./sync/loaders.js`): the CLI defines the
- * contracts in `./types.js` and adapts the core modules onto them at runtime
- * through a dynamic import. A build missing an expected export fails with a
- * typed SkillboxError and recovery hint instead of crashing.
+ * Core is imported statically and called through its real signatures
+ * (`parseSource`, `defaultRegistry` / `resolveProvider` / `registerProvider`,
+ * `installSkill` / `updateSkill` / `clearCache`, `scanSkillForSecurity`,
+ * `buildSkillboxHomeLayout` / `resolveSkillboxHome`), so a renamed or dropped
+ * export is a build failure here rather than a runtime "this build is missing
+ * the Core X export" guess. The CLI contracts in `./types.js` are structural
+ * copies of core's, so the adapters mostly hand values straight through.
  *
- * Current mapping onto `@skillbox/core`:
- * - `parseSource`                     (registry/source.js)
- * - `defaultRegistry` / `resolveProvider` (registry/registry.js)
- * - `installSkill` / `updateSkill` / `clearCache` (install/transaction.js + cache.js)
- * - `scanSkillForSecurity`            (security/scanner.js)
- * - `buildSkillboxHomeLayout` / `resolveSkillboxHome` (runtime/paths.js)
+ * Each factory takes a `deps` object with one field per core function it
+ * calls; production (see `program.ts`) uses the exported defaults, and focused
+ * tests pass fakes for the functions they care about.
  */
 
-/** Re-exported so focused wiring tests keep importing the type from here. */
-export type { CoreModuleLoader }
-
 /* ------------------------------------------------------------------ *
- * Source parser — @skillbox/core/registry
+ * Core dependency seams
  * ------------------------------------------------------------------ */
 
-class SourceParserAdapter implements SourceParser {
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
+/** First-party providers, constructed with core defaults (no options). */
+const DEFAULT_PROVIDER_FACTORIES: readonly (() => CoreRegistryProvider)[] = [
+  () => new GitHubProvider(),
+  () => new SkillsShProvider(),
+  () => new GitSourceProvider(),
+  () => new LocalProvider(),
+]
 
-  async parse(source: string): Promise<NormalizedSource> {
-    const core = await this.loadCore()
-    const parseSource = core.parseSource as ((source: string) => unknown) | undefined
-    if (typeof parseSource === 'function') {
-      return parseSource(source) as NormalizedSource
-    }
-    // Fallback for older core builds that shipped a `SourceParser` class.
-    const Parser = core.SourceParser as
-      (new () => { parse: (source: string) => unknown }) | undefined
-    if (typeof Parser === 'function') {
-      return new Parser().parse(source) as NormalizedSource
-    }
-    throw unavailable('REGISTRY_UNAVAILABLE', this.hint)
-  }
+/** Registration slice of core's provider registry, shared by two adapters. */
+export interface MarketplaceProviderRegistrationDeps {
+  /** Providers currently on the process-wide `defaultRegistry`. */
+  listProviders: () => CoreRegistryProvider[]
+  registerProvider: typeof registerProvider
+  /** Factories for the providers to register; a throwing one is skipped. */
+  providerFactories: readonly (() => CoreRegistryProvider)[]
 }
 
-export function createDefaultSourceParser(
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'This build is missing the Core source parser export. Reinstall or upgrade skillbox.',
-): SourceParser {
-  return new SourceParserAdapter(loadCore, hint)
+export const defaultMarketplaceProviderRegistrationDeps: MarketplaceProviderRegistrationDeps = {
+  listProviders: () => defaultRegistry.listProviders(),
+  registerProvider,
+  providerFactories: DEFAULT_PROVIDER_FACTORIES,
 }
 
-/* ------------------------------------------------------------------ *
- * Registry client — @skillbox/core/registry
- * ------------------------------------------------------------------ */
-
-/** Structural shape of a core `RegistryProvider` (registry/types.js). */
-interface RegistryProviderShape {
-  id: string
-  search: (query: string) => unknown
-  resolve: (source: unknown) => unknown
-  download: (source: unknown, revision: string, targetDir: string) => unknown
-  getLatestRevision: (source: unknown) => unknown
-}
-
-/** Structural shape of the core `ProviderRegistry` (registry/registry.js). */
-interface ProviderRegistryShape {
-  listProviders: () => RegistryProviderShape[]
-}
-
-/** Makes first-party providers available to every production marketplace entrypoint. */
-function ensureDefaultProvidersRegistered(core: Record<string, unknown>): void {
-  const registerProvider = core.registerProvider as ((provider: unknown) => unknown) | undefined
-  const registry = core.defaultRegistry as ProviderRegistryShape | undefined
-  if (typeof registerProvider !== 'function' || registry?.listProviders === undefined) {
-    return
-  }
-  for (const candidate of [
-    core.GitHubProvider,
-    core.SkillsShProvider,
-    core.GitSourceProvider,
-    core.LocalProvider,
-  ]) {
-    if (typeof candidate !== 'function') {
-      continue
-    }
-    const Provider = candidate as new () => RegistryProviderShape
+/**
+ * Makes the first-party providers available to every production marketplace
+ * entrypoint. Nothing else on the CLI path guarantees this (the web services
+ * and core's `createDefaultSkillSourceResolver` register their own, lazily),
+ * and registration is idempotent: an already-registered id — including one a
+ * test injected — is left alone.
+ */
+function ensureDefaultProvidersRegistered(deps: MarketplaceProviderRegistrationDeps): void {
+  const registered = new Set(deps.listProviders().map((provider) => provider.id))
+  for (const create of deps.providerFactories) {
     try {
-      const provider = new Provider()
-      if (!registry.listProviders().some((existing) => existing.id === provider.id)) {
-        registerProvider(provider)
+      const provider = create()
+      if (registered.has(provider.id)) {
+        continue
       }
+      deps.registerProvider(provider)
+      registered.add(provider.id)
     } catch {
       // An unavailable optional provider must not take down the marketplace.
     }
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Source parser — @skillbox/core/registry
+ * ------------------------------------------------------------------ */
+
+export interface MarketplaceSourceParserDeps {
+  parseSource: typeof parseSource
+}
+
+export const defaultMarketplaceSourceParserDeps: MarketplaceSourceParserDeps = { parseSource }
+
+class SourceParserAdapter implements SourceParser {
+  constructor(private readonly deps: MarketplaceSourceParserDeps) {}
+
+  /** Core's parser is synchronous; bad input throws `SOURCE_INVALID`. */
+  async parse(source: string): Promise<NormalizedSource> {
+    return this.deps.parseSource(source)
+  }
+}
+
+export function createDefaultSourceParser(
+  deps: MarketplaceSourceParserDeps = defaultMarketplaceSourceParserDeps,
+): SourceParser {
+  return new SourceParserAdapter(deps)
+}
+
+/* ------------------------------------------------------------------ *
+ * Registry client — @skillbox/core/registry
+ * ------------------------------------------------------------------ */
+
+export interface MarketplaceRegistryClientDeps extends MarketplaceProviderRegistrationDeps {
+  resolveProvider: typeof resolveProvider
+}
+
+export const defaultMarketplaceRegistryClientDeps: MarketplaceRegistryClientDeps = {
+  ...defaultMarketplaceProviderRegistrationDeps,
+  resolveProvider,
+}
+
 class RegistryClientAdapter implements RegistryClient {
-  private modulePromise?: Promise<Record<string, unknown>>
-
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  /** The core module, loaded once per adapter (dynamic imports are cached). */
-  private async core(): Promise<Record<string, unknown>> {
-    this.modulePromise ??= this.loadCore()
-    const core = await this.modulePromise
-    ensureDefaultProvidersRegistered(core)
-    return core
-  }
-
-  private providerForSync(
-    core: Record<string, unknown>,
-    source: NormalizedSource,
-  ): RegistryProviderShape {
-    const resolveProvider = core.resolveProvider as ((sourceType: string) => unknown) | undefined
-    if (typeof resolveProvider !== 'function') {
-      throw unavailable('REGISTRY_UNAVAILABLE', this.hint)
-    }
-    return resolveProvider(source.type) as RegistryProviderShape
-  }
+  constructor(private readonly deps: MarketplaceRegistryClientDeps) {}
 
   async search(query: string): Promise<RegistrySearchResult[]> {
-    const core = await this.core()
-    const registry = core.defaultRegistry as ProviderRegistryShape | undefined
-    if (registry?.listProviders === undefined) {
-      throw unavailable('REGISTRY_UNAVAILABLE', this.hint)
-    }
+    ensureDefaultProvidersRegistered(this.deps)
     const results: RegistrySearchResult[] = []
-    for (const provider of registry.listProviders()) {
+    for (const provider of this.deps.listProviders()) {
       try {
-        results.push(...((await provider.search(query)) as RegistrySearchResult[]))
+        results.push(...(await provider.search(query)))
       } catch {
         // Per-provider degradation: one registry's failure (e.g. the GitHub
         // unauthenticated 60 req/h rate limit) must not kill the aggregate.
@@ -163,29 +156,28 @@ class RegistryClientAdapter implements RegistryClient {
   }
 
   async resolve(source: NormalizedSource): Promise<ResolvedSource> {
-    const core = await this.core()
-    const provider = this.providerForSync(core, source)
-    return (await provider.resolve(source)) as ResolvedSource
+    ensureDefaultProvidersRegistered(this.deps)
+    return await this.deps.resolveProvider(source.type).resolve(source)
   }
 
   async getLatestRevision(source: NormalizedSource): Promise<string> {
-    const core = await this.core()
-    const provider = this.providerForSync(core, source)
-    return (await provider.getLatestRevision(source)) as string
+    ensureDefaultProvidersRegistered(this.deps)
+    return await this.deps.resolveProvider(source.type).getLatestRevision(source)
   }
 
+  /** Unregistered source types surface core's `SOURCE_UNSUPPORTED` error. */
   async providerFor(source: NormalizedSource): Promise<RegistryProvider> {
-    const core = await this.core()
-    return this.providerForSync(core, source) as unknown as RegistryProvider
+    ensureDefaultProvidersRegistered(this.deps)
+    return this.deps.resolveProvider(source.type)
   }
 }
 
+/** `_homeRoot` stays part of the signature the CLI wiring calls with. */
 export function createDefaultRegistryClient(
   _homeRoot: string,
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'This build is missing the Core registry exports. Reinstall or upgrade skillbox.',
+  deps: MarketplaceRegistryClientDeps = defaultMarketplaceRegistryClientDeps,
 ): RegistryClient {
-  return new RegistryClientAdapter(loadCore, hint)
+  return new RegistryClientAdapter(deps)
 }
 
 /* ------------------------------------------------------------------ *
@@ -221,43 +213,46 @@ async function countCacheEntries(cacheRoot: string): Promise<number> {
   return entries
 }
 
-class InstallServiceAdapter implements InstallService {
-  private modulePromise?: Promise<Record<string, unknown>>
+export interface MarketplaceInstallServiceDeps extends MarketplaceProviderRegistrationDeps {
+  installSkill: typeof installSkill
+  /**
+   * Core's install *transaction* `updateSkill(source, options)` — the root
+   * barrel re-exports it explicitly over the same-named manifest helper.
+   */
+  updateSkill: typeof updateSkill
+  clearCache: typeof clearCache
+  buildSkillboxHomeLayout: typeof buildSkillboxHomeLayout
+  resolveSkillboxHome: typeof resolveSkillboxHome
+}
 
+export const defaultMarketplaceInstallServiceDeps: MarketplaceInstallServiceDeps = {
+  ...defaultMarketplaceProviderRegistrationDeps,
+  installSkill,
+  updateSkill,
+  clearCache,
+  buildSkillboxHomeLayout,
+  resolveSkillboxHome,
+}
+
+class InstallServiceAdapter implements InstallService {
   constructor(
     private readonly options: { repositoryRoot: string; homeRoot: string },
-    private readonly loadCore: CoreModuleLoader,
-    private readonly installHint: string,
-    private readonly cacheHint: string,
+    private readonly deps: MarketplaceInstallServiceDeps,
   ) {}
 
-  private async core(): Promise<Record<string, unknown>> {
-    this.modulePromise ??= this.loadCore()
-    const core = await this.modulePromise
-    ensureDefaultProvidersRegistered(core)
-    return core
-  }
-
-  async installSkill(
-    input: InstallSkillInput,
-  ): Promise<Awaited<ReturnType<InstallService['installSkill']>>> {
-    const core = await this.core()
-    const installSkill = core.installSkill as
-      ((source: unknown, options: unknown) => unknown) | undefined
-    if (typeof installSkill !== 'function') {
-      throw unavailable('INSTALL_DOWNLOAD_FAILED', this.installHint)
-    }
+  async installSkill(input: InstallSkillInput): Promise<InstallResult> {
+    ensureDefaultProvidersRegistered(this.deps)
     // Maps the CLI input onto core's `InstallSkillOptions`. The transaction
     // re-resolves the revision internally (M15.1), so none is passed here.
-    const options: Record<string, unknown> = {
-      repositoryRoot: this.options.repositoryRoot,
-      provider: input.provider,
+    const options: InstallSkillOptions = { repositoryRoot: this.options.repositoryRoot }
+    if (input.provider !== undefined) {
+      options.provider = input.provider
     }
     if (input.alias !== undefined) {
       options.alias = input.alias
     }
     if (input.targetAgents !== undefined) {
-      options.targetAgents = input.targetAgents
+      options.targetAgents = [...input.targetAgents]
     }
     if (input.allowHighRisk === true) {
       options.allowPolicy = { allowHighRisk: true }
@@ -265,27 +260,14 @@ class InstallServiceAdapter implements InstallService {
     if (input.homeRoot !== undefined) {
       options.homeRoot = input.homeRoot
     }
-    return (await installSkill(input.source, options)) as Awaited<
-      ReturnType<InstallService['installSkill']>
-    >
+    return await this.deps.installSkill(input.source, options)
   }
 
   async updateSkill(input: UpdateSkillInput): Promise<void> {
-    const core = await this.core()
-    const updateSkill = core.updateSkill as
-      ((source: unknown, options: unknown) => unknown) | undefined
-    // `@skillbox/core` exports BOTH a manifest helper `updateSkill(manifest,
-    // alias, patch)` (arity 3) and the install-transaction `updateSkill
-    // (source, options)` (arity 2, M16.2) — the arity check keeps the adapter
-    // from delegating to the wrong function.
-    const isTransactionUpdate = typeof updateSkill === 'function' && updateSkill.length === 2
-    if (!isTransactionUpdate) {
-      throw unavailable(
-        'INSTALL_DOWNLOAD_FAILED',
-        'This build is missing the Core update transaction export. Reinstall or upgrade skillbox.',
-      )
-    }
-    const options: Record<string, unknown> = {
+    ensureDefaultProvidersRegistered(this.deps)
+    // No provider here: core's transaction falls back to
+    // `resolveProvider(source.type)`, which the registration above wires up.
+    const options: UpdateSkillOptions = {
       repositoryRoot: this.options.repositoryRoot,
       alias: input.name,
     }
@@ -295,35 +277,19 @@ class InstallServiceAdapter implements InstallService {
     if (input.homeRoot !== undefined) {
       options.homeRoot = input.homeRoot
     }
-    await updateSkill(input.source, options)
+    await this.deps.updateSkill(input.source, options)
   }
 
   async clearCache(): Promise<{ cleared: number }> {
-    const core = await this.core()
-    const clearCache = core.clearCache as ((homeRoot?: string) => unknown) | undefined
-    if (typeof clearCache !== 'function') {
-      throw unavailable('CACHE_MISS', this.cacheHint)
-    }
-    const buildSkillboxHomeLayout = core.buildSkillboxHomeLayout as
-      ((root: string) => { cache: string }) | undefined
-    const resolveSkillboxHome = core.resolveSkillboxHome as (() => string) | undefined
     // Prefer the CLI's configured home root; fall back to core's resolution
     // (SKILLBOX_HOME env / `~/.skillbox`) when it was left empty.
     const homeRoot =
-      this.options.homeRoot !== ''
-        ? this.options.homeRoot
-        : typeof resolveSkillboxHome === 'function'
-          ? resolveSkillboxHome()
-          : undefined
-    const cacheRoot =
-      typeof buildSkillboxHomeLayout === 'function' && homeRoot !== undefined
-        ? buildSkillboxHomeLayout(homeRoot).cache
-        : undefined
-    const cleared = cacheRoot === undefined ? 0 : await countCacheEntries(cacheRoot)
+      this.options.homeRoot !== '' ? this.options.homeRoot : this.deps.resolveSkillboxHome()
+    const cleared = await countCacheEntries(this.deps.buildSkillboxHomeLayout(homeRoot).cache)
     // The core cache is disposable by design; only clear when something is
     // there, so an empty cache never touches unrelated directories.
-    if (cleared > 0 && homeRoot !== undefined) {
-      await clearCache(homeRoot)
+    if (cleared > 0) {
+      await this.deps.clearCache(homeRoot)
     }
     return { cleared }
   }
@@ -331,37 +297,33 @@ class InstallServiceAdapter implements InstallService {
 
 export function createDefaultInstallService(
   options: { repositoryRoot: string; homeRoot: string },
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  installHint: string = 'This build is missing the Core install transaction export. Reinstall or upgrade skillbox.',
-  cacheHint: string = 'This build is missing the Core cache export; there is nothing to clean.',
+  deps: MarketplaceInstallServiceDeps = defaultMarketplaceInstallServiceDeps,
 ): InstallService {
-  return new InstallServiceAdapter(options, loadCore, installHint, cacheHint)
+  return new InstallServiceAdapter(options, deps)
 }
 
 /* ------------------------------------------------------------------ *
  * Security scanner — @skillbox/core/security
  * ------------------------------------------------------------------ */
 
+export interface MarketplaceSecurityScannerDeps {
+  scanSkillForSecurity: typeof scanSkillForSecurity
+}
+
+export const defaultMarketplaceSecurityScannerDeps: MarketplaceSecurityScannerDeps = {
+  scanSkillForSecurity,
+}
+
 class SecurityScannerAdapter implements SecurityScanner {
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
+  constructor(private readonly deps: MarketplaceSecurityScannerDeps) {}
 
   async scan(directory: string): Promise<SecurityScanResult> {
-    const core = await this.loadCore()
-    const scanSkillForSecurity = core.scanSkillForSecurity as
-      ((skillRoot: string) => unknown) | undefined
-    if (typeof scanSkillForSecurity !== 'function') {
-      throw unavailable('INSTALL_DOWNLOAD_FAILED', this.hint)
-    }
-    return (await scanSkillForSecurity(directory)) as SecurityScanResult
+    return await this.deps.scanSkillForSecurity(directory)
   }
 }
 
 export function createDefaultSecurityScanner(
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'This build is missing the Core security scanner export. Reinstall or upgrade skillbox.',
+  deps: MarketplaceSecurityScannerDeps = defaultMarketplaceSecurityScannerDeps,
 ): SecurityScanner {
-  return new SecurityScannerAdapter(loadCore, hint)
+  return new SecurityScannerAdapter(deps)
 }
