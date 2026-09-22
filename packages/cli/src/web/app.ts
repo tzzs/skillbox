@@ -108,8 +108,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get('/api/skills/:id', async (c) => {
     const id = c.req.param('id')
-    const report = await services.status.status()
-    const skill = report.skills.find((entry) => entry.name === id)
+    const skill = await services.status.skillStatus(id)
     if (skill === undefined) {
       throw new WebApiError(
         'SKILL_NOT_FOUND',
