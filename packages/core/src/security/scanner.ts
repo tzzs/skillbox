@@ -125,10 +125,13 @@ export async function scanSkillForSecurity(
   const maxContentBytes = options.maxContentBytes ?? DEFAULT_SECURITY_MAX_CONTENT_BYTES
 
   const scan = await scanDirectory(skillRoot, ignore === null ? {} : { ignore })
+  // Git internals are scanner noise when the scan root is a raw clone:
+  // sample hooks trip network/exec patterns but are never skill content.
+  const files = scan.files.filter((file) => !/^\.git\//.test(normalizeScannedFile(file)))
   const fileGlobs = compileFileGlobs()
   const findings: SecurityFinding[] = []
 
-  for (const file of scan.files) {
+  for (const file of files) {
     const relative = normalizeScannedFile(file)
     const basename = basenameOf(relative)
 
@@ -174,7 +177,7 @@ export async function scanSkillForSecurity(
   return {
     risk,
     findings,
-    filesScanned: scan.files.length,
+    filesScanned: files.length,
     block: risk === 'high',
   }
 }

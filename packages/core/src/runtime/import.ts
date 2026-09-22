@@ -7,6 +7,7 @@ import {
   addSkill,
   emptyManifest,
   readManifest,
+  setAgents,
   updateSkill,
   writeManifest,
   type ManifestSkill,
@@ -467,6 +468,28 @@ export async function importSkill(
         alias: targetAlias,
         conflicts: [{ ...migration.linkConflict, alias: targetAlias }],
         changed: false,
+      }
+    }
+    // M6.5 — a migrated agent now holds a Skillbox-managed link, so the manifest
+    // must declare it. Otherwise Reconcile reads the link as undeclared and
+    // tears it down on the next run, and the UI reports "no agents" for a
+    // skill the agent is actually running.
+    const linkedAgents = [
+      ...new Set(
+        links
+          .filter((link) => link.action === 'created' || link.action === 'existing')
+          .map((link) => link.agent),
+      ),
+    ]
+    if (linkedAgents.length > 0) {
+      const manifest = await readManifestOrEmpty(request.repositoryRoot)
+      const current = manifest.skills[targetAlias]?.agents ?? []
+      const added = linkedAgents.filter((agent) => !current.includes(agent))
+      if (added.length > 0) {
+        await writeManifest(
+          request.repositoryRoot,
+          setAgents(manifest, targetAlias, [...current, ...added]),
+        )
       }
     }
   }

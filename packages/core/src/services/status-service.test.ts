@@ -3,7 +3,12 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { withTempDir } from '../fs/test-utils.js'
-import { writeManifest, emptyManifest, addSkill } from '../manifest/index.js'
+import {
+  writeManifest,
+  emptyManifest,
+  addSkill,
+  type ManifestSkillSource,
+} from '../manifest/index.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { reconcile } from '../reconcile/engine.js'
@@ -11,7 +16,7 @@ import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { emptyLockfile, createLockedSkill, writeLockfile } from '../lockfile/index.js'
 import { computeSkillIntegrity } from '../integrity/canonical-hash.js'
 import { StatusService } from './status-service.js'
-import { GitClient, remoteCacheKey } from '../git/index.js'
+import { GitClient } from '../git/index.js'
 
 function rawGit(cwd: string, args: string[]): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -56,8 +61,8 @@ describe('StatusService remote sources', () => {
       })
       await writeManifest(repoRoot, manifest)
 
-      const remoteRoot = path.join(dir, 'remotes')
-      const status = new StatusService({ repositoryRoot: repoRoot, remoteRoot })
+      const homeRoot = path.join(dir, 'home')
+      const status = new StatusService({ repositoryRoot: repoRoot, homeRoot })
 
       const before = await status.status()
       const helloBefore = before.skills.find((skill) => skill.name === 'hello')
@@ -73,16 +78,14 @@ describe('StatusService remote sources', () => {
         library,
         linkState,
         git: new GitClient(),
-        remoteRoot,
+        remoteRoot: path.join(dir, 'remotes'),
       })
 
       const after = await status.status()
       const helloAfter = after.skills.find((skill) => skill.name === 'hello')
       expect(helloAfter?.status).toBe('ready')
       expect(helloAfter?.mode).toBe('managed')
-      expect(helloAfter?.path).toBe(
-        path.join(remoteRoot, remoteCacheKey(remote), 'skills', 'hello'),
-      )
+      expect(helloAfter?.path).toBe(path.join(layout.library, 'managed', 'hello'))
       expect(helloAfter?.integrity).toMatch(/^sha256:[0-9a-f]{64}$/)
     })
   }, 30000)
@@ -99,7 +102,7 @@ describe('StatusService remote sources', () => {
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot: path.join(dir, 'remotes'),
+        homeRoot: path.join(dir, 'home'),
       })
       const report = await status.status()
       const hello = report.skills.find((skill) => skill.name === 'hello')
@@ -127,14 +130,19 @@ describe('StatusService remote sources', () => {
 })
 
 describe('StatusService outdated detection (M16.1)', () => {
-  /** Seeds a materialized mirror for a github source at `remoteRoot`. */
-  async function seedGithubMirror(
+  /** Seeds the materialized managed runtime for a github source under `homeRoot`. */
+  async function seedManagedRuntime(
     repoRoot: string,
-    remoteRoot: string,
-    options: { lockedRevision?: string; lockedIntegrity?: string; latestRevision?: string } = {},
-  ): Promise<{ mirrorDir: string; integrity: string }> {
-    const source = {
-      type: 'github' as const,
+    homeRoot: string,
+    options: {
+      lockedRevision?: string
+      lockedIntegrity?: string
+      latestRevision?: string
+      source?: ManifestSkillSource
+    } = {},
+  ): Promise<{ runtimeDir: string; integrity: string }> {
+    const source: ManifestSkillSource = options.source ?? {
+      type: 'github',
       repo: 'acme/skillz',
       path: 'skills/hello',
       ref: 'main',
@@ -142,15 +150,10 @@ describe('StatusService outdated detection (M16.1)', () => {
     const manifest = addSkill(emptyManifest(), 'hello', { source, agents: ['claude'] })
     await writeManifest(repoRoot, manifest)
 
-    const mirrorDir = path.join(
-      remoteRoot,
-      remoteCacheKey('https://github.com/acme/skillz.git'),
-      'skills',
-      'hello',
-    )
-    await fs.mkdir(mirrorDir, { recursive: true })
-    await fs.writeFile(path.join(mirrorDir, 'SKILL.md'), '# hello', 'utf8')
-    const integrity = await computeSkillIntegrity(mirrorDir)
+    const runtimeDir = path.join(homeRoot, 'library', 'managed', 'hello')
+    await fs.mkdir(runtimeDir, { recursive: true })
+    await fs.writeFile(path.join(runtimeDir, 'SKILL.md'), '# hello', 'utf8')
+    const integrity = await computeSkillIntegrity(runtimeDir)
 
     const lockfile = emptyLockfile()
     const locked = createLockedSkill({
@@ -168,19 +171,19 @@ describe('StatusService outdated detection (M16.1)', () => {
     }
     lockfile.skills.hello = locked
     await writeLockfile(repoRoot, lockfile)
-    return { mirrorDir, integrity }
+    return { runtimeDir, integrity }
   }
 
   it('marks a managed skill outdated when the latest upstream revision differs from the locked one', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
-      await seedGithubMirror(repoRoot, remoteRoot)
+      await seedManagedRuntime(repoRoot, homeRoot)
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot,
+        homeRoot,
         provider: { getLatestRevision: async () => 'new-sha' },
       })
       const report = await status.status()
@@ -193,13 +196,13 @@ describe('StatusService outdated detection (M16.1)', () => {
   it('keeps a managed skill ready when the latest revision equals the locked one', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
-      await seedGithubMirror(repoRoot, remoteRoot, { lockedRevision: 'same-sha' })
+      await seedManagedRuntime(repoRoot, homeRoot, { lockedRevision: 'same-sha' })
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot,
+        homeRoot,
         provider: { getLatestRevision: async () => 'same-sha' },
       })
       const report = await status.status()
@@ -212,27 +215,55 @@ describe('StatusService outdated detection (M16.1)', () => {
   it('falls back to the lockfile upstream.latestRevision when no provider is wired', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
-      await seedGithubMirror(repoRoot, remoteRoot, { latestRevision: 'new-sha' })
+      await seedManagedRuntime(repoRoot, homeRoot, { latestRevision: 'new-sha' })
 
-      const status = new StatusService({ repositoryRoot: repoRoot, remoteRoot })
+      const status = new StatusService({ repositoryRoot: repoRoot, homeRoot })
       const report = await status.status()
       const hello = report.skills.find((skill) => skill.name === 'hello')
       expect(hello?.status).toBe('outdated')
     })
   })
 
+  it('maps git sources onto the provider for outdated detection', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      await fs.mkdir(repoRoot)
+      await seedManagedRuntime(repoRoot, homeRoot, {
+        source: { type: 'git', url: 'https://git.example.com/org/repo.git' },
+        latestRevision: 'new-sha',
+      })
+
+      const seen: unknown[] = []
+      const status = new StatusService({
+        repositoryRoot: repoRoot,
+        homeRoot,
+        provider: {
+          getLatestRevision: async (source) => {
+            seen.push(source)
+            return 'new-sha'
+          },
+        },
+      })
+      const report = await status.status()
+      const hello = report.skills.find((skill) => skill.name === 'hello')
+      expect(hello?.status).toBe('outdated')
+      expect(seen[0]).toMatchObject({ type: 'git', url: 'https://git.example.com/org/repo.git' })
+    })
+  })
+
   it('prefers a live provider over the recorded latestRevision', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
-      await seedGithubMirror(repoRoot, remoteRoot, { latestRevision: 'stale-recording' })
+      await seedManagedRuntime(repoRoot, homeRoot, { latestRevision: 'stale-recording' })
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot,
+        homeRoot,
         provider: { getLatestRevision: async () => 'live-sha' },
       })
       const report = await status.status()
@@ -245,16 +276,16 @@ describe('StatusService outdated detection (M16.1)', () => {
   it('reports modified (integrity mismatch) instead of outdated', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
       // Locked integrity differs from the on-disk mirror content.
-      await seedGithubMirror(repoRoot, remoteRoot, {
+      await seedManagedRuntime(repoRoot, homeRoot, {
         lockedIntegrity: `sha256:${'a'.repeat(64)}`,
       })
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot,
+        homeRoot,
         provider: { getLatestRevision: async () => 'new-sha' },
       })
       const report = await status.status()
@@ -266,13 +297,13 @@ describe('StatusService outdated detection (M16.1)', () => {
   it('keeps the status ready when the registry lookup fails', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')
-      const remoteRoot = path.join(dir, 'remotes')
+      const homeRoot = path.join(dir, 'home')
       await fs.mkdir(repoRoot)
-      await seedGithubMirror(repoRoot, remoteRoot)
+      await seedManagedRuntime(repoRoot, homeRoot)
 
       const status = new StatusService({
         repositoryRoot: repoRoot,
-        remoteRoot,
+        homeRoot,
         provider: {
           getLatestRevision: async () => {
             throw new Error('registry down')

@@ -225,9 +225,29 @@ function parseGitExpression(input: string, expression: string): NormalizedSource
   if (url.length === 0) {
     throw invalidSource(input, 'expected git:<url>')
   }
+  // `git:<url>[@<skill path>][#<ref>]` — the optional skill subdirectory is
+  // what follows the last `@`. The split only applies when the part before
+  // the `@` looks like a URL with a host path (a `/` after the scheme), and
+  // the part after it has no `:` (scp-style `git@host:repo` stays one URL,
+  // as do authenticated `https://token@host/...` URLs).
+  const lastAtIndex = url.lastIndexOf('@')
+  let skillPath: string | undefined
+  if (lastAtIndex !== -1) {
+    const before = url.slice(0, lastAtIndex)
+    const after = url.slice(lastAtIndex + 1)
+    const schemeEnd = before.indexOf('://')
+    const hasHostPath = before.includes('/', schemeEnd === -1 ? 0 : schemeEnd + 3)
+    if (hasHostPath && after.length > 0 && !after.includes(':')) {
+      if (after.split(/[\\/]/).includes('..')) {
+        throw invalidSource(input, 'skill path must not contain ".." segments')
+      }
+      skillPath = after
+    }
+  }
   return {
     type: 'git',
-    url,
+    url: skillPath === undefined ? url : url.slice(0, lastAtIndex),
+    ...(skillPath === undefined ? {} : { path: skillPath.replace(/\\/g, '/') }),
     ...(ref !== undefined ? { ref } : {}),
   }
 }
@@ -331,6 +351,7 @@ export function sourceToString(source: NormalizedSource): string {
     }
     case 'git': {
       let value = `git:${source.url}`
+      if (source.path !== undefined) value += `@${source.path}`
       if (source.ref !== undefined) value += `#${source.ref}`
       return value
     }
