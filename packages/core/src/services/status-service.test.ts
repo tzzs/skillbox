@@ -3,7 +3,12 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { withTempDir } from '../fs/test-utils.js'
-import { writeManifest, emptyManifest, addSkill, type ManifestSkillSource } from '../manifest/index.js'
+import {
+  writeManifest,
+  emptyManifest,
+  addSkill,
+  type ManifestSkillSource,
+} from '../manifest/index.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { reconcile } from '../reconcile/engine.js'

@@ -221,12 +221,7 @@ export class StatusService {
       return entry
     }
 
-    const runtimeDir = path.join(
-      this.homeRoot,
-      'library',
-      RUNTIME_MODE_DIRECTORIES.managed,
-      alias,
-    )
+    const runtimeDir = path.join(this.homeRoot, 'library', RUNTIME_MODE_DIRECTORIES.managed, alias)
     if (!(await this.isDirectory(runtimeDir))) {
       entry.message = 'remote skill not materialized (run "skillbox install")'
       return entry
