@@ -42,8 +42,9 @@ import type {
  * `installSkill` / `updateSkill` / `clearCache`, `scanSkillForSecurity`,
  * `buildSkillboxHomeLayout` / `resolveSkillboxHome`), so a renamed or dropped
  * export is a build failure here rather than a runtime "this build is missing
- * the Core X export" guess. The CLI contracts in `./types.js` are structural
- * copies of core's, so the adapters mostly hand values straight through.
+ * the Core X export" guess. `./types.js` re-exports core's data shapes and adds
+ * the CLI's own request/view contracts, so these adapters mostly hand values
+ * straight through.
  *
  * Each factory takes a `deps` object with one field per core function it
  * calls; production (see `program.ts`) uses the exported defaults, and focused

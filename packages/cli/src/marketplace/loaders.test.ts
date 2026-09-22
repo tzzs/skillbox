@@ -52,7 +52,7 @@ function providerDouble(
   }
 }
 
-/** A complete core `InstallResult` (what the CLI contract copies). */
+/** A complete core `InstallResult` — the CLI contract is this same type. */
 function coreInstallResult(
   source: CoreNormalizedSource,
   overrides: Partial<CoreInstallResult> = {},
