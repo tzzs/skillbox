@@ -353,9 +353,22 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
 - ✅ 保留 DI seam：每个工厂收一个只含所用 core 函数的窄 `deps` 参数（默认真实实现），
   聚焦测试注入 fake 且 fake 必须返回 core 的真实结果形状（旧写法里 `upstream.baseRevision`
   这类幻觉字段会直接编译失败）
+- ✅ 已清：CLI 侧的 core 类型副本已收敛，两处 `*/types.ts` 改为导入 core 的形状。
+  `marketplace/types.ts` 直接再导出（`NormalizedSource` 与四个变体、
+  `RegistrySearchResult`、`ResolvedSource`、`Security*`、`InstallResult`、
+  `RegistryProvider`），导出名集合不变所以没有一处 import 需要改；
+  `skill-lifecycle/types.ts` 用别名复用 merge / diff 的结果形状
+  （`MergeSkillResult` → `MergeResult` 等）。副本确实已经漂移过两次：CLI 的
+  `RegistrySourceType` 少了 `'git'`（`format.ts` 与 core provider 都在按它分派），
+  CLI 的 `DiffFile.status` 多了 core 从不产出的 `'renamed'`（渲染器只是
+  `status.toUpperCase()`，所以那个分支根本到不了）。留下的是真正属于 CLI 的东西：
+  DI 契约、扁平化的请求形状，以及刻意收窄的视图（`localPath` ← `repositoryPath`；
+  fork/vendor 事务要么同时改写 manifest + lock 要么整体回滚，故那两个 flag 恒为
+  true；diff 只承载 managed / forked 这两种有 upstream 的 mode）
+- ✅ 顺带清掉方向反了的注释：core 的 merge / diff 结果原本写着「mirror of the
+  CLI's `X`」——core 是被依赖的一边，不该引用 CLI 的名字
 - 残留：`SyncService.connect/disconnect` 保留为 legacy fallback（生产默认路径已走
-  RepositorySync）；CLI `*/types.ts` 仍是 core 类型的结构性副本，若要合并需一并处理
-  `format.ts` / `service.ts` / web 渲染层，属独立一步
+  RepositorySync）
 - 附带修复：`git commit` 的空提交结果只在 stdout，core 失败错误此前只带 stderr，
   导致 `nothing to commit` 永远识别不了；现在 `context.stdout` 一并暴露，适配器据此判定
 
