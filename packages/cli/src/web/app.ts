@@ -5,6 +5,7 @@ import {
   BackupService,
   defaultEventBus,
   parseAdHocHost,
+  PersonalLibraryService,
   runDoctor,
   withRuntimeLock,
   type ConflictResolution,
@@ -13,6 +14,7 @@ import {
   type FleetOperationName,
   type FleetRunOptions,
   type FleetSkillTarget,
+  type RepositoryStatus,
   type RuntimeConfig,
   type RollbackResult,
   type SyncConflict,
@@ -20,6 +22,7 @@ import {
   type SyncSnapshot,
 } from '@skillbox/core'
 import type {
+  AdoptResponse,
   AgentsResponse,
   ConflictResponse,
   ConflictsResponse,
@@ -67,6 +70,44 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   const app = new Hono()
 
+  // Short-TTL cache for the O(N) full-status report: the Library fires
+  // /api/skills + /api/status together (React StrictMode doubles them in
+  // dev), so sharing one computation per window keeps big libraries snappy.
+  // Every non-GET request invalidates it, so mutations are never stale.
+  const STATUS_CACHE_TTL_MS = 1_500
+  let cachedStatus: { at: number; value: RepositoryStatus } | null = null
+  let cachedStatusInFlight: Promise<RepositoryStatus> | null = null
+  const getCachedStatus = async (): Promise<RepositoryStatus> => {
+    const now = Date.now()
+    if (cachedStatus !== null && now - cachedStatus.at < STATUS_CACHE_TTL_MS) {
+      return cachedStatus.value
+    }
+    if (cachedStatusInFlight !== null) {
+      return cachedStatusInFlight
+    }
+    const inFlight = services.status
+      .status()
+      .then((value) => {
+        cachedStatus = { at: Date.now(), value }
+        return value
+      })
+      .finally(() => {
+        cachedStatusInFlight = null
+      })
+    cachedStatusInFlight = inFlight
+    return inFlight
+  }
+  const invalidateStatusCache = (): void => {
+    cachedStatus = null
+  }
+
+  app.use('/api/*', async (c, next) => {
+    await next()
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      invalidateStatusCache()
+    }
+  })
+
   app.onError((error, c) => {
     const api = toApiError(error)
     return c.json(api.body, toStatusCode(api.status))
@@ -84,7 +125,7 @@ export function createWebApp(options: WebAppOptions): Hono {
   })
 
   app.get('/api/skills', async (c) => {
-    const report = await services.status.status()
+    const report = await getCachedStatus()
     return c.json<SkillsResponse>({ skills: report.skills })
   })
 
@@ -124,7 +165,7 @@ export function createWebApp(options: WebAppOptions): Hono {
   })
 
   app.get('/api/status', async (c) => {
-    const report = await services.status.status()
+    const report = await getCachedStatus()
     return c.json(report)
   })
 
@@ -218,6 +259,22 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const reconcile = await services.skills.install()
       return c.json<ReconcileResponse>({ reconcile })
+    })
+  })
+
+  /**
+   * V0.5 personal library — adopts every detected agent's external skills
+   * into `<home>/personal`. Idempotent: already-imported skills report
+   * `unchanged`, divergent copies surface as skipped conflicts.
+   */
+  app.post('/api/library/adopt', async (c) => {
+    return mutation(services, async () => {
+      const library = new PersonalLibraryService({
+        homeRoot: services.homeRoot,
+        registry: services.registry,
+      })
+      const report = await library.adopt()
+      return c.json<AdoptResponse>({ report }, 201)
     })
   })
 

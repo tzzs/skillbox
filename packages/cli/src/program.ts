@@ -11,6 +11,7 @@ import {
   ErrorCode,
   isSkillboxError,
   Logger,
+  PersonalLibraryService,
   RuntimeConfigService,
   migrateRepository,
   readLockfile,
@@ -656,6 +657,37 @@ export function buildProgram(ctx: CliContext): Command {
           `  skills   ${report.skills.length}\n  problems ${report.problems.length}\n  changed  ${report.changed ? 'yes' : 'no'}\n`,
         )
         reportProblems(ctx, report.problems)
+      }),
+    )
+
+  program
+    .command('adopt')
+    .description(
+      'Adopt existing agent skills into the personal library (<home>/personal); idempotent',
+    )
+    .option('--json', 'emit JSON instead of human-readable output')
+    .action(async (options: { json?: boolean }) =>
+      mutation(ctx, 'adopt', async () => {
+        const library = new PersonalLibraryService({
+          homeRoot: ctx.homeRoot,
+          registry: ctx.registry,
+        })
+        const report = await library.adopt()
+        if (options.json === true) {
+          printJson(ctx.out, report)
+          return
+        }
+        ctx.out(`Personal library: ${library.root()}\n`)
+        ctx.out(
+          `  scanned   ${report.scanned}\n` +
+            `  imported  ${report.imported}\n` +
+            `  unchanged ${report.unchanged}\n` +
+            `  conflicts ${report.conflicts}\n` +
+            `  skipped   ${report.skipped.length}\n`,
+        )
+        for (const skip of report.skipped) {
+          ctx.out(`  - ${skip.name} (${skip.agents.join(', ') || 'no agent'}): ${skip.reason}\n`)
+        }
       }),
     )
 
@@ -1344,8 +1376,34 @@ export function buildProgram(ctx: CliContext): Command {
       configFilePath: path.join(ctx.homeRoot, 'config.json'),
     }).load()
     const configuredWeb = configured.web ?? {}
+
+    // V0.5 personal library: without an explicit repository (flag or config)
+    // and a cwd manifest, the Web UI targets the machine-centric personal
+    // library at <home>/personal — creating it and adopting every detected
+    // agent skill on first run, so the tool opens populated instead of empty.
+    const explicitRoot = options.repositoryRoot ?? configured.repository
+    let repositoryRoot = explicitRoot ?? ctx.repositoryRoot
+    let personalNote: string | undefined
+    if (explicitRoot === undefined) {
+      const cwdManifestExists = await fs.stat(path.join(process.cwd(), 'skillbox.yaml')).then(
+        () => true,
+        () => false,
+      )
+      if (!cwdManifestExists) {
+        const library = new PersonalLibraryService({
+          homeRoot: ctx.homeRoot,
+          registry: ctx.registry,
+        })
+        repositoryRoot = await library.ensureLibrary()
+        if (await library.isEmpty()) {
+          const report = await library.adopt()
+          personalNote = `  adopt  ${report.imported} imported, ${report.unchanged} unchanged, ${report.conflicts} conflicts, ${report.skipped.length} skipped`
+        }
+      }
+    }
+
     const started = await startWebServer({
-      repositoryRoot: options.repositoryRoot ?? configured.repository ?? ctx.repositoryRoot,
+      repositoryRoot,
       homeRoot: ctx.homeRoot,
       registry: ctx.registry,
       ...(options.port === undefined
@@ -1366,6 +1424,9 @@ export function buildProgram(ctx: CliContext): Command {
       out: ctx.out,
       err: ctx.err,
     })
+    if (personalNote !== undefined) {
+      ctx.out(`${personalNote}\n`)
+    }
     await new Promise<void>((resolve) => {
       const shutdown = (): void => {
         void started.close().then(() => resolve())
