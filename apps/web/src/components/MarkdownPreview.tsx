@@ -50,6 +50,7 @@ function renderBlocks(source: string): ReactNode[] {
       const content = renderInline(heading[2] as string)
       const Tag = `h${Math.min(level + 1, 6)}` as 'h2'
       blocks.push(<Tag key={key++}>{content}</Tag>)
+      index += 1
       continue
     }
 
