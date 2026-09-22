@@ -135,7 +135,9 @@ interface Harness {
   out(): string
 }
 
-function harness(): Harness {
+function harness(
+  options: { managedPathExists?: (relative: string) => Promise<boolean> } = {},
+): Harness {
   const chunks: string[] = []
   const git = new FakeGitProvider()
   const github = new FakeGitHubProvider()
@@ -153,6 +155,9 @@ function harness(): Harness {
     sleep: async (ms) => {
       sleeps.push(ms)
     },
+    // The fake repository root is a Windows-style path that does not exist, so
+    // the owned-path probe is injected rather than read from disk.
+    managedPathExists: options.managedPathExists ?? (async () => true),
   })
   return { sync, git, github, secrets, sleeps, out: () => chunks.join('') }
 }
@@ -178,6 +183,32 @@ describe('SyncService.sync', () => {
     expect(h.secrets.scanned[0]).toEqual(['skills/foo/SKILL.md', 'skillbox.lock'])
     expect(h.git.commits[0]?.paths).toContain('skillbox.yaml')
     expect(h.git.commits[0]?.paths).toContain('skillbox.lock')
+  })
+
+  it('stages only the owned paths that exist in the repository', async () => {
+    // `git add -- <pathspec>` fails the whole staging when one pattern matches
+    // nothing, so a repository without `skills/` yet must not be handed it.
+    const h = harness({
+      managedPathExists: async (relative) =>
+        relative === 'skillbox.yaml' || relative === 'skillbox.lock',
+    })
+    const result = await h.sync.sync()
+
+    expect(h.git.commits[0]?.paths).toEqual(['skillbox.yaml', 'skillbox.lock'])
+    expect(result.steps.find((step) => step.step === 'commit')?.status).toBe('ok')
+    expect(result.committed).toBe(true)
+  })
+
+  it('skips the commit when none of the owned paths exist', async () => {
+    const h = harness({ managedPathExists: async () => false })
+    const result = await h.sync.sync()
+
+    expect(h.git.commits).toEqual([])
+    expect(result.committed).toBe(false)
+    expect(result.steps.find((step) => step.step === 'commit')).toMatchObject({
+      status: 'skipped',
+      detail: 'no skillbox changes to commit',
+    })
   })
 
   it('skips the secret scan when the engine is not wired', async () => {
