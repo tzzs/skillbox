@@ -1,11 +1,21 @@
-import { type SkillboxErrorCode } from '@skillbox/core'
 import {
-  asRecord,
-  coreExportUnavailable as unavailable,
-  loadSkillboxCore,
-  readString,
-  type CoreModuleLoader,
-} from '../core-module.js'
+  abortMerge,
+  continueMerge,
+  detectManagedModifications,
+  diffSkill,
+  ErrorCode,
+  forkSkill,
+  mergeSkill,
+  restoreManagedSkill,
+  SkillboxError,
+  vendorSkill,
+  type ForkSkillResult,
+  type ManifestSkillSource,
+  type RestoreManagedSkillResult,
+  type SkillMode,
+  type SkillboxErrorCode,
+  type VendorSkillResult,
+} from '@skillbox/core'
 import type {
   AbortMergeResult,
   ContinueMergeResult,
@@ -25,136 +35,121 @@ import type {
 /**
  * V0.4 Skill Lifecycle — default provider loaders (CLI layer).
  *
- * Follows the V0.2 sync (`./sync/loaders.js`) and V0.3 marketplace
- * (`./marketplace/loaders.js`) convention: the CLI defines the contracts in
- * `./types.js` and adapts the core modules onto them at runtime through a
- * dynamic import. A build missing an expected export fails with a typed
- * SkillboxError and recovery hint instead of crashing.
+ * The CLI defines the contracts in `./types.js`; the adapters below call the
+ * `@skillbox/core` exports through their real, statically imported signatures.
+ * Core and CLI ship in the same build, so a renamed or dropped export is a
+ * compile failure here rather than a runtime "this build is missing the
+ * lifecycle export" guess — and the only errors these adapters raise are the
+ * ones core throws, which propagate unchanged.
+ *
+ * Each factory takes a `deps` object with one field per core function it
+ * calls, defaulting to the real core functions: production (`../program.js`)
+ * calls them with no arguments, focused tests pass fakes that return real core
+ * result shapes.
  *
  * Current mapping onto `@skillbox/core`:
  * - `forkSkill(alias, options)`                  (lifecycle/fork.js)
  * - `vendorSkill(alias, options)`                (lifecycle/vendor.js)
  * - `detectManagedModifications(alias, options)` (lifecycle/modification.js;
- *   returns `boolean`, the CLI contract's `{ modified, files? }` is derived)
+ *   returns `boolean`, the CLI contract's `{ name, modified }` is derived)
  * - `restoreManagedSkill(alias, options)`        (lifecycle/restore.js)
  * - `diffSkill` / `mergeSkill` / `continueMerge` / `abortMerge`
  *                                                (diff/ and merge/)
  */
 
-/** Re-exported so focused wiring tests keep importing the type from here. */
-export type { CoreModuleLoader }
-
 /**
- * CLI-level error codes until agents 1/2 land matching entries in
- * `@skillbox/core`'s ErrorCode. The casts keep the loader typed; the
- * exit-code mapping (`./exit-codes.js`) is a `Set<string>`, so the codes work
- * before core defines them. TODO(lifecycle): drop the casts once core ships
- * `LIFECYCLE_UNAVAILABLE` / `MERGE_CONFLICT` (or the adapters switch to the
- * codes the core modules actually throw).
+ * CLI-level error codes: core's ErrorCode defines neither of them, and the
+ * exit-code mapping (`../exit-codes.js`) is a `Set<string>`, so the cast keeps
+ * them typed. TODO(lifecycle): drop the casts once core ships
+ * `LIFECYCLE_UNAVAILABLE` / `MERGE_CONFLICT`.
  */
-const LIFECYCLE_UNAVAILABLE = 'LIFECYCLE_UNAVAILABLE' as SkillboxErrorCode
 export const MERGE_CONFLICT_CODE = 'MERGE_CONFLICT' as SkillboxErrorCode
-/** CLI-level code thrown while the core lifecycle modules are in flight. */
-export const LIFECYCLE_UNAVAILABLE_CODE = LIFECYCLE_UNAVAILABLE
+/** Code the service layer wraps non-Skillbox lifecycle failures in. */
+export const LIFECYCLE_UNAVAILABLE_CODE = 'LIFECYCLE_UNAVAILABLE' as SkillboxErrorCode
 
-/** Options passed to every core lifecycle call; built once per input. */
-function coreOptions(input: {
+/** Options built once per input and handed to every core call. */
+function coreOptions(input: { repositoryRoot: string; homeRoot?: string }): {
   repositoryRoot: string
   homeRoot?: string
-}): Record<string, unknown> {
-  const options: Record<string, unknown> = { repositoryRoot: input.repositoryRoot }
-  if (input.homeRoot !== undefined) {
-    options.homeRoot = input.homeRoot
+} {
+  return {
+    repositoryRoot: input.repositoryRoot,
+    ...(input.homeRoot !== undefined ? { homeRoot: input.homeRoot } : {}),
   }
-  return options
 }
 
 /* ------------------------------------------------------------------ *
- * Structural result mapping — tolerates both the landed core shapes
- * (`repositoryPath`, `upstream` object, boolean detection) and the CLI
- * contract shapes, so the adapters keep working while agents 1/2 tune
- * their result objects.
+ * Result mapping — core's landed shapes onto the CLI contracts
  * ------------------------------------------------------------------ */
 
-/** Canonical display form of an upstream source (SPEC §23). */
-function formatUpstreamSource(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.length > 0) {
-    return value
-  }
-  const record = asRecord(value)
-  if (record === undefined) {
-    return undefined
-  }
-  switch (readString(record, 'type')) {
-    case 'github': {
-      const repo = readString(record, 'repo')
-      if (repo === undefined) {
-        return undefined
-      }
-      const skillPath = readString(record, 'path')
-      return `github:${repo}${skillPath !== undefined ? `@${skillPath}` : ''}`
-    }
+/**
+ * Canonical display form of an upstream source (SPEC §23). The exhaustive
+ * switch over core's source union keeps every variant's string form in one
+ * place: a new source type in core is a compile error here.
+ */
+function formatUpstreamSource(source: ManifestSkillSource): string {
+  switch (source.type) {
+    case 'github':
+      return source.path !== undefined
+        ? `github:${source.repo}@${source.path}`
+        : `github:${source.repo}`
     case 'git':
-      return readString(record, 'url')
-    case 'registry': {
-      const registry = readString(record, 'registry')
-      const pkg = readString(record, 'package')
-      return registry !== undefined && pkg !== undefined ? `${registry}:${pkg}` : undefined
-    }
+      return source.url
+    case 'registry':
+      return `${source.registry}:${source.package}`
     case 'local':
-      return readString(record, 'path')
-    default:
-      return undefined
+      return source.path
   }
 }
 
-function mapForkResult(raw: unknown, name: string): ForkResult {
-  const record = asRecord(raw)
-  const result: ForkResult = {
-    alias: readString(record, 'alias') ?? name,
+function mapForkResult(result: ForkSkillResult): ForkResult {
+  return {
+    alias: result.alias,
     mode: 'forked',
-    localPath: readString(record, 'repositoryPath') ?? readString(record, 'localPath') ?? '',
-    baseRevision: readString(record, 'baseRevision') ?? '',
-    // Core transactions always write both files; the contract fields exist
-    // for fake providers / future shapes that report partial writes.
-    manifestChanged: record?.manifestChanged !== false,
-    lockfileChanged: record?.lockfileChanged !== false,
+    localPath: result.repositoryPath,
+    upstreamSource: formatUpstreamSource(result.upstream),
+    baseRevision: result.baseRevision,
+    materializedPath: result.absolutePath,
+    // A fork transaction rewrites both files or rolls the whole run back.
+    manifestChanged: true,
+    lockfileChanged: true,
   }
-  const upstreamSource = formatUpstreamSource(record?.upstream)
-  if (upstreamSource !== undefined) {
-    result.upstreamSource = upstreamSource
-  }
-  const materializedPath = readString(record, 'absolutePath')
-  if (materializedPath !== undefined) {
-    result.materializedPath = materializedPath
-  }
-  return result
 }
 
-function mapVendorResult(raw: unknown, name: string): VendorResult {
-  const record = asRecord(raw)
+function mapVendorResult(result: VendorSkillResult): VendorResult {
   return {
-    alias: readString(record, 'alias') ?? name,
+    alias: result.alias,
     mode: 'vendored',
-    localPath: readString(record, 'repositoryPath') ?? readString(record, 'localPath') ?? '',
-    // Vendoring always drops upstream tracking; `fromFork` (landed core) only
-    // says whether a fork existed before.
-    upstreamCleared: record?.upstreamCleared !== false,
-    manifestChanged: record?.manifestChanged !== false,
-    lockfileChanged: record?.lockfileChanged !== false,
+    localPath: result.repositoryPath,
+    // Vendoring always drops the upstream block from manifest + lockfile;
+    // `fromFork` only reports whether the skill was a fork before.
+    upstreamCleared: true,
+    manifestChanged: true,
+    lockfileChanged: true,
   }
 }
 
-function mapModifications(raw: unknown, name: string): ManagedModifications {
-  if (typeof raw === 'boolean') {
-    // Landed core shape: `detectManagedModifications` returns `boolean`.
-    return { name, modified: raw }
-  }
-  const record = asRecord(raw)
-  return {
-    name,
-    modified: record?.modified === true,
-    ...(Array.isArray(record?.files) ? { files: record.files as string[] } : {}),
+function mapRestoreResult(result: RestoreManagedSkillResult): RestoreResult {
+  return { name: result.alias, filesRestored: result.filesRestored }
+}
+
+/**
+ * The modes `diffSkill` builds views for. Core types the result mode as the
+ * full `SkillMode` but rejects `local`/`vendored` with
+ * DIFF_UPSTREAM_UNAVAILABLE before returning; the CLI contract carries only
+ * the two diffable modes.
+ */
+function mapDiffMode(mode: SkillMode): 'managed' | 'forked' {
+  switch (mode) {
+    case 'managed':
+    case 'forked':
+      return mode
+    case 'local':
+    case 'vendored':
+      throw new SkillboxError(
+        ErrorCode.DIFF_UPSTREAM_UNAVAILABLE,
+        `Skill mode "${mode}" has no upstream to diff`,
+      )
   }
 }
 
@@ -162,36 +157,30 @@ function mapModifications(raw: unknown, name: string): ManagedModifications {
  * Lifecycle provider — @skillbox/core/lifecycle
  * ------------------------------------------------------------------ */
 
+/** Core lifecycle functions the provider calls; replaceable in tests. */
+export interface LifecycleCoreDeps {
+  forkSkill: typeof forkSkill
+  vendorSkill: typeof vendorSkill
+  detectManagedModifications: typeof detectManagedModifications
+  restoreManagedSkill: typeof restoreManagedSkill
+}
+
+const defaultLifecycleCore: LifecycleCoreDeps = {
+  forkSkill,
+  vendorSkill,
+  detectManagedModifications,
+  restoreManagedSkill,
+}
+
 class LifecycleProviderAdapter implements LifecycleProvider {
-  private modulePromise?: Promise<Record<string, unknown>>
-
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  private async core(): Promise<Record<string, unknown>> {
-    this.modulePromise ??= this.loadCore()
-    return this.modulePromise
-  }
+  constructor(private readonly deps: LifecycleCoreDeps) {}
 
   async forkSkill(input: ForkSkillInput): Promise<ForkResult> {
-    const core = await this.core()
-    const forkSkill = core.forkSkill as ((name: string, options: unknown) => unknown) | undefined
-    if (typeof forkSkill !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    return mapForkResult(await forkSkill(input.name, coreOptions(input)), input.name)
+    return mapForkResult(await this.deps.forkSkill(input.name, coreOptions(input)))
   }
 
   async vendorSkill(input: VendorSkillInput): Promise<VendorResult> {
-    const core = await this.core()
-    const vendorSkill = core.vendorSkill as
-      ((name: string, options: unknown) => unknown) | undefined
-    if (typeof vendorSkill !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    return mapVendorResult(await vendorSkill(input.name, coreOptions(input)), input.name)
+    return mapVendorResult(await this.deps.vendorSkill(input.name, coreOptions(input)))
   }
 
   async detectManagedModifications(input: {
@@ -199,162 +188,103 @@ class LifecycleProviderAdapter implements LifecycleProvider {
     repositoryRoot: string
     homeRoot?: string
   }): Promise<ManagedModifications> {
-    const core = await this.core()
-    const detect = core.detectManagedModifications as
-      ((name: string, options: unknown) => unknown) | undefined
-    if (typeof detect !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    // Landed core takes `(alias, { repositoryRoot, homeRoot? })` and returns a
-    // bare boolean; the CLI contract derives `{ modified, files? }` from it.
-    return mapModifications(await detect(input.name, coreOptions(input)), input.name)
+    // Core reports a bare boolean; the CLI contract names the skill with it.
+    const modified = await this.deps.detectManagedModifications(input.name, coreOptions(input))
+    return { name: input.name, modified }
   }
 
   async restoreManagedSkill(input: {
     name: string
     repositoryRoot: string
   }): Promise<RestoreResult> {
-    const core = await this.core()
-    const restore = core.restoreManagedSkill as
-      ((name: string, options: unknown) => unknown) | undefined
-    if (typeof restore !== 'function') {
-      throw unavailable(
-        LIFECYCLE_UNAVAILABLE,
-        'Restore is not available in this build yet — the "[Restore]" action of ' +
-          '`skillbox edit` lands with the V0.4 lifecycle module. Convert the skill to ' +
-          'a fork instead (your local changes are kept), or reinstall the runtime with ' +
-          '`skillbox install`.',
-      )
-    }
-    // Core returns `{ alias, filesRestored, ... }`; the CLI contract only
-    // carries `{ name, filesRestored }` (the outcome name comes from the input).
-    const raw = await restore(input.name, { repositoryRoot: input.repositoryRoot })
-    const record = asRecord(raw)
-    return {
-      name: input.name,
-      filesRestored: typeof record?.filesRestored === 'number' ? record.filesRestored : 0,
-    }
+    return mapRestoreResult(await this.deps.restoreManagedSkill(input.name, coreOptions(input)))
   }
 }
 
 export function createDefaultLifecycleProvider(
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The V0.4 lifecycle module is not available in this build yet — ' +
-    '`skillbox fork` / `skillbox vendor` / `skillbox edit` land with the lifecycle ' +
-    'milestone. Try again after it ships.',
+  deps: LifecycleCoreDeps = defaultLifecycleCore,
 ): LifecycleProvider {
-  return new LifecycleProviderAdapter(loadCore, hint)
+  return new LifecycleProviderAdapter(deps)
 }
 
 /* ------------------------------------------------------------------ *
  * Diff provider — @skillbox/core/diff
  * ------------------------------------------------------------------ */
 
+/** Core diff functions the provider calls; replaceable in tests. */
+export interface DiffCoreDeps {
+  diffSkill: typeof diffSkill
+}
+
+const defaultDiffCore: DiffCoreDeps = { diffSkill }
+
 class DiffProviderAdapter implements DiffProvider {
-  private modulePromise?: Promise<Record<string, unknown>>
-
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  private async core(): Promise<Record<string, unknown>> {
-    this.modulePromise ??= this.loadCore()
-    return this.modulePromise
-  }
+  constructor(private readonly deps: DiffCoreDeps) {}
 
   async diffSkill(input: {
     name: string
     repositoryRoot: string
     homeRoot?: string
   }): Promise<SkillDiff> {
-    const core = await this.core()
-    const diffSkill = core.diffSkill as ((name: string, options: unknown) => unknown) | undefined
-    if (typeof diffSkill !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
+    const diff = await this.deps.diffSkill(input.name, coreOptions(input))
+    return {
+      name: diff.name,
+      mode: mapDiffMode(diff.mode),
+      views: diff.views,
+      unchanged: diff.unchanged,
     }
-    // Adapt the CLI shape onto Core's diffSkill signature.
-    // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
-    // `{ name, mode, views: [{ label, files: [{ path, status, patch }] }] }`).
-    return (await diffSkill(input.name, coreOptions(input))) as SkillDiff
   }
 }
 
-export function createDefaultDiffProvider(
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The V0.4 diff module is not available in this build yet — ' +
-    '`skillbox diff` lands with the diff milestone. Try again after it ships.',
-): DiffProvider {
-  return new DiffProviderAdapter(loadCore, hint)
+export function createDefaultDiffProvider(deps: DiffCoreDeps = defaultDiffCore): DiffProvider {
+  return new DiffProviderAdapter(deps)
 }
 
 /* ------------------------------------------------------------------ *
  * Merge provider — @skillbox/core/merge
  * ------------------------------------------------------------------ */
 
+/** Core merge functions the provider calls; replaceable in tests. */
+export interface MergeCoreDeps {
+  mergeSkill: typeof mergeSkill
+  continueMerge: typeof continueMerge
+  abortMerge: typeof abortMerge
+}
+
+const defaultMergeCore: MergeCoreDeps = { mergeSkill, continueMerge, abortMerge }
+
+/**
+ * Core's merge results are shape-identical to the CLI contracts (M20.6/7), so
+ * this adapter only builds the option object.
+ */
 class MergeProviderAdapter implements MergeProvider {
-  private modulePromise?: Promise<Record<string, unknown>>
+  constructor(private readonly deps: MergeCoreDeps) {}
 
-  constructor(
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
-  ) {}
-
-  private async core(): Promise<Record<string, unknown>> {
-    this.modulePromise ??= this.loadCore()
-    return this.modulePromise
-  }
-
-  async mergeSkill(input: {
+  mergeSkill(input: {
     name: string
     repositoryRoot: string
     homeRoot?: string
   }): Promise<MergeResult> {
-    const core = await this.core()
-    const mergeSkill = core.mergeSkill as ((name: string, options: unknown) => unknown) | undefined
-    if (typeof mergeSkill !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    // Adapt the CLI shape onto Core's mergeSkill signature.
-    // once it lands (expected `(name, { repositoryRoot, homeRoot })` →
-    // `{ name, conflicts: [{ path, hunks, reason? }], filesMerged, changes,
-    //   baseRevision? }`).
-    return (await mergeSkill(input.name, coreOptions(input))) as MergeResult
+    return this.deps.mergeSkill(input.name, coreOptions(input))
   }
 
-  async continueMerge(input: {
+  continueMerge(input: {
     name: string
     repositoryRoot: string
     homeRoot?: string
   }): Promise<ContinueMergeResult> {
-    const core = await this.core()
-    const continueMerge = core.continueMerge as
-      ((name: string, options: unknown) => unknown) | undefined
-    if (typeof continueMerge !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    return (await continueMerge(input.name, coreOptions(input))) as ContinueMergeResult
+    return this.deps.continueMerge(input.name, coreOptions(input))
   }
 
-  async abortMerge(input: {
+  abortMerge(input: {
     name: string
     repositoryRoot: string
     homeRoot?: string
   }): Promise<AbortMergeResult> {
-    const core = await this.core()
-    const abortMerge = core.abortMerge as ((name: string, options: unknown) => unknown) | undefined
-    if (typeof abortMerge !== 'function') {
-      throw unavailable(LIFECYCLE_UNAVAILABLE, this.hint)
-    }
-    return (await abortMerge(input.name, coreOptions(input))) as AbortMergeResult
+    return this.deps.abortMerge(input.name, coreOptions(input))
   }
 }
 
-export function createDefaultMergeProvider(
-  loadCore: CoreModuleLoader = loadSkillboxCore,
-  hint: string = 'The V0.4 merge module is not available in this build yet — ' +
-    '`skillbox merge` (and --continue/--abort) land with the merge milestone. ' +
-    'Try again after it ships.',
-): MergeProvider {
-  return new MergeProviderAdapter(loadCore, hint)
+export function createDefaultMergeProvider(deps: MergeCoreDeps = defaultMergeCore): MergeProvider {
+  return new MergeProviderAdapter(deps)
 }
