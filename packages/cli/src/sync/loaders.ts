@@ -5,11 +5,19 @@ import {
   GitHubApi,
   GitHubConfigStore,
   GitHubService,
+  GitClient,
   RuntimeConfigService,
+  scanFiles,
   SkillboxError,
   TokenStore,
   type CredentialStore,
+  type GitCommitResult,
+  type GitPullOptions,
+  type GitPushOptions,
+  type GitStatusResult,
   type RepositorySync,
+  type ScanFilesOptions,
+  type ScanResult,
 } from '@skillbox/core'
 import type {
   GitHubProvider,
@@ -24,23 +32,16 @@ import type {
   SecretScanner,
   SyncGitTransport,
 } from './providers.js'
-import { loadSkillboxCore, type CoreModuleLoader } from '../core-module.js'
 
 /**
  * Default providers for the sync pipeline. Each factory adapts the real core
  * implementation (`@skillbox/core`) onto the CLI contract, so the pipeline
  * logic never needs to know about git internals.
  *
- * Default factories use the shipped Core modules. The injectable dynamic
- * loaders remain only as compatibility seams for focused wiring tests.
+ * The core imports are static and typed: a renamed or removed export is a
+ * build failure here rather than a runtime "this build is missing an export"
+ * guess. The `client` / `scan` parameters remain as seams for focused tests.
  */
-
-/** Re-exported so focused wiring tests keep importing the type from here. */
-export type { CoreModuleLoader }
-
-function unavailable(code: 'GIT_UNAVAILABLE' | 'GITHUB_UNAVAILABLE', hint: string): SkillboxError {
-  return new SkillboxError(ErrorCode[code], hint)
-}
 
 /** Portable check for git's "not a repository" fatal from a failed status. */
 function isNotARepositoryError(error: unknown): boolean {
@@ -51,6 +52,10 @@ function isNotARepositoryError(error: unknown): boolean {
   return typeof stderr === 'string' && stderr.includes('not a git repository')
 }
 
+function gitUnavailable(hint: string): SkillboxError {
+  return new SkillboxError(ErrorCode.GIT_UNAVAILABLE, hint)
+}
+
 /* ---------------------------------------------------------------------- *
  * Git — @skillbox/core/git
  *
@@ -59,58 +64,40 @@ function isNotARepositoryError(error: unknown): boolean {
  *   pull(root, opts?), push(root, opts?), commit(root, msg, files?)
  * ---------------------------------------------------------------------- */
 
-interface GitFileShape {
-  path: string
-  conflict: boolean
-  staged: boolean
-  unstaged: boolean
-  untracked: boolean
-}
-
-interface GitClientShape {
-  status: (root: string) => Promise<{
-    branch?: string
-    remote?: { name: string; url: string }
-    ahead?: number
-    behind?: number
-    files: GitFileShape[]
-    conflicts: GitFileShape[]
-    staged: GitFileShape[]
-    unstaged: GitFileShape[]
-    untracked: GitFileShape[]
-    clean: boolean
-  }>
-  pull: (root: string, options?: Record<string, unknown>) => Promise<void>
-  push: (root: string, options?: Record<string, unknown>) => Promise<void>
-  commit: (root: string, message: string, files?: readonly string[]) => Promise<{ hash: string }>
-  currentBranch?: (root: string) => Promise<string | undefined>
-  isInstalled?: () => Promise<boolean>
+/**
+ * The slice of core `GitClient` this adapter uses. `GitClient` satisfies it
+ * structurally, and a test double can implement just these methods.
+ */
+export interface CoreGitClient {
+  status(repositoryRoot: string): Promise<GitStatusResult>
+  pull(repositoryRoot: string, options?: GitPullOptions): Promise<void>
+  push(repositoryRoot: string, options?: GitPushOptions): Promise<void>
+  commit(
+    repositoryRoot: string,
+    message: string,
+    files?: readonly string[],
+  ): Promise<GitCommitResult>
+  currentBranch?(repositoryRoot: string): Promise<string | undefined>
+  isInstalled?(): Promise<boolean>
 }
 
 class GitClientAdapter implements GitProvider {
   constructor(
     private readonly repositoryRoot: string,
-    private readonly loadCore: CoreModuleLoader,
-    private readonly hint: string,
+    private readonly client: CoreGitClient,
   ) {}
 
-  private async client(): Promise<GitClientShape> {
-    const core = await this.loadCore()
-    const GitClient = core.GitClient as (new () => GitClientShape) | undefined
-    if (typeof GitClient !== 'function') {
-      throw unavailable('GIT_UNAVAILABLE', this.hint)
+  private async assertInstalled(): Promise<void> {
+    if ((await this.client.isInstalled?.()) === false) {
+      throw gitUnavailable('The git binary is not installed or not on PATH.')
     }
-    return new GitClient()
   }
 
   async status(): Promise<GitStatusReport> {
-    const client = await this.client()
-    if (typeof client.isInstalled === 'function' && !(await client.isInstalled())) {
-      throw unavailable('GIT_UNAVAILABLE', 'The git binary is not installed or not on PATH.')
-    }
-    let result: Awaited<ReturnType<GitClientShape['status']>>
+    await this.assertInstalled()
+    let result: GitStatusResult
     try {
-      result = await client.status(this.repositoryRoot)
+      result = await this.client.status(this.repositoryRoot)
     } catch (error) {
       if (isNotARepositoryError(error)) {
         return {
@@ -125,17 +112,13 @@ class GitClientAdapter implements GitProvider {
       throw error
     }
 
-    const branch =
-      result.branch ??
-      (typeof client.currentBranch === 'function'
-        ? await client.currentBranch(this.repositoryRoot)
-        : undefined)
+    const branch = result.branch ?? (await this.client.currentBranch?.(this.repositoryRoot))
     const changed = result.files.filter((file) => !file.conflict)
 
     const report: GitStatusReport = {
       isRepository: true,
-      ahead: result.ahead ?? 0,
-      behind: result.behind ?? 0,
+      ahead: result.ahead,
+      behind: result.behind,
       changedFiles: changed.map((file) => file.path),
       stagedFiles: result.staged.map((file) => file.path),
       conflicts: result.conflicts.map((file) => file.path),
@@ -150,16 +133,16 @@ class GitClientAdapter implements GitProvider {
   }
 
   async pull(): Promise<GitPullOutcome> {
-    const client = await this.client()
+    await this.assertInstalled()
     try {
-      await client.pull(this.repositoryRoot)
+      await this.client.pull(this.repositoryRoot)
     } catch (error) {
       if (isNotARepositoryError(error)) {
-        throw unavailable('GIT_UNAVAILABLE', 'No git repository to pull from.')
+        throw gitUnavailable('No git repository to pull from.')
       }
       throw error
     }
-    const status = await client.status(this.repositoryRoot)
+    const status = await this.client.status(this.repositoryRoot)
     return {
       conflicts: status.conflicts.map((file) => file.path),
       changedFiles: status.files.map((file) => file.path),
@@ -167,9 +150,9 @@ class GitClientAdapter implements GitProvider {
   }
 
   async commit(message: string, paths: readonly string[]): Promise<GitCommitOutcome> {
-    const client = await this.client()
+    await this.assertInstalled()
     try {
-      const result = await client.commit(this.repositoryRoot, message, paths)
+      const result = await this.client.commit(this.repositoryRoot, message, paths)
       return { committed: true, message, shortHash: result.hash.slice(0, 7) }
     } catch (error) {
       // git aborts with "nothing to commit" when none of the paths changed.
@@ -185,25 +168,16 @@ class GitClientAdapter implements GitProvider {
   }
 
   async push(): Promise<void> {
-    const client = await this.client()
-    await client.push(this.repositoryRoot)
+    await this.assertInstalled()
+    await this.client.push(this.repositoryRoot)
   }
 }
 
-export function createGitProviderFromCore(
+export function createDefaultGitProvider(
   repositoryRoot: string,
-  loadCore: CoreModuleLoader,
-  hint: string = 'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
+  client: CoreGitClient = new GitClient(),
 ): GitProvider {
-  return new GitClientAdapter(repositoryRoot, loadCore, hint)
-}
-
-export function createDefaultGitProvider(repositoryRoot: string): GitProvider {
-  return createGitProviderFromCore(
-    repositoryRoot,
-    loadSkillboxCore,
-    'This build is missing the Core GitClient export. Reinstall or upgrade skillbox.',
-  )
+  return new GitClientAdapter(repositoryRoot, client)
 }
 
 /**
@@ -346,55 +320,37 @@ export function createDefaultGitHubProvider(
  * with `{ findings, blocked, block }`. `block` blocks the pipeline.
  * ---------------------------------------------------------------------- */
 
-interface CoreScanResultShape {
-  findings: Array<{
-    file: string
-    patternId: string
-    name: string
-    severity: string
-    snippet: string
-  }>
-  block: boolean
+export interface CoreSecretScan {
+  (files: readonly string[], options?: ScanFilesOptions): Promise<ScanResult>
 }
 
 class SecretScannerAdapter implements SecretScanner {
   constructor(
     private readonly repositoryRoot: string,
-    private readonly loadCore: CoreModuleLoader,
+    private readonly scan: CoreSecretScan,
   ) {}
 
   async isReady(): Promise<boolean> {
-    const core = await this.loadCore()
-    return typeof core.scanFiles === 'function'
+    return true
   }
 
   async scanChangedFiles(paths: readonly string[]): Promise<SecretScanResult> {
-    const core = await this.loadCore()
-    const scanFiles = core.scanFiles as
-      ((files: readonly string[], options?: Record<string, unknown>) => unknown) | undefined
-    if (typeof scanFiles !== 'function') {
-      return { findings: [], blocked: false }
-    }
-    const result = (await scanFiles(paths, { root: this.repositoryRoot })) as CoreScanResultShape
+    const result = await this.scan(paths, { root: this.repositoryRoot })
     return {
       blocked: result.block,
       findings: result.findings.map((finding) => ({
         path: finding.file,
         rule: finding.patternId,
-        severity: finding.severity as SecretScanResult['findings'][number]['severity'],
+        severity: finding.severity,
         message: `[${finding.name}] ${finding.snippet}`,
       })),
     }
   }
 }
 
-export function createSecretScannerFromCore(
+export function createDefaultSecretScanner(
   repositoryRoot: string,
-  loadCore: CoreModuleLoader,
+  scan: CoreSecretScan = scanFiles,
 ): SecretScanner {
-  return new SecretScannerAdapter(repositoryRoot, loadCore)
-}
-
-export function createDefaultSecretScanner(repositoryRoot: string): SecretScanner {
-  return createSecretScannerFromCore(repositoryRoot, loadSkillboxCore)
+  return new SecretScannerAdapter(repositoryRoot, scan)
 }
