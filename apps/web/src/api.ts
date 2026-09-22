@@ -82,6 +82,15 @@ export interface ReconcileReport {
   problems: { code: string; alias?: string; message: string }[]
 }
 
+/** V0.5 personal library — result of `POST /api/library/adopt`. */
+export interface AdoptReport {
+  scanned: number
+  imported: number
+  unchanged: number
+  conflicts: number
+  skipped: Array<{ name: string; agents: string[]; reason: string }>
+}
+
 export interface RepositoryStatus {
   repositoryRoot: string
   manifestPath: string
@@ -510,6 +519,7 @@ export interface ApiClient {
   enableSkill(name: string, agent: string): Promise<AgentAssignment>
   disableSkill(name: string, agent: string): Promise<AgentAssignment>
   reconcile(): Promise<ReconcileReport>
+  adoptLibrary(): Promise<AdoptReport>
   /* V0.3 registry API */
   registrySearch(params?: RegistrySearchParams): Promise<RegistrySearchResult[]>
   outdated(): Promise<OutdatedSkill[]>
@@ -631,6 +641,15 @@ export const api: ApiClient = {
       method: 'POST',
     })
     return response.reconcile
+  },
+
+  async adoptLibrary() {
+    const response = await request<{ report: AdoptReport }>(
+      '/api/library/adopt',
+      { method: 'POST' },
+      [201],
+    )
+    return response.report
   },
 
   async registrySearch(params) {

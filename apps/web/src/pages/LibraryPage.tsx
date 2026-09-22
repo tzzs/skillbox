@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw, Search } from 'lucide-react'
 import type { SkillStatusEntry } from '../api.js'
 import { errorMessage } from '../format.js'
-import { useAgents, useReconcile, useSkills } from '../queries.js'
+import { useAgents, useAdoptLibrary, useReconcile, useSkills } from '../queries.js'
 import { AgentTags, ModePill, StatusPill } from '../components/Pills.js'
 import { CenteredHint, EmptyState, ErrorState } from '../components/States.js'
 import { useDocumentTitle } from '../useDocumentTitle.js'
@@ -23,6 +23,7 @@ export function LibraryPage() {
   const skillsQuery = useSkills()
   const reconcile = useReconcile()
   const agentsQuery = useAgents()
+  const adopt = useAdoptLibrary()
   const [searchParams, setSearchParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -151,18 +152,32 @@ export function LibraryPage() {
           </div>
         </CenteredHint>
       ) : skills.length === 0 ? (
-        <EmptyState
-          title="No skills yet"
-          body="Create your first skill to get started."
-          action={
-            <Link to="/skills/new">
-              <span className="btn btn--primary">
-                <Plus aria-hidden="true" />
-                New skill
-              </span>
-            </Link>
-          }
-        />
+        <>
+          {adopt.isError && <p className="form-error">{errorMessage(adopt.error)}</p>}
+          <EmptyState
+            title="No skills yet"
+            body="Create your first skill, or scan this machine for skills you already have in your agents."
+            action={
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <Link to="/skills/new">
+                  <span className="btn btn--primary">
+                    <Plus aria-hidden="true" />
+                    New skill
+                  </span>
+                </Link>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => adopt.mutate()}
+                  disabled={adopt.isPending}
+                >
+                  {adopt.isPending ? <span className="spinner" /> : <Search aria-hidden="true" />}
+                  Scan & import existing skills
+                </button>
+              </div>
+            }
+          />
+        </>
       ) : filtered.length === 0 ? (
         <EmptyState
           title="Nothing matches"

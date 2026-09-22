@@ -258,6 +258,19 @@ export function useReconcile() {
   })
 }
 
+/** V0.5 personal library — scans agents and imports their skills (idempotent). */
+export function useAdoptLibrary() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.adoptLibrary(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.status })
+    },
+  })
+}
+
 /* ---- V0.3 registry API (M14.7 Explore / M16.3 Updates) ---- */
 
 /**

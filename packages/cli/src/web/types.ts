@@ -15,6 +15,7 @@ import type {
   SkillDiff,
   SkillService,
   StatusService,
+  AdoptReport,
 } from '@skillbox/core'
 
 /**
@@ -334,6 +335,11 @@ export interface AgentsResponse {
 /** Success shape of `POST /api/reconcile`. */
 export interface ReconcileResponse {
   reconcile: ReconcileResult
+}
+
+/** Success shape of `POST /api/library/adopt` (V0.5 personal library). */
+export interface AdoptResponse {
+  report: AdoptReport
 }
 
 /** Success shape of `GET /api/settings` / `PUT /api/settings`. */

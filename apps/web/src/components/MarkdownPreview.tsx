@@ -13,7 +13,8 @@ export function MarkdownPreview({ source }: { source: string }) {
   return <div className="markdown">{renderBlocks(source)}</div>
 }
 
-function renderBlocks(source: string): ReactNode[] {
+/** Exported for regression tests (the heading branch once looped forever). */
+export function renderBlocks(source: string): ReactNode[] {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
   const blocks: ReactNode[] = []
   let index = 0
