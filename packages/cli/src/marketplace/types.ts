@@ -2,12 +2,11 @@
  * V0.3 Marketplace — CLI-layer contracts for `search` / `add` / `outdated` /
  * `update` / `cache clean` (GAP_ANALYSIS §3, MVP M14.6 + M16.1-2).
  *
- * The shapes below mirror the types agent 1 (`packages/core/src/registry/`)
- * and agent 2 (`packages/core/src/install/`, `packages/core/src/security/`)
- * landed in `@skillbox/core`. The CLI keeps its own structural copies so
- * this package typechecks while core is under construction; `./loaders.js`
- * adapts the real core exports onto these contracts at runtime — the same
- * pattern the V0.2 sync layer used for git/github/secret-scan.
+ * The shapes below mirror the ones `@skillbox/core` defines in
+ * `packages/core/src/registry/`, `install/` and `security/`. The CLI keeps its
+ * own copies so the command layer and its renderers stay independent of core's
+ * internal types; `./loaders.js` adapts the real (statically imported) core
+ * exports onto these contracts — the same pattern the sync layer uses.
  */
 
 /** Source types the registry framework can normalize and dispatch on. */

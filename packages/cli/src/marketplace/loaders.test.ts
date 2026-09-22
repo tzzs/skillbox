@@ -2,33 +2,48 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ErrorCode } from '@skillbox/core'
+import {
+  ErrorCode,
+  ProviderRegistry,
+  buildSkillboxHomeLayout,
+  type InstallResult as CoreInstallResult,
+  type InstallSkillOptions,
+  type NormalizedSource as CoreNormalizedSource,
+  type RegistryProvider as CoreRegistryProvider,
+  type SecurityScanResult as CoreSecurityScanResult,
+  type UpdateSkillOptions,
+} from '@skillbox/core'
 import {
   createDefaultInstallService,
   createDefaultRegistryClient,
   createDefaultSecurityScanner,
   createDefaultSourceParser,
-  type CoreModuleLoader,
+  defaultMarketplaceInstallServiceDeps,
+  type MarketplaceInstallServiceDeps,
+  type MarketplaceRegistryClientDeps,
+  type MarketplaceSecurityScannerDeps,
+  type MarketplaceSourceParserDeps,
 } from './loaders.js'
 import type { NormalizedSource, RegistryProvider } from './types.js'
 
 /**
- * Loader adapters over the real `@skillbox/core` exports: `parseSource`,
- * `defaultRegistry` / `resolveProvider`, `installSkill` / `clearCache`,
- * `scanSkillForSecurity`. Missing exports degrade to a typed SkillboxError
- * with a recovery hint instead of crashing.
+ * The marketplace loader adapters over `@skillbox/core`.
+ *
+ * Core is called through its real signatures, so each test either injects a
+ * fake for the core function the adapter uses (typed as that function's own
+ * signature, returning real core result shapes) or runs the default seam
+ * against a temp fixture. Errors core itself throws (`SOURCE_INVALID`,
+ * `SOURCE_UNSUPPORTED`, `SKILL_NOT_FOUND`) must reach the caller unchanged.
  */
 
 const GITHUB_SOURCE: NormalizedSource = { type: 'github', repo: 'org/repo' }
 
-function coreLoader(module: Record<string, unknown>): CoreModuleLoader {
-  return async () => module
-}
-
-/** Minimal provider double matching the core `RegistryProvider` shape. */
-function providerDouble(overrides: Partial<RegistryProvider> = {}): RegistryProvider {
+function providerDouble(
+  id = 'github',
+  overrides: Partial<CoreRegistryProvider> = {},
+): CoreRegistryProvider {
   return {
-    id: 'github',
+    id,
     search: async () => [],
     resolve: async (source) => ({ source, revision: 'abc1234' }),
     download: async () => undefined,
@@ -37,127 +52,150 @@ function providerDouble(overrides: Partial<RegistryProvider> = {}): RegistryProv
   }
 }
 
+/** A complete core `InstallResult` (what the CLI contract copies). */
+function coreInstallResult(
+  source: CoreNormalizedSource,
+  overrides: Partial<CoreInstallResult> = {},
+): CoreInstallResult {
+  return {
+    alias: 'foo',
+    mode: 'managed',
+    source,
+    revision: 'abc1234',
+    integrity: 'sha256:x',
+    security: { risk: 'low', scannedAt: '2026-01-01T00:00:00.000Z' },
+    agents: ['claude'],
+    materializedPath: '/lib/foo',
+    cacheHit: false,
+    ...overrides,
+  }
+}
+
+/**
+ * Registry-client deps over a private core `ProviderRegistry`, so the tests
+ * exercise core's real register/resolve semantics without mutating the
+ * process-wide registry the default seam writes to.
+ */
+function isolatedRegistryDeps(providerFactories: readonly (() => CoreRegistryProvider)[] = []): {
+  deps: MarketplaceRegistryClientDeps
+  registry: ProviderRegistry
+} {
+  const registry = new ProviderRegistry()
+  return {
+    registry,
+    deps: {
+      listProviders: () => registry.listProviders(),
+      registerProvider: (provider) => registry.registerProvider(provider),
+      resolveProvider: (sourceType) => registry.resolveProvider(sourceType),
+      providerFactories,
+    },
+  }
+}
+
+/**
+ * Install-seam deps with the provider-registration side effect neutralised;
+ * the core install/cache/path functions stay real unless a test overrides them.
+ */
+function installDeps(
+  overrides: Partial<MarketplaceInstallServiceDeps> = {},
+): MarketplaceInstallServiceDeps {
+  return {
+    ...defaultMarketplaceInstallServiceDeps,
+    listProviders: () => [],
+    registerProvider: () => undefined,
+    providerFactories: [],
+    ...overrides,
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Source parser
+ * ------------------------------------------------------------------ */
+
 describe('createDefaultSourceParser', () => {
-  it('throws REGISTRY_UNAVAILABLE with a recovery hint when core has no parser', async () => {
-    const parser = createDefaultSourceParser(coreLoader({}))
-    await expect(parser.parse('github:org/repo')).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
+  it('normalizes a source with the real core parseSource', async () => {
+    expect(await createDefaultSourceParser().parse('org/repo')).toEqual({
+      type: 'github',
+      repo: 'org/repo',
+    })
+    expect(await createDefaultSourceParser().parse('github:org/repo@skills/x#main')).toEqual({
+      type: 'github',
+      repo: 'org/repo',
+      path: 'skills/x',
+      ref: 'main',
     })
   })
 
-  it('adapts the real parseSource free-function export', async () => {
-    const parser = createDefaultSourceParser(
-      coreLoader({ parseSource: (source: string) => ({ type: 'github', repo: source }) }),
-    )
-    expect(await parser.parse('org/repo')).toEqual({ type: 'github', repo: 'org/repo' })
+  it('delegates to the injected parseSource and returns its normalized source', async () => {
+    const inputs: string[] = []
+    const deps: MarketplaceSourceParserDeps = {
+      parseSource: (source: string): CoreNormalizedSource => {
+        inputs.push(source)
+        return { type: 'local', path: source }
+      },
+    }
+    expect(await createDefaultSourceParser(deps).parse('./skills/x')).toEqual({
+      type: 'local',
+      path: './skills/x',
+    })
+    expect(inputs).toEqual(['./skills/x'])
   })
 
-  it('falls back to a SourceParser class export', async () => {
-    const parser = createDefaultSourceParser(
-      coreLoader({
-        SourceParser: class {
-          parse(source: string): NormalizedSource {
-            return { type: 'local', path: source }
-          }
-        },
-      }),
-    )
-    expect(await parser.parse('./skills/x')).toEqual({ type: 'local', path: './skills/x' })
+  it('propagates the core SOURCE_INVALID error', async () => {
+    await expect(createDefaultSourceParser().parse('::not-a-source::')).rejects.toMatchObject({
+      code: ErrorCode.SOURCE_INVALID,
+    })
   })
 })
 
+/* ------------------------------------------------------------------ *
+ * Registry client
+ * ------------------------------------------------------------------ */
+
 describe('createDefaultRegistryClient', () => {
-  it('throws REGISTRY_UNAVAILABLE when the registry module has not landed', async () => {
-    const client = createDefaultRegistryClient('/home/x', coreLoader({}))
-    await expect(client.search('react')).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
-    await expect(client.resolve(GITHUB_SOURCE)).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
-    await expect(client.getLatestRevision(GITHUB_SOURCE)).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
-    await expect(client.providerFor(GITHUB_SOURCE)).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
+  it('aggregates provider search hits across every registered provider', async () => {
+    const githubHit = {
+      name: 'a',
+      source: 'github:org/a',
+      popularity: 10,
+      security: 'unknown' as const,
+      description: '',
+    }
+    const skillsShHit = {
+      name: 'b',
+      source: 'skills-sh:org/b',
+      popularity: 5,
+      security: 'reviewed' as const,
+      description: '',
+    }
+    const { deps, registry } = isolatedRegistryDeps()
+    registry.registerProvider(providerDouble('github', { search: async () => [githubHit] }))
+    registry.registerProvider(providerDouble('skills-sh', { search: async () => [skillsShHit] }))
+    const client = createDefaultRegistryClient('/home/x', deps)
+    expect(await client.search('react')).toEqual([githubHit, skillsShHit])
   })
 
-  it('aggregates provider search hits over core defaultRegistry', async () => {
-    const github = providerDouble({
-      search: async () => [
-        { name: 'a', source: 'github:org/a', popularity: 10, security: 'unknown', description: '' },
-      ],
-    })
-    const skillsSh = providerDouble({
-      id: 'skills-sh',
-      search: async () => [
-        {
-          name: 'b',
-          source: 'skills-sh:org/b',
-          popularity: 5,
-          security: 'reviewed',
-          description: '',
-        },
-      ],
-    })
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({
-        defaultRegistry: { listProviders: () => [github, skillsSh] },
-        resolveProvider: () => github,
-      }),
-    )
-    expect(await client.search('react')).toEqual([
-      { name: 'a', source: 'github:org/a', popularity: 10, security: 'unknown', description: '' },
-      {
-        name: 'b',
-        source: 'skills-sh:org/b',
-        popularity: 5,
-        security: 'reviewed',
-        description: '',
-      },
-    ])
-  })
-
-  it('dispatches resolve/getLatestRevision/providerFor through core resolveProvider', async () => {
-    const github = providerDouble()
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({
-        defaultRegistry: { listProviders: () => [github] },
-        resolveProvider: (sourceType: string) => {
-          if (sourceType !== 'github') {
-            throw new Error(`no provider for ${sourceType}`)
-          }
-          return github
+  it('degrades per-provider: one failing search must not kill the aggregation', async () => {
+    const hit = {
+      name: 'b',
+      source: 'skills-sh:org/b',
+      popularity: 5,
+      security: 'reviewed' as const,
+      description: '',
+    }
+    const { deps, registry } = isolatedRegistryDeps()
+    registry.registerProvider(
+      providerDouble('github', {
+        search: async () => {
+          throw new Error('rate limited')
         },
       }),
     )
-    expect(await client.resolve(GITHUB_SOURCE)).toEqual({
-      source: GITHUB_SOURCE,
-      revision: 'abc1234',
-    })
-    expect(await client.getLatestRevision(GITHUB_SOURCE)).toBe('def5678')
-    expect(await client.providerFor(GITHUB_SOURCE)).toBe(github)
+    registry.registerProvider(providerDouble('skills-sh', { search: async () => [hit] }))
+    expect(await createDefaultRegistryClient('/home/x', deps).search('react')).toEqual([hit])
   })
 
-  it('throws REGISTRY_UNAVAILABLE when resolveProvider has not landed', async () => {
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({ defaultRegistry: { listProviders: () => [providerDouble()] } }),
-    )
-    await expect(client.resolve(GITHUB_SOURCE)).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
-    await expect(client.getLatestRevision(GITHUB_SOURCE)).rejects.toMatchObject({
-      code: ErrorCode.REGISTRY_UNAVAILABLE,
-    })
-  })
-
-  it('registers the default providers once and aggregates their search hits', async () => {
-    const registerCalls: string[] = []
-    const registered: RegistryProvider[] = []
+  it('registers the default providers on demand and only once', async () => {
     const githubHit = {
       name: 'a',
       source: 'github:org/a',
@@ -179,64 +217,44 @@ describe('createDefaultRegistryClient', () => {
       security: 'unknown' as const,
       description: '',
     }
-    const github = providerDouble({ id: 'github', search: async () => [githubHit] })
-    const skillsSh = providerDouble({ id: 'skills-sh', search: async () => [skillsShHit] })
-    const local = providerDouble({ id: 'local', search: async () => [localHit] })
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({
-        defaultRegistry: { listProviders: () => [...registered] },
-        registerProvider: (provider: RegistryProvider) => {
-          registerCalls.push(provider.id)
-          registered.push(provider)
-        },
-        GitHubProvider: class {
-          constructor() {
-            return github
-          }
-        },
-        SkillsShProvider: class {
-          constructor() {
-            return skillsSh
-          }
-        },
-        LocalProvider: class {
-          constructor() {
-            return local
-          }
-        },
-      }),
-    )
+    const { deps, registry } = isolatedRegistryDeps([
+      () => providerDouble('github', { search: async () => [githubHit] }),
+      () => providerDouble('skills-sh', { search: async () => [skillsShHit] }),
+      () => providerDouble('local', { search: async () => [localHit] }),
+    ])
+    const client = createDefaultRegistryClient('/home/x', deps)
     // First search: the providers register lazily, then their hits aggregate.
     expect(await client.search('react')).toEqual([githubHit, skillsShHit, localHit])
-    expect(registerCalls).toEqual(['github', 'skills-sh', 'local'])
-    // Registration is one-shot: a second search must not re-register.
+    // Registration is idempotent: a second search must not duplicate entries.
     expect(await client.search('react')).toEqual([githubHit, skillsShHit, localHit])
-    expect(registerCalls).toEqual(['github', 'skills-sh', 'local'])
+    expect(registry.listProviders().map((provider) => provider.id)).toEqual([
+      'github',
+      'skills-sh',
+      'local',
+    ])
   })
 
-  it('skips registration silently when core lacks the provider exports', async () => {
-    const hit = {
-      name: 'a',
-      source: 'github:org/a',
-      popularity: 10,
-      security: 'unknown' as const,
-      description: '',
-    }
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({
-        defaultRegistry: {
-          listProviders: () => [providerDouble({ search: async () => [hit] })],
+  it('keeps an already-registered provider instead of the default factory', async () => {
+    const stub = providerDouble('github', {
+      search: async () => [
+        {
+          name: 'stub',
+          source: 'github:stub',
+          popularity: 1,
+          security: 'unknown',
+          description: '',
         },
-      }),
-    )
-    // No GitHubProvider/SkillsShProvider/LocalProvider/registerProvider in the
-    // module → the registration is skipped and search still aggregates.
-    expect(await client.search('react')).toEqual([hit])
+      ],
+    })
+    const replacement = providerDouble('github')
+    const { deps, registry } = isolatedRegistryDeps([() => replacement])
+    registry.registerProvider(stub)
+    const client = createDefaultRegistryClient('/home/x', deps)
+    expect(await client.providerFor(GITHUB_SOURCE)).toBe(stub)
+    expect(await client.search('react')).toHaveLength(1)
   })
 
-  it('degrades per-provider: one failing search must not kill the aggregation', async () => {
+  it('skips a default provider whose construction fails', async () => {
     const hit = {
       name: 'b',
       source: 'skills-sh:org/b',
@@ -244,60 +262,70 @@ describe('createDefaultRegistryClient', () => {
       security: 'reviewed' as const,
       description: '',
     }
-    const flaky = providerDouble({
-      id: 'github',
-      search: async () => {
-        throw new Error('rate limited')
+    const { deps, registry } = isolatedRegistryDeps([
+      () => {
+        throw new Error('optional provider unavailable')
       },
-    })
-    const healthy = providerDouble({ id: 'skills-sh', search: async () => [hit] })
-    const client = createDefaultRegistryClient(
-      '/home/x',
-      coreLoader({ defaultRegistry: { listProviders: () => [flaky, healthy] } }),
-    )
+      () => providerDouble('skills-sh', { search: async () => [hit] }),
+    ])
+    const client = createDefaultRegistryClient('/home/x', deps)
     expect(await client.search('react')).toEqual([hit])
+    expect(registry.listProviders().map((provider) => provider.id)).toEqual(['skills-sh'])
+  })
+
+  it('dispatches resolve / getLatestRevision / providerFor through core resolveProvider', async () => {
+    const github = providerDouble()
+    const { deps, registry } = isolatedRegistryDeps()
+    registry.registerProvider(github)
+    const client = createDefaultRegistryClient('/home/x', deps)
+    expect(await client.resolve(GITHUB_SOURCE)).toEqual({
+      source: GITHUB_SOURCE,
+      revision: 'abc1234',
+    })
+    expect(await client.getLatestRevision(GITHUB_SOURCE)).toBe('def5678')
+    expect(await client.providerFor(GITHUB_SOURCE)).toBe(github)
+  })
+
+  it('propagates the core SOURCE_UNSUPPORTED error for an unregistered source type', async () => {
+    const { deps } = isolatedRegistryDeps()
+    const client = createDefaultRegistryClient('/home/x', deps)
+    await expect(client.resolve(GITHUB_SOURCE)).rejects.toMatchObject({
+      code: ErrorCode.SOURCE_UNSUPPORTED,
+    })
+    await expect(client.getLatestRevision(GITHUB_SOURCE)).rejects.toMatchObject({
+      code: ErrorCode.SOURCE_UNSUPPORTED,
+    })
+    await expect(client.providerFor(GITHUB_SOURCE)).rejects.toMatchObject({
+      code: ErrorCode.SOURCE_UNSUPPORTED,
+    })
+  })
+
+  it('wires the real core providers and registry by default', async () => {
+    const client = createDefaultRegistryClient('/home/x')
+    const provider: RegistryProvider = await client.providerFor({
+      type: 'git',
+      url: 'git@gitlab.example.com:org/repo.git',
+    })
+    expect(provider.id).toBe('git')
   })
 })
+
+/* ------------------------------------------------------------------ *
+ * Install service
+ * ------------------------------------------------------------------ */
 
 describe('createDefaultInstallService', () => {
   const options = { repositoryRoot: '/repo', homeRoot: '/home' }
 
-  it('throws INSTALL_DOWNLOAD_FAILED when the install module has not landed', async () => {
-    const installer = createDefaultInstallService(options, coreLoader({}))
-    await expect(
-      installer.installSkill({ source: GITHUB_SOURCE, repositoryRoot: '/repo' }),
-    ).rejects.toMatchObject({ code: ErrorCode.INSTALL_DOWNLOAD_FAILED })
-    await expect(
-      installer.updateSkill({ name: 'x', source: GITHUB_SOURCE, repositoryRoot: '/repo' }),
-    ).rejects.toMatchObject({ code: ErrorCode.INSTALL_DOWNLOAD_FAILED })
-  })
-
-  it('throws CACHE_MISS for cache clean when the cache module has not landed', async () => {
-    const installer = createDefaultInstallService(options, coreLoader({}))
-    await expect(installer.clearCache()).rejects.toMatchObject({
-      code: ErrorCode.CACHE_MISS,
-    })
-  })
-
   it('maps the CLI input onto core installSkill(source, options)', async () => {
-    const calls: Array<{ source: unknown; options: Record<string, unknown> }> = []
+    const calls: Array<{ source: CoreNormalizedSource; options: InstallSkillOptions }> = []
     const provider = providerDouble()
     const installer = createDefaultInstallService(
       options,
-      coreLoader({
-        installSkill: async (source: unknown, opts: unknown) => {
-          calls.push({ source, options: opts as Record<string, unknown> })
-          return {
-            alias: 'foo',
-            mode: 'managed',
-            source,
-            revision: 'abc1234',
-            integrity: 'sha256:x',
-            security: { risk: 'low', scannedAt: 'now' },
-            agents: ['claude'],
-            materializedPath: '/lib/foo',
-            cacheHit: false,
-          }
+      installDeps({
+        installSkill: async (source, installOptions) => {
+          calls.push({ source, options: installOptions })
+          return coreInstallResult(source, { alias: 'foo' })
         },
       }),
     )
@@ -324,14 +352,14 @@ describe('createDefaultInstallService', () => {
     })
   })
 
-  it('omits the allowPolicy when no high-risk override is granted', async () => {
-    let received: Record<string, unknown> | undefined
+  it('omits the core options the CLI input leaves unset', async () => {
+    let received: InstallSkillOptions | undefined
     const installer = createDefaultInstallService(
       options,
-      coreLoader({
-        installSkill: async (_source: unknown, opts: unknown) => {
-          received = opts as Record<string, unknown>
-          return { alias: 'foo', mode: 'managed', revision: 'abc', integrity: 'h', agents: [] }
+      installDeps({
+        installSkill: async (source, installOptions) => {
+          received = installOptions
+          return coreInstallResult(source)
         },
       }),
     )
@@ -340,16 +368,18 @@ describe('createDefaultInstallService', () => {
       repositoryRoot: '/repo',
       allowHighRisk: false,
     })
-    expect(received?.allowPolicy).toBeUndefined()
+    // `allowHighRisk: false` must not lift the security gate.
+    expect(received).toEqual({ repositoryRoot: '/repo' })
   })
 
-  it('delegates updateSkill when core exports it', async () => {
-    const calls: Array<{ source: unknown; options: Record<string, unknown> }> = []
+  it('maps the CLI input onto core updateSkill(source, options)', async () => {
+    const calls: Array<{ source: CoreNormalizedSource; options: UpdateSkillOptions }> = []
     const installer = createDefaultInstallService(
       options,
-      coreLoader({
-        updateSkill: async (source: unknown, opts: unknown) => {
-          calls.push({ source, options: opts as Record<string, unknown> })
+      installDeps({
+        updateSkill: async (source, updateOptions) => {
+          calls.push({ source, options: updateOptions })
+          return coreInstallResult(source, { revision: 'def5678' })
         },
       }),
     )
@@ -358,53 +388,58 @@ describe('createDefaultInstallService', () => {
       source: GITHUB_SOURCE,
       allowHighRisk: true,
       repositoryRoot: '/repo',
+      homeRoot: '/home',
     })
     expect(calls[0]?.source).toEqual(GITHUB_SOURCE)
-    expect(calls[0]?.options).toMatchObject({
+    expect(calls[0]?.options).toEqual({
       repositoryRoot: '/repo',
       alias: 'foo',
       allowPolicy: { allowHighRisk: true },
+      homeRoot: '/home',
     })
   })
 
-  it('reports the update flow as unavailable until core updateSkill lands', async () => {
-    const installer = createDefaultInstallService(
-      options,
-      coreLoader({ installSkill: async () => ({}) }),
-    )
-    await expect(
-      installer.updateSkill({ name: 'foo', source: GITHUB_SOURCE, repositoryRoot: '/repo' }),
-    ).rejects.toMatchObject({
-      code: ErrorCode.INSTALL_DOWNLOAD_FAILED,
-    })
+  it('reaches the real core transactions with the default seam', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-install-test-'))
+    try {
+      const installer = createDefaultInstallService(
+        { repositoryRoot: base, homeRoot: base },
+        installDeps(),
+      )
+      // `installSkill` needs a provider on the CLI input; the transaction
+      // refuses before any download.
+      await expect(
+        installer.installSkill({ source: GITHUB_SOURCE, repositoryRoot: base }),
+      ).rejects.toMatchObject({ code: ErrorCode.INSTALL_SOURCE_UNRESOLVED })
+      // The update entry point is core's install *transaction*
+      // `updateSkill(source, options)` — it looks the alias up in the lockfile
+      // (the same-named manifest helper `updateSkill(manifest, alias, patch)`
+      // could not take these arguments at all).
+      await expect(
+        installer.updateSkill({ name: 'foo', source: GITHUB_SOURCE, repositoryRoot: base }),
+      ).rejects.toMatchObject({ code: ErrorCode.SKILL_NOT_FOUND })
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
   })
 
-  it('counts cache entries before clearing and reports them (core clearCache returns void)', async () => {
+  it('counts cache entries with the real core clearCache and empties the cache', async () => {
     const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cache-test-'))
     try {
       const homeRoot = path.join(base, 'home')
-      const cacheRoot = path.join(homeRoot, 'cache')
+      // Core's home layout is what the adapter resolves against.
+      const cacheRoot = buildSkillboxHomeLayout(homeRoot).cache
       // Two entries plus a transient partial staging dir (not counted).
       await fs.mkdir(path.join(cacheRoot, 'aaaa1111', 'rev-one'), { recursive: true })
       await fs.mkdir(path.join(cacheRoot, 'bbbb2222', 'rev-two'), { recursive: true })
       await fs.mkdir(path.join(cacheRoot, 'aaaa1111', '.partial-123'), { recursive: true })
       await fs.writeFile(path.join(cacheRoot, 'aaaa1111', 'rev-one', '.integrity'), 'sha256:x\n')
 
-      const clearedCalls: string[] = []
       const installer = createDefaultInstallService(
         { repositoryRoot: base, homeRoot },
-        coreLoader({
-          buildSkillboxHomeLayout: (root: string) => ({ cache: path.join(root, 'cache') }),
-          clearCache: async (clearedHome?: string) => {
-            clearedCalls.push(clearedHome ?? '')
-            await fs.rm(path.join(homeRoot, 'cache'), { recursive: true, force: true })
-          },
-        }),
+        installDeps(),
       )
-      const outcome = await installer.clearCache()
-      expect(outcome.cleared).toBe(2)
-      expect(clearedCalls).toEqual([homeRoot])
-      // The cache was actually emptied.
+      expect(await installer.clearCache()).toEqual({ cleared: 2 })
       await expect(fs.readdir(cacheRoot)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await fs.rm(base, { recursive: true, force: true })
@@ -419,8 +454,7 @@ describe('createDefaultInstallService', () => {
       const clearedCalls: string[] = []
       const installer = createDefaultInstallService(
         { repositoryRoot: base, homeRoot },
-        coreLoader({
-          buildSkillboxHomeLayout: (root: string) => ({ cache: path.join(root, 'cache') }),
+        installDeps({
           clearCache: async (clearedHome?: string) => {
             clearedCalls.push(clearedHome ?? '')
           },
@@ -432,32 +466,85 @@ describe('createDefaultInstallService', () => {
       await fs.rm(base, { recursive: true, force: true })
     }
   })
+
+  it('falls back to the core-resolved home when the CLI home root is empty', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cache-test-'))
+    try {
+      const homeRoot = path.join(base, 'resolved-home')
+      const cacheRoot = buildSkillboxHomeLayout(homeRoot).cache
+      await fs.mkdir(path.join(cacheRoot, 'cccc3333', 'rev-three'), { recursive: true })
+      const clearedCalls: string[] = []
+      const installer = createDefaultInstallService(
+        { repositoryRoot: base, homeRoot: '' },
+        installDeps({
+          resolveSkillboxHome: () => homeRoot,
+          clearCache: async (clearedHome?: string) => {
+            clearedCalls.push(clearedHome ?? '')
+          },
+        }),
+      )
+      expect(await installer.clearCache()).toEqual({ cleared: 1 })
+      expect(clearedCalls).toEqual([homeRoot])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
 })
 
+/* ------------------------------------------------------------------ *
+ * Security scanner
+ * ------------------------------------------------------------------ */
+
 describe('createDefaultSecurityScanner', () => {
-  it('throws INSTALL_DOWNLOAD_FAILED when the scanner has not landed', async () => {
-    const scanner = createDefaultSecurityScanner(coreLoader({}))
-    await expect(scanner.scan('/tmp/x')).rejects.toMatchObject({
-      code: ErrorCode.INSTALL_DOWNLOAD_FAILED,
-    })
+  it('adapts the real core scan onto the CLI result shape', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-scan-test-'))
+    try {
+      await fs.mkdir(path.join(base, 'scripts'))
+      await fs.writeFile(path.join(base, 'SKILL.md'), '# hello\n')
+      await fs.writeFile(
+        path.join(base, 'scripts', 'run.sh'),
+        '#!/bin/sh\nchild_process.exec("rm -rf /tmp/x")\n',
+      )
+      const result = await createDefaultSecurityScanner().scan(base)
+      expect(result.risk).toBe('high')
+      expect(result.block).toBe(true)
+      expect(result.filesScanned).toBe(2)
+      const shell = result.findings.find((finding) => finding.pattern === 'shell-exec')
+      expect(shell).toMatchObject({
+        file: 'scripts/run.sh',
+        line: 2,
+        risk: 'high',
+        recommendation: expect.any(String),
+      })
+      expect(shell?.recommendation.length).toBeGreaterThan(0)
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
   })
 
-  it('delegates to core scanSkillForSecurity', async () => {
+  it('delegates to the injected scanner and returns its result unchanged', async () => {
     const scanned: string[] = []
-    const scanner = createDefaultSecurityScanner(
-      coreLoader({
-        scanSkillForSecurity: async (dir: string) => {
-          scanned.push(dir)
-          return { risk: 'low', findings: [], filesScanned: 3, block: false }
-        },
-      }),
-    )
-    expect(await scanner.scan('/tmp/skill')).toEqual({
+    const review: CoreSecurityScanResult = {
       risk: 'low',
-      findings: [],
+      findings: [
+        {
+          pattern: 'shell-script-file',
+          name: 'Shell script file',
+          risk: 'low',
+          file: 'setup.sh',
+          recommendation: 'Review the script before running it.',
+        },
+      ],
       filesScanned: 3,
       block: false,
-    })
+    }
+    const deps: MarketplaceSecurityScannerDeps = {
+      scanSkillForSecurity: async (skillRoot: string) => {
+        scanned.push(skillRoot)
+        return review
+      },
+    }
+    expect(await createDefaultSecurityScanner(deps).scan('/tmp/skill')).toEqual(review)
     expect(scanned).toEqual(['/tmp/skill'])
   })
 })

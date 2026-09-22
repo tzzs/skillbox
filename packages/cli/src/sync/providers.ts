@@ -2,15 +2,14 @@
  * V0.2 Git Sync — provider contracts (CLI layer).
  *
  * These interfaces describe the shape the CLI sync pipeline depends on. They
- * are the agreed call sites for the parallel core workstreams:
+ * are the seam the pipeline is tested through:
  *
- * - Git (`GitProvider`)        → @skillbox/core `git/`  (agent 1, GitClient)
- * - GitHub (`GitHubProvider`)  → @skillbox/core `github/` (agent 2, Device Flow)
- * - Secrets (`SecretScanner`)  → @skillbox/core `secret-scan/` (agent 4)
+ * - Git (`GitProvider`)        → @skillbox/core `git/`  (GitClient)
+ * - GitHub (`GitHubProvider`)  → @skillbox/core `github/` (Device Flow)
+ * - Secrets (`SecretScanner`)  → @skillbox/core `secret-scan/`
  *
- * The CLI never talks to `git` itself; the loaders in `./loaders.js` map the
- * (not-yet-finished) core modules onto these interfaces, keeping the pipeline
- * testable and the wiring points isolated.
+ * The CLI never talks to `git` itself; the loaders in `./loaders.js` adapt the
+ * core exports onto these interfaces, and the pipeline only sees these shapes.
  */
 
 export type GithubConnectionState =

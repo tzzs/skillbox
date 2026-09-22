@@ -2,13 +2,11 @@
  * V0.4 Skill Lifecycle — CLI-layer contracts for `fork` / `vendor` / `edit` /
  * `diff` / `merge` (GAP_ANALYSIS §4, MVP M17.1-3, M18, M19.4, M20.6-7).
  *
- * The shapes below mirror the types agent 1 (`packages/core/src/lifecycle/`)
- * and agent 2 (`packages/core/src/diff/`, `packages/core/src/merge/`) are
- * landing in `@skillbox/core`. The CLI keeps its own structural copies so
- * this package typechecks while core is under construction; `./loaders.js`
- * adapts the real core exports onto these contracts at runtime — the same
- * dynamic-import pattern the V0.3 marketplace layer (`./marketplace/loaders.js`)
- * uses.
+ * The shapes below mirror the ones `@skillbox/core` defines in
+ * `packages/core/src/lifecycle/`, `diff/` and `merge/`. The CLI keeps its own
+ * copies so the command layer and its renderers stay independent of core's
+ * internal types; `./loaders.js` adapts the real (statically imported) core
+ * exports onto these contracts — the same pattern the marketplace layer uses.
  */
 
 /* ------------------------------------------------------------------ *
@@ -98,9 +96,10 @@ export interface RestoreResult {
 }
 
 /**
- * Lifecycle provider (agent 1) behind `fork` / `vendor` / `edit`. Each method
- * is adapted from a `@skillbox/core` free function by `./loaders.js`; when the
- * export has not landed, the adapter throws a typed error + recovery hint.
+ * Lifecycle provider behind `fork` / `vendor` / `edit`. Each method is adapted
+ * from a `@skillbox/core` function by `./loaders.js`; errors core raises
+ * (skill not found, no upstream, merge conflict) propagate to the command
+ * layer unchanged.
  */
 export interface LifecycleProvider {
   forkSkill(input: ForkSkillInput): Promise<ForkResult>

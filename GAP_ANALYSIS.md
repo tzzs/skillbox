@@ -342,14 +342,22 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   `MERGE_CONFLICT`，有 `MERGE_BINARY_CONFLICT` 等）、`marketplace/service.ts` 的 cache 公开 API TODO
   （§4.2）
 
-### 7.2 重复 Adapter、动态导入与双 Orchestrator（部分缓解）
+### 7.2 重复 Adapter、动态导入与双 Orchestrator（已清）
 
 - ✅ pull/push orchestration 已统一：`SyncService` 经 `SyncGitTransport` 走 Core `RepositorySync`
   （Credential Bridge），不再自行实现 git pull/push
-- 残留：CLI Sync / Marketplace / Lifecycle 仍大量使用 `loadSkillboxCore()` 动态导入 +
-  `Record<string, unknown>` 结构转换 + runtime arity check；`SyncService.connect/disconnect` 保留为
-  legacy fallback（生产默认路径已走 RepositorySync）
-- 建议：各模块稳定后改为显式 typed factory、删除宽泛转换、保留 DI seam 供测试
+- ✅ 动态导入已清：`packages/cli/src/core-module.ts`（`loadSkillboxCore` / `asRecord` /
+  `readString`）删除，sync / marketplace / skill-lifecycle 三处 loaders 改为静态 typed 导入
+  `@skillbox/core`——缺失导出、改名现在是编译错误而非运行时「本 build 缺这个导出」的猜测；
+  `updateSkill` 的 `length === 2` arity 探测随之消失（root barrel 明确重导出事务版本）
+- ✅ 保留 DI seam：每个工厂收一个只含所用 core 函数的窄 `deps` 参数（默认真实实现），
+  聚焦测试注入 fake 且 fake 必须返回 core 的真实结果形状（旧写法里 `upstream.baseRevision`
+  这类幻觉字段会直接编译失败）
+- 残留：`SyncService.connect/disconnect` 保留为 legacy fallback（生产默认路径已走
+  RepositorySync）；CLI `*/types.ts` 仍是 core 类型的结构性副本，若要合并需一并处理
+  `format.ts` / `service.ts` / web 渲染层，属独立一步
+- 附带修复：`git commit` 的空提交结果只在 stdout，core 失败错误此前只带 stderr，
+  导致 `nothing to commit` 永远识别不了；现在 `context.stdout` 一并暴露，适配器据此判定
 
 ---
 

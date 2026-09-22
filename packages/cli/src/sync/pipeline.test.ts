@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRegistry,
@@ -8,15 +10,19 @@ import {
   isSkillboxError,
   MemoryCredentialStore,
   SkillboxError,
+  type GitFileStatus,
+  type GitStatusResult,
   type ReconcileResult,
+  type ScanResult,
   type SkillService,
 } from '@skillbox/core'
 import {
-  SyncService,
   createDefaultGitHubProvider,
+  createDefaultGitProvider,
   createDefaultSecretScanner,
-  createGitProviderFromCore,
-  createSecretScannerFromCore,
+  SyncService,
+  type CoreGitClient,
+  type CoreSecretScan,
   type DeviceFlowStart,
   type DeviceFlowPollResult,
   type GitHubProvider,
@@ -30,6 +36,8 @@ import {
 } from './index.js'
 
 const REPO = 'C:\\repo'
+
+const execFileP = promisify(execFile)
 
 function reconcileResult(root: string): ReconcileResult {
   return {
@@ -362,60 +370,196 @@ describe('SyncService.connect / disconnect', () => {
 })
 
 describe('loaders (wiring points)', () => {
-  it('fails with GIT_UNAVAILABLE until the core GitClient exists', async () => {
-    const provider = createGitProviderFromCore(REPO, async () => ({}))
-    const error = await provider.status().catch((e: unknown) => e)
-    expect(isSkillboxError(error)).toBe(true)
-    expect(error).toMatchObject({ code: ErrorCode.GIT_UNAVAILABLE })
+  const gitFile = (over: Partial<GitFileStatus> = {}): GitFileStatus => ({
+    xy: 'M ',
+    path: 'skillbox.lock',
+    staged: true,
+    unstaged: false,
+    untracked: false,
+    conflict: false,
+    ...over,
   })
 
-  it('adapts an available core GitClient onto the interface', async () => {
-    const fake = new FakeGitProvider()
-    const FakeGitClient = class {
-      constructor(_root: string) {}
-      status = async () => ({
-        branch: 'main',
-        remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
-        ahead: 2,
-        behind: 3,
-        files: [
-          {
-            path: 'skillbox.lock',
-            conflict: false,
-            staged: true,
-            unstaged: false,
-            untracked: false,
-          },
-        ],
-        conflicts: [] as Array<{ path: string }>,
-        staged: [
-          {
-            path: 'skillbox.lock',
-            conflict: false,
-            staged: true,
-            unstaged: false,
-            untracked: false,
-          },
-        ],
-        unstaged: [] as Array<{ path: string }>,
-        untracked: [] as Array<{ path: string }>,
-        clean: false,
-      })
-      pull = () => fake.pull()
-      commit = (message: string, paths: readonly string[]) => fake.commit(message, paths)
-      push = () => fake.push()
+  const statusResult = (over: Partial<GitStatusResult> = {}, detached = false): GitStatusResult => {
+    const result: GitStatusResult = {
+      repositoryRoot: REPO,
+      branch: 'main',
+      remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
+      ahead: 2,
+      behind: 3,
+      files: [gitFile({})],
+      conflicts: [],
+      hasConflicts: false,
+      staged: [gitFile({})],
+      unstaged: [],
+      untracked: [],
+      clean: false,
+      ...over,
     }
-    const provider = createGitProviderFromCore(REPO, async () => ({ GitClient: FakeGitClient }))
+    if (detached) {
+      delete result.branch
+    }
+    return result
+  }
+
+  const clientOf = (over: Partial<CoreGitClient>): CoreGitClient => ({
+    status: async () => statusResult(),
+    pull: async () => undefined,
+    push: async () => undefined,
+    commit: async () => ({ hash: 'abc1234def' }),
+    ...over,
+  })
+
+  it('fails with GIT_UNAVAILABLE when the git binary is missing', async () => {
+    const provider = createDefaultGitProvider(REPO, clientOf({ isInstalled: async () => false }))
+    for (const call of [
+      () => provider.status(),
+      () => provider.pull(),
+      () => provider.commit('skillbox: sync', []),
+      () => provider.push(),
+    ]) {
+      const error = await call().catch((e: unknown) => e)
+      expect(isSkillboxError(error)).toBe(true)
+      expect(error).toMatchObject({ code: ErrorCode.GIT_UNAVAILABLE })
+    }
+  })
+
+  it('adapts the core GitClient onto the CLI git contract', async () => {
+    const fake = new FakeGitProvider()
+    const roots: string[] = []
+    const committed: Array<{ root: string; paths: readonly string[] | undefined }> = []
+    const provider = createDefaultGitProvider(
+      REPO,
+      clientOf({
+        status: async (root) => {
+          roots.push(root)
+          return statusResult()
+        },
+        pull: async (root) => {
+          roots.push(root)
+          await fake.pull()
+        },
+        commit: async (root, message, paths) => {
+          committed.push({ root, paths })
+          await fake.commit(message, paths ?? [])
+          return { hash: 'abc1234def' }
+        },
+        push: async (root) => {
+          roots.push(root)
+          await fake.push()
+        },
+      }),
+    )
+
     const report = await provider.status()
+    // The core client is rootless: the adapter passes the configured root per call.
     expect(report).toMatchObject({
       isRepository: true,
       branch: 'main',
       remote: { name: 'origin', url: 'https://github.com/u/repo.git' },
       ahead: 2,
       behind: 3,
+      changedFiles: ['skillbox.lock'],
+      stagedFiles: ['skillbox.lock'],
+      conflicts: [],
     })
+
+    expect(await provider.commit('skillbox: sync', ['skillbox.lock'])).toMatchObject({
+      committed: true,
+      shortHash: 'abc1234',
+    })
+    const pull = await provider.pull()
+    expect(pull).toEqual({ conflicts: [], changedFiles: ['skillbox.lock'] })
     await provider.push()
+    expect(roots.every((root) => root === REPO)).toBe(true)
+    expect(committed).toEqual([{ root: REPO, paths: ['skillbox.lock'] }])
     expect(fake.pushCalls).toBe(1)
+  })
+
+  it('falls back to currentBranch() when the status result has no branch', async () => {
+    const provider = createDefaultGitProvider(
+      REPO,
+      clientOf({
+        status: async () => statusResult({ files: [], staged: [] }, true),
+        currentBranch: async () => 'feature/sync',
+      }),
+    )
+    expect(await provider.status()).toMatchObject({
+      branch: 'feature/sync',
+      changedFiles: [],
+      stagedFiles: [],
+    })
+  })
+
+  it('reports a failed status as a non-repository and empty commit as nothing to commit', async () => {
+    const notARepository = createDefaultGitProvider(
+      REPO,
+      clientOf({
+        status: async () => {
+          throw new SkillboxError(ErrorCode.GIT_COMMAND_FAILED, 'git status failed', {
+            context: { stderr: 'fatal: not a git repository' },
+          })
+        },
+      }),
+    )
+    expect(await notARepository.status()).toMatchObject({
+      isRepository: false,
+      changedFiles: [],
+      conflicts: [],
+    })
+
+    const clean = createDefaultGitProvider(
+      REPO,
+      clientOf({
+        commit: async () => {
+          throw new SkillboxError(
+            ErrorCode.GIT_COMMAND_FAILED,
+            'nothing to commit, working tree clean',
+          )
+        },
+      }),
+    )
+    expect(await clean.commit('skillbox: sync', ['skillbox.lock'])).toEqual({
+      committed: false,
+      message: 'skillbox: sync',
+    })
+  })
+
+  it('drives a real git working tree through the shipped core GitClient', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-git-wiring-'))
+    try {
+      const git = async (args: string[]): Promise<string> =>
+        (await execFileP('git', ['-C', root, ...args])).stdout
+      await git(['init', '-b', 'main'])
+      await git(['config', 'user.email', 'skillbox@example.test'])
+      await git(['config', 'user.name', 'skillbox'])
+      await fs.writeFile(path.join(root, 'skillbox.yaml'), 'skills: {}\n')
+      await git(['add', 'skillbox.yaml'])
+      await git(['commit', '-m', 'init'])
+      await fs.writeFile(path.join(root, 'skillbox.yaml'), 'skills:\n  demo: {}\n')
+      await fs.writeFile(path.join(root, 'notes.md'), 'untracked\n')
+
+      const provider = createDefaultGitProvider(root)
+      const report = await provider.status()
+      expect(report).toMatchObject({ isRepository: true, branch: 'main' })
+      expect(report.changedFiles).toContain('skillbox.yaml')
+      expect(report.conflicts).toEqual([])
+
+      const committed = await provider.commit('skillbox: sync 1 change', ['skillbox.yaml'])
+      expect(committed).toMatchObject({ committed: true, message: 'skillbox: sync 1 change' })
+      expect(committed.shortHash).toMatch(/^[0-9a-f]{7}$/)
+      // Re-running the same commit has nothing left to stage.
+      expect(await provider.commit('skillbox: sync 1 change', ['skillbox.yaml'])).toMatchObject({
+        committed: false,
+      })
+
+      const after = await provider.status()
+      expect(after.changedFiles).not.toContain('skillbox.yaml')
+      // Only the named paths are committed; everything else stays dirty.
+      expect(after.changedFiles).toContain('notes.md')
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 
   it('default GitHub provider reads the shipped core connection state', async () => {
@@ -535,15 +679,62 @@ describe('loaders (wiring points)', () => {
     }
   })
 
-  it('secret scanner reports not-ready and empty scans when unwired', async () => {
-    const scanner = createSecretScannerFromCore('C:\\repo', async () => ({}))
-    expect(await scanner.isReady()).toBe(false)
-    const result = await scanner.scanChangedFiles(['skills/foo/SKILL.md'])
-    expect(result).toEqual({ findings: [], blocked: false })
+  it('maps core scan results onto the CLI secret-scan contract', async () => {
+    const seen: Array<{ files: readonly string[]; root: string | undefined }> = []
+    const scan: CoreSecretScan = async (files, options) => {
+      seen.push({ files, root: options?.root })
+      const result: ScanResult = {
+        filesScanned: files.length,
+        findings: [
+          {
+            file: 'skills/foo/SKILL.md',
+            line: 12,
+            patternId: 'aws-access-key',
+            name: 'AWS access key id',
+            severity: 'high',
+            scope: 'content',
+            snippet: 'AKIA****',
+            recommendation: 'Rotate the key.',
+          },
+        ],
+        blocked: [],
+        warnings: [],
+        infos: [],
+        block: true,
+        skippedByIgnore: [],
+        skippedByPolicy: [],
+      }
+      return result
+    }
+    const scanner = createDefaultSecretScanner(REPO, scan)
+    expect(await scanner.isReady()).toBe(true)
+    expect(await scanner.scanChangedFiles(['skills/foo/SKILL.md'])).toEqual({
+      blocked: true,
+      findings: [
+        {
+          path: 'skills/foo/SKILL.md',
+          rule: 'aws-access-key',
+          severity: 'high',
+          message: '[AWS access key id] AKIA****',
+        },
+      ],
+    })
+    // The scanner anchors relative paths on the configured repository root.
+    expect(seen).toEqual([{ files: ['skills/foo/SKILL.md'], root: REPO }])
   })
 
-  it('default secret scanner wires against the shipped core scanFiles', async () => {
-    const scanner = createDefaultSecretScanner('C:\\repo')
-    expect(await scanner.isReady()).toBe(true)
+  it('default secret scanner runs the shipped core scanFiles', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-secret-scan-'))
+    try {
+      await fs.writeFile(path.join(root, 'SKILL.md'), '# Instructions\n\nRun the tests.\n')
+      const scanner = createDefaultSecretScanner(root)
+      expect(await scanner.isReady()).toBe(true)
+      expect(await scanner.scanChangedFiles(['SKILL.md'])).toEqual({
+        findings: [],
+        blocked: false,
+      })
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 })
