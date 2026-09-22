@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { withTempDir } from '../fs/test-utils.js'
-import { writeManifest, emptyManifest, addSkill } from '../manifest/index.js'
+import { writeManifest, emptyManifest, addSkill, type ManifestSkillSource } from '../manifest/index.js'
 import { RuntimeLibraryService } from '../runtime/library.js'
 import { RuntimeLinkState } from '../runtime/links.js'
 import { reconcile } from '../reconcile/engine.js'
@@ -129,10 +129,15 @@ describe('StatusService outdated detection (M16.1)', () => {
   async function seedManagedRuntime(
     repoRoot: string,
     homeRoot: string,
-    options: { lockedRevision?: string; lockedIntegrity?: string; latestRevision?: string } = {},
+    options: {
+      lockedRevision?: string
+      lockedIntegrity?: string
+      latestRevision?: string
+      source?: ManifestSkillSource
+    } = {},
   ): Promise<{ runtimeDir: string; integrity: string }> {
-    const source = {
-      type: 'github' as const,
+    const source: ManifestSkillSource = options.source ?? {
+      type: 'github',
       repo: 'acme/skillz',
       path: 'skills/hello',
       ref: 'main',
@@ -213,6 +218,34 @@ describe('StatusService outdated detection (M16.1)', () => {
       const report = await status.status()
       const hello = report.skills.find((skill) => skill.name === 'hello')
       expect(hello?.status).toBe('outdated')
+    })
+  })
+
+  it('maps git sources onto the provider for outdated detection', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      const homeRoot = path.join(dir, 'home')
+      await fs.mkdir(repoRoot)
+      await seedManagedRuntime(repoRoot, homeRoot, {
+        source: { type: 'git', url: 'https://git.example.com/org/repo.git' },
+        latestRevision: 'new-sha',
+      })
+
+      const seen: unknown[] = []
+      const status = new StatusService({
+        repositoryRoot: repoRoot,
+        homeRoot,
+        provider: {
+          getLatestRevision: async (source) => {
+            seen.push(source)
+            return 'new-sha'
+          },
+        },
+      })
+      const report = await status.status()
+      const hello = report.skills.find((skill) => skill.name === 'hello')
+      expect(hello?.status).toBe('outdated')
+      expect(seen[0]).toMatchObject({ type: 'git', url: 'https://git.example.com/org/repo.git' })
     })
   })
 

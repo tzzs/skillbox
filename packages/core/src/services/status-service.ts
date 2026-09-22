@@ -257,11 +257,9 @@ export class StatusService {
    * against the latest upstream revision. A `modified` (integrity mismatch)
    * state takes precedence — an outdated check is only reached on `ready`.
    *
-   * TODO(agent-1): wiring point — this calls the registry framework's
-   * `getLatestRevision` through the injected `UpstreamRevisionProvider`
-   * (structurally compatible with `RegistryProvider`). The framework is
-   * being built in parallel (`packages/core/src/registry/`); tests inject a
-   * mock provider, and without one the lockfile's recorded
+   * The lookup goes through the injected `UpstreamRevisionProvider`
+   * (structurally compatible with `RegistryProvider`); tests inject a mock
+   * provider, and without one the lockfile's recorded
    * `upstream.latestRevision` is used as a fallback.
    */
   private async outdatedStatus(
@@ -398,6 +396,12 @@ export class StatusService {
  */
 function manifestSourceToNormalized(source: ManifestSkillSource): NormalizedSource | undefined {
   switch (source.type) {
+    case 'git': {
+      const normalized: NormalizedSource = { type: 'git', url: source.url }
+      if (source.path !== undefined) normalized.path = source.path
+      if (source.ref !== undefined) normalized.ref = source.ref
+      return normalized
+    }
     case 'github': {
       const normalized: NormalizedSource = { type: 'github', repo: source.repo }
       if (source.path !== undefined) normalized.path = source.path
