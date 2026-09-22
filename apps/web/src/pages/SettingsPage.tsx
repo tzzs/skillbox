@@ -25,6 +25,18 @@ interface MachineDraft {
   webHost: string
   webOpen: boolean
   agentPaths: Record<string, string>
+  autoAdopt: boolean
+  /** Raw comma-separated text; parsed into a list only on save. */
+  ignoreAgents: string
+  ignoreSkills: string
+}
+
+/** Parses the comma/newline-separated ignore fields into trimmed entries. */
+function parseIgnoreList(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
 }
 
 /**
@@ -68,6 +80,9 @@ export function SettingsPage() {
       webHost: settings.web?.host ?? '',
       webOpen: settings.web?.open ?? true,
       agentPaths: {},
+      autoAdopt: settings.library?.autoAdopt ?? true,
+      ignoreAgents: (settings.library?.ignoreAgents ?? []).join(', '),
+      ignoreSkills: (settings.library?.ignoreSkills ?? []).join(', '),
     })
   }, [settings, draft])
 
@@ -127,6 +142,31 @@ export function SettingsPage() {
       patch.agents = agentPatch
     }
     save.mutate(patch)
+  }
+
+  /**
+   * Saves the personal-library block on its own: those controls live outside
+   * the Machine form, so they need their own submit rather than piggybacking
+   * on a Save button the user may never press.
+   */
+  const saveLibrary = () => {
+    if (draft === null || save.isPending) {
+      return
+    }
+    const currentLibrary = settings?.library
+    const ignoreAgents = parseIgnoreList(draft.ignoreAgents)
+    const ignoreSkills = parseIgnoreList(draft.ignoreSkills)
+    const sameList = (current: string[] | undefined, next: string[]): boolean =>
+      (current ?? []).length === next.length &&
+      (current ?? []).every((item, index) => item === next[index])
+    if (
+      draft.autoAdopt === (currentLibrary?.autoAdopt ?? true) &&
+      sameList(currentLibrary?.ignoreAgents, ignoreAgents) &&
+      sameList(currentLibrary?.ignoreSkills, ignoreSkills)
+    ) {
+      return
+    }
+    save.mutate({ library: { autoAdopt: draft.autoAdopt, ignoreAgents, ignoreSkills } })
   }
 
   return (
@@ -277,6 +317,79 @@ export function SettingsPage() {
               </p>
             </div>
           </section>
+
+          {draft !== null ? (
+            <section className="settings-card" style={{ gridColumn: '1 / -1' }}>
+              <h2>Personal library</h2>
+              <p className="field-hint">
+                The machine-centric library at <code className="mono">&lt;home&gt;/personal</code>.
+                Only this library is ever adopted into — a repository you point at with{' '}
+                <code className="mono">--repository</code> keeps its contents under your control.
+              </p>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={draft.autoAdopt}
+                  onChange={(event) => setDraft({ ...draft, autoAdopt: event.target.checked })}
+                />
+                <span>Import existing agent skills when the library is empty</span>
+              </label>
+              <p className="field-hint">
+                Turning this off leaves the library empty on open; the Library page button and{' '}
+                <code className="mono">skillbox adopt</code> still import on demand.
+              </p>
+              <div className="field">
+                <label className="field-label" htmlFor="setting-ignore-agents">
+                  Ignored agents
+                </label>
+                <input
+                  id="setting-ignore-agents"
+                  className="field-input"
+                  type="text"
+                  value={draft.ignoreAgents}
+                  placeholder="cursor, windsurf"
+                  onChange={(event) => setDraft({ ...draft, ignoreAgents: event.target.value })}
+                />
+                <p className="field-hint">
+                  Comma-separated agent ids whose skill directories stay untouched. A skill an
+                  ignored agent shares with another agent is still imported for the others.
+                </p>
+              </div>
+              <div className="field">
+                <label className="field-label" htmlFor="setting-ignore-skills">
+                  Ignored skills
+                </label>
+                <input
+                  id="setting-ignore-skills"
+                  className="field-input"
+                  type="text"
+                  value={draft.ignoreSkills}
+                  placeholder="scratch, wip-notes"
+                  onChange={(event) => setDraft({ ...draft, ignoreSkills: event.target.value })}
+                />
+                <p className="field-hint">
+                  Comma-separated skill names that are never imported. Skipped candidates are
+                  reported with their reason after an import.
+                </p>
+              </div>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={saveLibrary}
+                  disabled={save.isPending}
+                >
+                  {save.isPending ? <span className="spinner" /> : null}
+                  Save library settings
+                </button>
+              </div>
+              {save.isError ? (
+                <div className="form-error" role="alert">
+                  {errorMessage(save.error)}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           <section className="settings-card" style={{ gridColumn: '1 / -1' }}>
             <h2>Machine</h2>

@@ -23,6 +23,23 @@ export interface AdoptSkip {
   reason: string
 }
 
+/**
+ * What `adopt()` leaves alone. Both lists are compared case-insensitively
+ * after trimming, so a hand-edited `config.json` and a `--ignore-agent Claude`
+ * flag behave the same.
+ */
+export interface AdoptPolicy {
+  /** Agent ids whose skill directories stay un-adopted (e.g. `["cursor"]`). */
+  ignoreAgents?: readonly string[]
+  /** Skill names that are never imported (e.g. `["scratch"]`). */
+  ignoreSkills?: readonly string[]
+}
+
+const normalizeIgnoreEntry = (value: string): string => value.trim().toLowerCase()
+
+const isIgnored = (name: string, ignore: readonly string[] | undefined): boolean =>
+  ignore !== undefined && ignore.map(normalizeIgnoreEntry).includes(normalizeIgnoreEntry(name))
+
 export interface AdoptReport {
   /** Agent skills detected across every detected adapter (deduped by name). */
   scanned: number
@@ -90,9 +107,11 @@ export class PersonalLibraryService {
    * into the personal repository. Safe to run repeatedly: already-imported
    * skills with identical content resolve to `unchanged`, and same-name
    * different-content collisions are reported as skipped conflicts instead of
-   * overwriting anything.
+   * overwriting anything. `policy` excludes agents and skills up front; the
+   * dropped candidates still show up in `skipped` so the caller can report why
+   * something the user sees on disk never appeared in the Library.
    */
-  async adopt(): Promise<AdoptReport> {
+  async adopt(policy: AdoptPolicy = {}): Promise<AdoptReport> {
     const root = await this.ensureLibrary()
     const skills = new SkillService({
       repositoryRoot: root,
@@ -104,11 +123,28 @@ export class PersonalLibraryService {
     const report: AdoptReport = { scanned: 0, imported: 0, unchanged: 0, conflicts: 0, skipped: [] }
     for (const candidate of await this.scanExternalSkills()) {
       report.scanned += 1
+      if (isIgnored(candidate.name, policy.ignoreSkills)) {
+        report.skipped.push({
+          name: candidate.name,
+          agents: candidate.agents,
+          reason: 'ignored by settings',
+        })
+        continue
+      }
+      const agents = candidate.agents.filter((agent) => !isIgnored(agent, policy.ignoreAgents))
+      if (agents.length === 0) {
+        report.skipped.push({
+          name: candidate.name,
+          agents: candidate.agents,
+          reason: 'every owning agent is ignored',
+        })
+        continue
+      }
       try {
         const result = await skills.importExistingSkill({
           name: candidate.name,
           sourceDir: candidate.sourceDir,
-          ...(candidate.agents.length > 0 ? { migrateAgents: candidate.agents } : {}),
+          migrateAgents: agents,
         })
         if (result.status === 'imported') {
           report.imported += 1
