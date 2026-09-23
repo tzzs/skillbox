@@ -7,6 +7,8 @@ import {
   type ReconcileResult,
   type SkillService,
 } from '@skillbox/core'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import { renderTable } from '../table.js'
 import { emitSkillboxEvent } from '@skillbox/core'
 import type {
@@ -57,6 +59,13 @@ export interface SyncServiceOptions {
    * `gitProvider` by omitting it.
    */
   gitTransport?: SyncGitTransport
+  /**
+   * Existence probe for an owned path before it is handed to `git add`. A
+   * pathspec that matches nothing fails the whole staging, so a repository
+   * without `skills/` yet must not stage that directory. Injectable so the
+   * pipeline stays testable without touching the real filesystem.
+   */
+  managedPathExists?: (relativePath: string) => Promise<boolean>
 }
 
 export interface SyncResult {
@@ -120,6 +129,7 @@ export class SyncService {
   private readonly out: (chunk: string) => void
   private readonly sleep: (ms: number) => Promise<void>
   private readonly gitTransport: SyncGitTransport | undefined
+  private readonly managedPathExists: (relativePath: string) => Promise<boolean>
 
   constructor(options: SyncServiceOptions) {
     this.repositoryRoot = options.repositoryRoot
@@ -131,6 +141,25 @@ export class SyncService {
     this.out = options.out
     this.sleep = options.sleep ?? defaultSleep
     this.gitTransport = options.gitTransport
+    this.managedPathExists =
+      options.managedPathExists ??
+      ((relative) =>
+        fs.access(path.join(this.repositoryRoot, relative)).then(
+          () => true,
+          () => false,
+        ))
+  }
+
+  /** The owned paths present in the repository, in staging order. */
+  private async presentManagedPaths(): Promise<string[]> {
+    const present: string[] = []
+    for (const owned of SYNC_MANAGED_PATHS) {
+      const relative = owned.replace(/\/$/, '')
+      if (await this.managedPathExists(relative)) {
+        present.push(relative)
+      }
+    }
+    return present
   }
 
   /* ------------------------------------------------------------------ *
@@ -256,8 +285,11 @@ export class SyncService {
       changedManagedCount > 0
         ? `skillbox: sync ${changedManagedCount} skill change${changedManagedCount === 1 ? '' : 's'}`
         : 'chore(skillbox): sync skills'
-    const pathsToStage = SYNC_MANAGED_PATHS.map((p) => p.replace(/\/$/, ''))
-    const commit = await this.gitProvider.commit(message, pathsToStage)
+    const pathsToStage = await this.presentManagedPaths()
+    const commit =
+      pathsToStage.length === 0
+        ? { committed: false as const, message }
+        : await this.gitProvider.commit(message, pathsToStage)
     const commitMessage = commit.committed ? commit.message : undefined
     this.recordStep(
       steps,
