@@ -142,6 +142,33 @@ CLI 未构建时套件自跳过并提示。
 - authorization timeout/cancel/retry、private remote auth failure 场景
 - 三平台 manual acceptance 证据（§6.3）
 
+### 2.4 安装路径看不见真正的 secret：两套扫描规则互为盲区（未修，需定策略）
+
+同一件事有两个扫描器，规则集不同，而它们各自看不见的正是对方看得见的（`add` 走 `security/`，
+`sync` 走 `secret-scan/`）：
+
+|                   | `security/`（`skillbox add` / install / update）                                                                                       | `secret-scan/`（`skillbox sync`）                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 规则数            | 12（11 content + 1 file）                                                                                                              | 18（14 content + 4 file）                                                                                                                                                                        |
+| token 形态 secret | **0**                                                                                                                                  | `github-pat`、`openai-api-key`、`anthropic-api-key`、`stripe-live-key`、`aws-access-key`、`aws-secret-key`、`google-api-key`、`slack-token`、`telegram-bot-token`、`jwt-token`、`generic-bearer` |
+| 私钥材料          | **0**                                                                                                                                  | `private-key-block`、`private-key-file`、`ssh-private-key`                                                                                                                                       |
+| 凭据文件          | **0**                                                                                                                                  | `dotenv-file`、`credential-file`                                                                                                                                                                 |
+| 行为形态          | `shell-exec`、`curl-bash-pipe`、`network-request`、`fs-destructive`、`env-credential-read`、`ssh-credential-path`、`shell-script-file` | 无                                                                                                                                                                                               |
+
+实测形状：一个 skill 目录里放 `id_rsa`（private key block）+ 含 `STRIPE_SECRET_KEY=sk_live_…` 的
+`.env` —— `sync` 报 4 条 blocking（critical/high），`add` 报
+`risk=low, block=false, findings=[]`。反向也成立（`curl-bash-pipe` 会挡住安装，sync 完全无感）。
+
+所以「这个 skill 安全吗」目前没有单一答案：答案取决于用户先跑哪个命令。两种可选口径：
+
+- (a) **一份规则集，两个呈现**：把 secret 目录并进 `security/`（或反之），阈值各自保留
+  （install 的 high 阻断 vs sync 的 high+critical 阻断是刻意的差异，不该顺手统一）；
+- (b) **明确分工并写进产品**：`security/` 只管「这个 skill 会让 agent 做什么」，secret 一律由
+  发布前 `sync` 负责 —— 那 `add` 的输出必须改口径（不再声称扫过 secret），否则就是虚假承诺。
+
+倾向 (a)，因为本地优先的入口是 `add`。§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、
+文件读取）收敛成一处，规则集本身仍未动。
+
 ---
 
 ## 3. P1 — 产品能力未闭环
@@ -175,6 +202,34 @@ CLI 未构建时套件自跳过并提示。
 
 - CLI Marketplace 与 Web Registry 的 provider 注册/适配代码仍未完全统一（共用 core
   defaultRegistry，主要是 loader 层重复，roadmap 4.2 调用方迁移）
+
+本轮（2026-09-24）source 标识与缓存键：
+
+- ✅ **一个 source 只有一种标识定义**：此前 `describeSource`（core 错误消息）、
+  `canonicalSourceString`（core 缓存键）、`marketplace/format.ts` 的 `formatSource`（CLI 展示）各写了
+  一遍 `NormalizedSource → string`，并且已经漂了（github 一边带 `#ref` 一边丢；skills-sh 一边带前缀
+  一边裸 package）。现在 core 一处拥有两件事：`sourceIdentityFields`（结构化 —— 按字段名排序的
+  `[key, value]`，不参与任何分隔符约定）与 `describeSource`（人类形态）；CLI 展示复用后者。
+- ⚠ **顺手修掉一个会装错文件的缺陷**：skills.sh 的缓存标识此前**不含 `path`**（只有展示里有），
+  而 `SkillsShProvider.resolve` 对 repo-backed 包返回仓库 HEAD 且不带 integrity
+  （`registry/skills-sh.ts:145-155`）。于是 `add skills.sh/acme/skillz@skills/b` 会命中
+  `@skills/a` 的缓存条目，`install/transaction.ts:362-367` 再把那条目的 integrity 当成新装的期望值 —
+  A 的内容装到 B 名下，还带 A 的安全评级。结构化标识让 `type/package/path/version` 自动全参与，
+  并且 `package` 里含 `@` 也不会与 `path` 撞车（字符串拼接做不到这点）。代价是 skills.sh 既有缓存
+  目录摘要改变 → 一次重新下载（缓存本就按可丢弃设计，`CACHE_INVALID` 即 purge）。
+- 仍留：`registry/source.ts:338 sourceToString` 是第四种拼写，但**有意的** —— 它是「能被 `parseSource`
+  读回去」的输入语法序列化器（`skills.sh/<pkg>@<path>#<ver>`），与标识、展示都不同用途。别顺手合并，
+  也别再往它身上加展示职责。
+
+待定（skills.sh 的 `path` 在别处仍然丢）：
+
+- **`toManifestSource` 对 skills-sh 丢 `path`**（`registry/source.ts:395-401` 只写
+  `type/registry/package/version`）：manifest/lock 里的 skills.sh 条目不再说明是包里的**哪一个** skill；
+  缓存键修好之后，「重装 / update / 新机器 clone」仍会重新解析出另一个子路径。改法牵出 schema
+  （给 registry source 加 `path`，或把 path 折进 package 表达式）+ 迁移，本轮未动。
+- **`SkillsShProvider.resolve` 让注册表的 `metadata.path` 覆盖用户显式 `path`**
+  （`registry/skills-sh.ts:149-150` 的 spread 顺序：`source.path` 在前、`metadata.path` 在后）：
+  与用户意图相反，应显式 path 优先。属策略修正，本轮未动。
 
 ### 3.2 ✅ Web 与 CLI Lifecycle 能力不对等（已闭环，2026-08-14）
 
@@ -216,12 +271,27 @@ manifest/lockfile 快照级回滚仍属于后续增强；当前 Operation Journa
 - ✅ Agent override 已支持 `skillDirectories: string[]`，并保留旧 `path` / `executable` 兼容
 - 新增字段仍应继续提供 schema migration 或向后兼容解析（与 §4.2 联动）
 
-### 3.5 Logging 尚未贯穿主要业务流水线（未变）
+### 3.5 Logging 与可观测性（交互/Web 侧本轮补齐）
 
 Logger、verbosity、脱敏与 CLI flags 已落地。**CLI mutation 审计日志已接入**：`CliContext.logger`
 （默认写 `~/.skillbox/logs/skillbox.log`）+ 13 个 mutation 命令 + connect/disconnect 记录
 `mutation:<op>:start/done/failed`（含错误 message，经 redactor 脱敏）；debug bundle 的 log tail 现在有真实内容。
 Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事件；registry/lifecycle 的专用结构化 debug 字段仍可继续细化。
+
+本轮补掉四处「信息算出来了但没人看」：
+
+- ✅ 交互菜单不再只报数量：`reportProblems` 从 `program.ts` 私有函数提成 `packages/cli/src/report.ts`
+  （`session.ts` 不能 import `program.ts`，会成环），菜单里的 sync 与 enable/disable 现在与命令行
+  打印同样的 `  CODE alias: message` 明细
+- ✅ `sync` 的步骤明细不再算完就丢：`renderSyncSteps`（此前零调用方，`SyncResult.steps` 由 ~15 处
+  `recordStep` 填、只有测试读）接进 `skillbox sync`，仅在 `--verbose` / `--debug` 下多打一张
+  `Sync steps` 表；默认输出逐字不变。`ctx.verbosity` 显式由 `main()` 传入 context，
+  不再靠两条语句前刚 `setGlobalVerbosity` 的进程级隐式值
+- ✅ sync 事务的回滚失败不再被 `.catch(() => undefined)` 吞掉：详见 §4.6
+- ✅ Web「Update all」不再只报一个数字：每个失败行保留自己的 `reason`（服务端 M10.8 envelope 的
+  `error.message`，本来就带、只是没人渲染）
+
+仍缺：TUI 实时订阅 OperationRuntime journal（§4.4 残余）。
 
 ---
 
@@ -276,6 +346,26 @@ failed/finding → warn）。**Web SSE**：`GET /api/events` 把事件流式推�
 - **CLI**：`skillbox doctor`（人类可读 / `--json` / `--bundle <path>`，泄漏命中时输出 WARNING；
   探针失败时**退出码非零**，CI 可用 `skillbox doctor` 做门禁）
 - 测试：`diagnostics/doctor.test.ts` 4 例 + CLI doctor 1 例
+
+### 4.6 ✅ sync 事务的回滚失败现在会告知用户（2026-09-24）
+
+`packages/core/src/sync/sync-transaction.ts` 的两处收尾（`run` 与 `resolve`）此前对
+`abortMerge` / `snapshots.restore` / `removeWorktree` / `fs.rm` 一律 `.catch(() => undefined)`
+之后再 rethrow 原始错误 —— 也就是**最坏的那一种失败（工作树没被恢复回去）完全无声**：用户只看到
+sync 失败，不知道自己的目录可能停在事务中间态。
+
+现在：
+
+- 每个 cleanup 步骤的失败记成 `CleanupFailure{ step, target, message, blocking }`；只有 `restore`
+  算 `blocking`（泄一个临时 worktree 是下次 sync 会忽略的垃圾，工作树没恢复是必须动手的事实）
+- 报告同时挂在原错误的 `context.rollback`（结构化，给程序读）与 `message`（每个界面都会打印的唯一字段）；
+  **错误对象与 `code` 保持 identity**，调用方与测试仍按 code 分类，pre-existing `context` 合并不丢
+- `reasonOf` 取 `cause` 链最深一条 message（`SnapshotService` 会二次包装，「could not restore」本身没信息量）
+- 幂等：同一个错误被标注两次时句子只追加一次，`failures` 仍累加
+- 成功路径不变：干净回滚仍然完全静默
+- 测试：`sync-transaction.test.ts` 6 例（临时目录真事务、两条 rollback 路径、双标注幂等、无失败时零改动）
+
+未做：`context.rollback` 在 Web envelope 里的结构化呈现（目前只有拼进 message 才看得见）。
 
 ---
 
@@ -338,9 +428,11 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   `sync/loaders.ts` 的旧 GitHub 构造器注释
 - ✅ 已清理：`install/transaction.ts` 的 provider TODO（registry 框架已落地，注释更新为现状描述）、
   `marketplace/types.ts` 的 updateSkill TODO（已由 `@skillbox/core/install` 提供）
-- 仍准确：`exit-codes.ts`「until agent 2 lands `MERGE_CONFLICT`」（Core `ErrorCode` 确无
-  `MERGE_CONFLICT`，有 `MERGE_BINARY_CONFLICT` 等）、`marketplace/service.ts` 的 cache 公开 API TODO
-  （§4.2）
+- ✅ 已清理（2026-09-24）：`exit-codes.ts`「until agent 2 lands `MERGE_CONFLICT`」—— core 的
+  `ErrorCode` 现在有 `MERGE_CONFLICT` / `LIFECYCLE_UNAVAILABLE`，CLI 不再自造；
+  `web/types.ts` 指向 `services.ts`「TODO wiring points」的那句 —— registry / updates / install
+  已全部接到真实 core，注释改成现状
+- 仍准确：`marketplace/service.ts` 的 cache 公开 API TODO（§4.2）
 
 ### 7.2 重复 Adapter、动态导入与双 Orchestrator（已清）
 
@@ -367,10 +459,40 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   true；diff 只承载 managed / forked 这两种有 upstream 的 mode）
 - ✅ 顺带清掉方向反了的注释：core 的 merge / diff 结果原本写着「mirror of the
   CLI's `X`」——core 是被依赖的一边，不该引用 CLI 的名字
+- ✅ 已清（2026-09-24）：CLI 自造错误码。`skill-lifecycle/loaders.ts` 此前用
+  `'MERGE_CONFLICT' as SkillboxErrorCode` 顶替 core 缺的成员；现在两个码进了 core `ErrorCode`，
+  投影和 TODO 一起消失。连带把 `exit-codes.ts` 三张分类表从 `Set<string>` 改成
+  `Set<SkillboxErrorCode>` —— 旧写法对字符串没有任何约束力，core 改一个名只会留下一条永远命中不到的
+  死条目，现在它变成编译错误（`web/errors.ts` 的 `Partial<Record<…>>` 保持局部映射是有意的：
+  那两个码到不了 web envelope，`web/services.ts` 直接调 core 原语）
+- ✅ 已清：两套扫描器的**基元**重复（2 MiB 内容上限、severity/risk 排序、可扫描内容的读取）
+  收进 `secret-scan/scan-primitives.ts` 一处。规则集仍各自为政，见 §2.4 —— 边界是刻意划的：
+  两边阻断阈值不同（install 看 high，sync 看 high+critical），顺手统一会静默改变「什么会被挡下」
 - 残留：`SyncService.connect/disconnect` 保留为 legacy fallback（生产默认路径已走
   RepositorySync）
 - 附带修复：`git commit` 的空提交结果只在 stdout，core 失败错误此前只带 stderr，
   导致 `nothing to commit` 永远识别不了；现在 `context.stdout` 一并暴露，适配器据此判定
+
+### 7.3 零引用导出与死文件（2026-09-24 逐个 grep 过，删与留都表了态）
+
+已删：
+
+- `packages/core/src/agent/adapters/agent-conformance-suite.ts`：纯 re-export
+  （`export * from './cli-adapter-suite.js'`），全仓零引用。GAP 里「6 个 adapter 过同一套
+  conformance suite」实际走的是 `cli-adapter-suite.ts`，那句话本身仍然成立。
+
+零引用但**故意没删** —— 它们都是 `@skillbox/core` 的公开导出，且更像「该接上」而不是「该删」：
+
+- `sync/manifest-merge.ts:52 mergeManifests`：sync 的合并只落地文件，manifest 那一半从没被调用 ——
+  这是功能缺口。接上要先定口径（谁赢、按 skill 还是按字段）
+- `operations/runtime.ts:277 rollbackOperation`：OperationRuntime 的 rollback 路径不可达
+- `secret-scan/scanner.ts:246 secretScanBlockedError`：CLI 自己 `new SkillboxError(SECRET_FOUND)`
+  （`sync/pipeline.ts:196`），于是「什么算阻断」这件策略性的事不在 core 手里
+- `registry/errors.ts:53 isTransientRegistryError` / `:106 isRegistryNotFound`：重试与「找不到」的
+  分类在调用点各写一遍
+- `sync/conflicts.ts:57 validateConflictSession`：冲突会话 load 完直接用，没有校验
+- `packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
+  还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）
 
 ---
 

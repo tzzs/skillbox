@@ -11,7 +11,6 @@ import {
 } from '@skillbox/core'
 import { resolveEditorCommand } from '../interactive/editor.js'
 import { isCancelResult, type InteractivePrompt } from '../interactive/prompts.js'
-import { LIFECYCLE_UNAVAILABLE_CODE, MERGE_CONFLICT_CODE } from './loaders.js'
 import type {
   DiffProvider,
   EditAction,
@@ -96,7 +95,9 @@ function asSkillboxError(error: unknown, fallback: string): SkillboxError {
     return error
   }
   const detail = error instanceof Error ? error.message : String(error)
-  return new SkillboxError(LIFECYCLE_UNAVAILABLE_CODE, `${fallback}: ${detail}`, { cause: error })
+  return new SkillboxError(ErrorCode.LIFECYCLE_UNAVAILABLE, `${fallback}: ${detail}`, {
+    cause: error,
+  })
 }
 
 export class SkillLifecycleService {
@@ -272,7 +273,7 @@ export class SkillLifecycleService {
         homeRoot: this.options.homeRoot,
       })
     } catch (error) {
-      if (isSkillboxError(error) && error.code === LIFECYCLE_UNAVAILABLE_CODE) {
+      if (isSkillboxError(error) && error.code === ErrorCode.LIFECYCLE_UNAVAILABLE) {
         return { name, modified: false }
       }
       throw asSkillboxError(error, `Cannot detect local modifications for "${name}"`)
@@ -463,6 +464,6 @@ export class SkillLifecycleService {
         `Resolve them, then run \`skillbox merge ${name} --continue\`.`
       : `Merge of "${name}" has ${conflicts.length} conflicting file(s):\n${rows}\n` +
         `Resolve the conflicts, then run \`skillbox merge ${name} --continue\`.`
-    return new SkillboxError(MERGE_CONFLICT_CODE, heading, { context: { name, conflicts } })
+    return new SkillboxError(ErrorCode.MERGE_CONFLICT, heading, { context: { name, conflicts } })
   }
 }

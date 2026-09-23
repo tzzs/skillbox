@@ -1,19 +1,18 @@
-import * as fs from 'node:fs/promises'
-import { resolveInsideRoot } from '../fs/paths.js'
 import { scanDirectory } from '../fs/scanner.js'
 import type { IgnoreMatcher } from '../ignore/skillbox-ignore.js'
 import { maskSnippet } from '../secret-scan/scanner.js'
+import {
+  DEFAULT_SCAN_MAX_CONTENT_BYTES,
+  compareSeverityDesc,
+  findingSeverityRank,
+  readScannableContent,
+} from '../secret-scan/scan-primitives.js'
 import {
   CONTENT_SECURITY_PATTERNS,
   FILE_SECURITY_PATTERNS,
   type FileSecurityPattern,
 } from './patterns.js'
-import {
-  SECURITY_RISK_RANK,
-  type SecurityFinding,
-  type SecurityRiskLevel,
-  type SecurityScanResult,
-} from './types.js'
+import { type SecurityFinding, type SecurityRiskLevel, type SecurityScanResult } from './types.js'
 
 export interface ScanSkillDirectoryOptions {
   /**
@@ -24,8 +23,6 @@ export interface ScanSkillDirectoryOptions {
   /** Content scanning is skipped for files larger than this. Default 2 MiB. */
   maxContentBytes?: number
 }
-
-export const DEFAULT_SECURITY_MAX_CONTENT_BYTES = 2 * 1024 * 1024
 
 interface FileGlobEntry {
   pattern: FileSecurityPattern
@@ -60,28 +57,10 @@ function basenameOf(relativePath: string): string {
   return segments[segments.length - 1] ?? relativePath
 }
 
-async function readScannableContent(
-  root: string,
-  relativePath: string,
-  maxBytes: number,
-): Promise<string | null> {
-  const absolute = resolveInsideRoot(root, relativePath)
-  let buffer: Buffer
-  try {
-    buffer = await fs.readFile(absolute)
-  } catch {
-    return null
-  }
-  if (buffer.length > maxBytes || buffer.includes(0)) {
-    return null
-  }
-  return buffer.toString('utf8')
-}
-
 function aggregateRisk(findings: readonly SecurityFinding[]): SecurityRiskLevel {
   let worst: SecurityRiskLevel = 'low'
   for (const finding of findings) {
-    if (SECURITY_RISK_RANK[finding.risk] > SECURITY_RISK_RANK[worst]) {
+    if (findingSeverityRank(finding.risk) > findingSeverityRank(worst)) {
       worst = finding.risk
     }
   }
@@ -89,7 +68,7 @@ function aggregateRisk(findings: readonly SecurityFinding[]): SecurityRiskLevel 
 }
 
 function byRiskThenLocation(left: SecurityFinding, right: SecurityFinding): number {
-  const riskDelta = (SECURITY_RISK_RANK[right.risk] ?? 0) - (SECURITY_RISK_RANK[left.risk] ?? 0)
+  const riskDelta = compareSeverityDesc(left.risk, right.risk)
   if (riskDelta !== 0) {
     return riskDelta
   }
@@ -122,7 +101,7 @@ export async function scanSkillForSecurity(
   options: ScanSkillDirectoryOptions = {},
 ): Promise<SecurityScanResult> {
   const ignore = options.ignore ?? null
-  const maxContentBytes = options.maxContentBytes ?? DEFAULT_SECURITY_MAX_CONTENT_BYTES
+  const maxContentBytes = options.maxContentBytes ?? DEFAULT_SCAN_MAX_CONTENT_BYTES
 
   const scan = await scanDirectory(skillRoot, ignore === null ? {} : { ignore })
   // Git internals are scanner noise when the scan root is a raw clone:

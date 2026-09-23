@@ -5,12 +5,8 @@
  */
 export type SecurityRiskLevel = 'low' | 'medium' | 'high'
 
-/** Lower rank means a higher risk; used to aggregate a whole-skill rating. */
-export const SECURITY_RISK_RANK: Record<SecurityRiskLevel, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-}
+// Risk ordering (worst wins / most severe first) lives in the shared scale in
+// ../secret-scan/scan-primitives.js, which the Secret Scan ranks on too.
 
 export type SecurityFindingScope = 'content' | 'file'
 

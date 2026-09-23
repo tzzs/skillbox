@@ -1,15 +1,17 @@
-import * as fs from 'node:fs/promises'
 import { SkillboxError, ErrorCode } from '../errors.js'
-import { resolveInsideRoot } from '../fs/paths.js'
 import { compileIgnoreGlob } from '../ignore/glob.js'
 import { IgnoreScopes } from '../ignore/scopes.js'
 import type { IgnoreMatcher } from '../ignore/skillbox-ignore.js'
 import { findingKey, type SecretPolicyStore } from './policy.js'
 import {
+  DEFAULT_SCAN_MAX_CONTENT_BYTES,
+  compareSeverityDesc,
+  readScannableContent,
+} from './scan-primitives.js'
+import {
   CONTENT_SECRET_PATTERNS,
   FILE_SECRET_PATTERNS,
   isBlockingSeverity,
-  SEVERITY_RANK,
   type FileSecretPattern,
   type FindingScope,
   type SecretSeverity,
@@ -34,8 +36,6 @@ export interface ScanFilesOptions {
   /** Content scanning is skipped for files larger than this. Default 2 MiB. */
   maxContentBytes?: number
 }
-
-export const DEFAULT_MAX_CONTENT_BYTES = 2 * 1024 * 1024
 
 export interface FileGlobEntry {
   pattern: FileSecretPattern
@@ -67,24 +67,6 @@ function normalizeScannedFile(file: string): string {
 function basenameOf(relativePath: string): string {
   const segments = relativePath.split('/')
   return segments[segments.length - 1] ?? relativePath
-}
-
-async function readScannableContent(
-  root: string,
-  relativePath: string,
-  maxBytes: number,
-): Promise<string | null> {
-  const absolute = resolveInsideRoot(root, relativePath)
-  let buffer: Buffer
-  try {
-    buffer = await fs.readFile(absolute)
-  } catch {
-    return null
-  }
-  if (buffer.length > maxBytes || buffer.includes(0)) {
-    return null
-  }
-  return buffer.toString('utf8')
 }
 
 export function maskSnippet(line: string, index: number, length: number): string {
@@ -135,7 +117,7 @@ export async function scanFiles(
   const root = options.root ?? process.cwd()
   const ignore = options.ignore ?? null
   const policy = options.policy ?? null
-  const maxContentBytes = options.maxContentBytes ?? DEFAULT_MAX_CONTENT_BYTES
+  const maxContentBytes = options.maxContentBytes ?? DEFAULT_SCAN_MAX_CONTENT_BYTES
   if (policy !== null) {
     await policy.load()
   }
@@ -235,7 +217,7 @@ export async function scanFiles(
 }
 
 function severityCompare(left: SecretFinding, right: SecretFinding): number {
-  return (SEVERITY_RANK[left.severity] ?? 0) - (SEVERITY_RANK[right.severity] ?? 0)
+  return compareSeverityDesc(left.severity, right.severity)
 }
 
 /**

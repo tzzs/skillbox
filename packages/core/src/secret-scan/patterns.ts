@@ -2,13 +2,8 @@ export type SecretSeverity = 'critical' | 'high' | 'medium' | 'low'
 
 export type FindingScope = 'file' | 'content'
 
-/** Lower rank means more severe; used to partition results. */
-export const SEVERITY_RANK: Record<SecretSeverity, number> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-}
+// Severity ordering (most severe first) is owned by the shared scale in
+// ./scan-primitives.js, which the Security Scan ranks on too.
 
 export function isBlockingSeverity(severity: SecretSeverity): boolean {
   return severity === 'critical' || severity === 'high'

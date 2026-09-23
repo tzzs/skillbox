@@ -451,8 +451,11 @@ describe('POST /api/registry/install', () => {
         allowPolicy: 'safe',
       })
       expect(response.status).toBe(400)
-      const body = (await response.json()) as { error: { code: string } }
+      const body = (await response.json()) as { error: { code: string; message: string } }
       expect(body.error.code).toBe('INVALID_REQUEST')
+      // The Updates batch shows this message per failed row, so it has to name
+      // the rejected field rather than being an empty or generic string.
+      expect(body.error.message).toContain('targetAgents')
     })
   })
 
@@ -483,9 +486,14 @@ describe('POST /api/registry/install', () => {
           allowPolicy: 'safe',
         })
         expect(response.status).toBe(403)
-        const body = (await response.json()) as { error: { code: string; recoverable: boolean } }
+        const body = (await response.json()) as {
+          error: { code: string; message: string; recoverable: boolean }
+        }
         expect(body.error.code).toBe('INSTALL_SECURITY_BLOCKED')
         expect(body.error.recoverable).toBe(true)
+        // The Core message reaches the client verbatim — the Updates page
+        // prints it as the reason of the matching failed row.
+        expect(body.error.message).toBe('high risk')
       },
     )
   })

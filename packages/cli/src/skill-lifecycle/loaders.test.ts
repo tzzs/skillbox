@@ -4,7 +4,6 @@ import {
   createDefaultDiffProvider,
   createDefaultLifecycleProvider,
   createDefaultMergeProvider,
-  MERGE_CONFLICT_CODE,
   type DiffCoreDeps,
   type LifecycleCoreDeps,
   type MergeCoreDeps,
@@ -322,11 +321,5 @@ describe('real core defaults', () => {
       expect(isSkillboxError(error)).toBe(true)
       expect((error as SkillboxError).code).toBe(ErrorCode.MANIFEST_NOT_FOUND)
     }
-  })
-})
-
-describe('exit-code codes', () => {
-  it('defines the CLI-level MERGE_CONFLICT code (exit 3 mapping lives in exit-codes.ts)', () => {
-    expect(MERGE_CONFLICT_CODE).toBe('MERGE_CONFLICT')
   })
 })
