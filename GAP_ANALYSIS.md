@@ -189,6 +189,18 @@ CLI 未构建时套件自跳过并提示。
 对 `delete-modify` 是「取 base 快照」还是别的。定完再实现，或者反过来——把这些取值从
 `allowedResolutions` 与 UI 里摘掉，直到有实现为止。后者是一行改动，也不骗人。
 
+### 2.6 一次崩溃之后，用户被永久锁在自己的工具外面（未修）
+
+`OperationRuntime` 的 journal 语义是：进程在写操作中途死掉，记录停在 `status: 'running'`；此后
+`assertNoIncompleteJournal`（`packages/core/src/operations/runtime.ts:184-196`）对**每一次** mutation
+抛 `OPERATION_RECOVERY_REQUIRED`。全仓这个码只有两处抛出（`:131`、`:190`）与**零个消费者** ——
+没有 CLI 命令、没有 doctor 探针、没有 Web 路由能清掉它。`rollbackOperation`（`:277`）本该是那条恢复
+路径的入口，但它是死代码，接上需要三步（详见 §7.3）。
+
+结果：用户要么手删 `~/.skillbox/state/…` 里的 journal 文件（工具从没告诉过他这条路），要么永久卡在
+「有操作未完成」上。§3.3 里「Journal 已记录写操作状态并支持崩溃恢复标记」说的正是这半条路径 ——
+标记有，恢复没有。本地优先的工具不该有这种终局，所以它记在 P0 而不是 §7。
+
 ---
 
 ## 3. P1 — 产品能力未闭环
@@ -549,22 +561,51 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   （`export * from './cli-adapter-suite.js'`），全仓零引用。GAP 里「6 个 adapter 过同一套
   conformance suite」实际走的是 `cli-adapter-suite.ts`，那句话本身仍然成立。
 
-零引用但**故意没删** —— 它们都是 `@skillbox/core` 的公开导出，且更像「该接上」而不是「该删」：
+零引用项的处置（2026-09-24 第二轮：每一条都自己重新 grep 过才表态 —— GAP 的「未使用」是假设不是
+事实，这轮又证实/推翻了若干条。注意 `export *`（`sync/index.ts:2`、`registry/index.ts:2`）让按名字
+的 grep 看不见「它其实是公开导出」，所以每条额外确认过 barrel 与 apps/web；`@skillbox/core` 0.1.0
+从未发布、无 git tag，故收缩导出面不破坏任何外部使用者）：
 
+- ✅ **已接上** `secret-scan/scanner.ts secretScanBlockedError`：「什么算阻断」原先同时住在两层 ——
+  core 已经算出 `ScanResult.blocked`（`isBlockingSeverity`），CLI 又在 `sync/pipeline.ts` 里按
+  `critical || high` 重筛一遍才拼出报错。现在 pipeline 直接把 core 的 `blocked` 交给
+  `secretScanBlockedError`，CLI 不再自行判阻断；报错文案搬进 core 并保持原样（列出被拦文件 +
+  ignore policy 指引），`SECRET_FOUND` → 退出码 4 不变（`cli/src/exit-codes.ts` SECURITY_CODES）。
+  顺带删掉 CLI 自己那份 `SecretFinding`/`SecretSeverity`/`SecretScanResult` 类型副本
+  （`sync/providers.ts` 现在复用 core 形状，`blocked: boolean` → core 的 `blocked: SecretFinding[]`
+  - `block: boolean`），这正是 §3.1 的类型副本收敛。
+- ✅ **已接上** `registry/errors.ts isTransientRegistryError`：两处重试循环（`registry/github.ts:381`、
+  `registry/skills-sh.ts:279`）逐字重写过 `isRegistryError(error) && reason ∈ {network, timeout}`，
+  现在走 helper，语义等价（5xx 分支按 status 判断，语义不同，未动）。
+- ✅ **已删** `registry/errors.ts isRegistryNotFound` —— **GAP 这条判断是错的**：「找不到」的分类并没有
+  在调用点各写一遍。非测试代码里每个 `REGISTRY_NOT_FOUND` 要么是构造点（`github.ts:276/456`、
+  `skills-sh.ts:342`、`local.ts:92/102/138/165`、`git.ts:97/123`），要么是按 `code` 的查表
+  （`cli/src/exit-codes.ts:36`、`cli/src/web/errors.ts:41`），没有一处是「拿 unknown error 判断是否
+  not-found」的内联谓词；而且那两处**用不了**这个 helper —— 它以 `isRegistryError`（instanceof）为
+  前置，同码的纯 `SkillboxError` 会被判 false，而 `registry/errors.ts:8-11` 写明了设计就是让跨层
+  调用方直接按 `code` 匹配。差异是有意的，故删 helper、留查表。
+- ✅ **已删** `sync/conflicts.ts validateConflictSession`：确认**不存在**「绕过 parser 的会话读路径」——
+  `layout.syncSessions` 目录（`runtime/paths.ts:82`）全仓只有 `ConflictSessionStore` 一个读者
+  （`conflict-session-store.ts:30`），其 `get()`（`:64`）、`cleanExpired()`（`:120`）、`save()`（`:43`）
+  与 `list()`（转调 `get()`）全部经过 `parseConflictSession`；`snapshot-service.ts` 的 `JSON.parse`
+  读的是 snapshot 记录而非会话。该包装只是 `parseConflictSession(session)` 再丢掉归一化返回值，
+  没有可接的地方，所以删除而不是接线。
+- ⏸ **保留** `operations/runtime.ts:277 rollbackOperation`：「不可达」是真的，但它属于「想做没接完」
+  而不是死代码 —— 它是这条恢复路径目前唯一的入口。接上需要三步：① `operations/index.ts` 只导出
+  `lock.js`/`journal.js`，`runtime.ts` 连 barrel 都没进，先要导出；② `rollback()` 完全不写 journal，
+  必须先让它把记录落到终态（`rolled-back`/`abandoned`，`operations/types.ts:55-67` 已有这些状态与
+  `isTerminalOperationJournalStatus`），否则解不开阻塞；③ 需要一个 CLI/doctor 入口去消费
+  `OPERATION_RECOVERY_REQUIRED` 的 `context.operationId`。现状：进程崩溃后 journal 停在
+  `status: 'running'`，`assertNoIncompleteJournal`（`runtime.ts:182-195`）此后对每次 mutation 抛该错，
+  而全仓只有 `runtime.ts:131/190` 两处抛、零消费者 —— 用户被锁住且无法自救。§3.3 那句
+  「Journal 已记录写操作状态并支持崩溃恢复标记」指的就是这半条路径。`assertNoIncompleteJournal`
+  在 `runtime.ts:184-196`。
 - ~~`sync/manifest-merge.ts mergeManifests`：sync 的 manifest 那一半从没被调用~~ —— **本轮订正：这条
   判断是错的**。它只是 `new ManifestMergeService().merge(...)` 的死包装，真实调用在
   `sync-transaction.ts:155`（run）与 `:373`（resolve），且 `sync-transaction.e2e.test.ts:135-159`
   钉住了 `automaticallyMerged: 2` 与「fresh clone 里两台机器的 skill 都在」—— 没有合并后的 manifest
   做不到这一点。包装已删除。真正的 manifest 缺口是另一件事：**§2.5**（`delete`/`merged`/`restore`
   三种取值被接受却无人实现）
-- `operations/runtime.ts:277 rollbackOperation`：OperationRuntime 的 rollback 路径不可达
-- `secret-scan/scanner.ts:246 secretScanBlockedError`：CLI 自己 `new SkillboxError(SECRET_FOUND)`
-  （`sync/pipeline.ts:196`），于是「什么算阻断」这件策略性的事不在 core 手里
-- `registry/errors.ts:53 isTransientRegistryError` / `:106 isRegistryNotFound`：重试与「找不到」的
-  分类在调用点各写一遍
-- `sync/conflicts.ts:57 validateConflictSession`：死包装 —— 它转调 `parseConflictSession`，而后者
-  确实在每次 load 时跑（`conflict-session-store.ts:43/64/120`）。删掉即可，不是校验缺口
-  （本条先前写作「冲突会话 load 完直接用，没有校验」，是错的，已随本轮删除该包装时订正）
 - `packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
   还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）
 
