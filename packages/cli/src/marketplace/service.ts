@@ -5,6 +5,7 @@ import {
   ErrorCode,
   ManagedCache,
   buildSkillboxHomeLayout,
+  computeSkillIntegrity,
   fromManifestSource,
   isSkillboxError,
   readLockfile,
@@ -105,8 +106,10 @@ export class MarketplaceService {
    * The security review runs BEFORE anything is written: the pinned revision
    * is read from the managed cache when available, otherwise downloaded into
    * a temp dir and scanned. HIGH-risk skills are gated on explicit confirmation
-   * (`--yes` or an interactive prompt); cache misses are populated by the
-   * install transaction (M15.3).
+   * (`--yes` or an interactive prompt). Content the review accepts is left in
+   * the managed cache under the same `(source, revision)` pair the transaction
+   * resolves, so the install that follows in this run is a cache hit rather than
+   * a second download (M15.3); blocked content is discarded and re-downloaded.
    */
   async add(input: {
     source: string
@@ -316,19 +319,28 @@ export class MarketplaceService {
    * Interactive helpers (the `add` / `update` flows)
    * ------------------------------------------------------------------ */
 
+  /** The managed cache of the CLI's configured Skillbox home (M15.3). */
+  private managedCache(): ManagedCache {
+    return new ManagedCache(buildSkillboxHomeLayout(this.options.homeRoot).cache)
+  }
+
   /**
-   * Pre-install security review (GAP §5.2): downloads the pinned revision
-   * into a temp dir, runs agent 2's static scanner on it, then discards the
-   * download. The install transaction scans again inside its own pipeline —
-   * this preview only exists so the review can be SHOWN before anything is
-   * written. TODO(marketplace): once the managed cache exposes a public
-   * read-through API, populate it here so the transaction's download hits.
+   * Pre-install security review (GAP §5.2): reads the pinned revision from the
+   * managed cache when it has it, otherwise downloads it into a temp dir and
+   * runs agent 2's static scanner over it. The install transaction scans again
+   * inside its own pipeline — this preview only exists so the review can be
+   * SHOWN before anything is written.
+   *
+   * A download whose review does not block is published into that same managed
+   * cache before the temp copy is discarded, so the transaction that follows in
+   * this `skillbox add` run reads the content instead of making the provider
+   * send it a second time.
    */
   private async scanPreview(
     source: NormalizedSource,
     revision: string,
   ): Promise<SecurityScanResult> {
-    const cache = new ManagedCache(buildSkillboxHomeLayout(this.options.homeRoot).cache)
+    const cache = this.managedCache()
     const cached = await cache.get(source, revision).catch(() => null)
     if (cached !== null) {
       return await this.options.scanner.scan(cached.path)
@@ -349,7 +361,15 @@ export class MarketplaceService {
       const downloadDir = path.join(tmpRoot, 'download')
       await fs.mkdir(downloadDir, { recursive: true })
       await provider.download(source, revision, downloadDir)
-      return await this.options.scanner.scan(downloadDir)
+      const review = await this.options.scanner.scan(downloadDir)
+      // `!review.block` is the gate: publishing only accepted content mirrors
+      // why `transaction.ts` caches after its own security step, so a HIGH-risk
+      // (blocked) download is still discarded here and the `--yes` override path
+      // caches through the transaction rather than through this preview.
+      if (!review.block) {
+        await this.populateCache(downloadDir, source, revision)
+      }
+      return review
     } catch (error) {
       throw asSkillboxError(
         error,
@@ -358,6 +378,41 @@ export class MarketplaceService {
       )
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Publishes a scanned download as the managed-cache entry for
+   * `(source, revision)` — the exact pair the install transaction resolves and
+   * looks up, because both ask the same provider for the same parsed source.
+   * The recorded integrity is the canonical hash of the downloaded bytes, which
+   * is what `transaction.ts` step 5 derives for a fresh download, so the entry's
+   * marker matches its own content and the Lockfile gains the integrity it would
+   * have had anyway.
+   *
+   * A failed write never escapes: the cache is a disposable optimization, and
+   * the transaction just re-downloads — the behaviour this call replaces. (An
+   * escaping error would also read as a download failure in `scanPreview`.)
+   */
+  private async populateCache(
+    stagedDir: string,
+    source: NormalizedSource,
+    revision: string,
+  ): Promise<void> {
+    if (revision === '') {
+      // An empty revision is not a cacheable key (`ManagedCache` refuses it and
+      // the transaction fails the install with `INSTALL_SOURCE_UNRESOLVED`).
+      return
+    }
+    try {
+      await this.managedCache().put(
+        source,
+        revision,
+        await computeSkillIntegrity(stagedDir),
+        stagedDir,
+      )
+    } catch {
+      // Same tolerance as the cache read above (`.catch(() => null)`).
     }
   }
 
