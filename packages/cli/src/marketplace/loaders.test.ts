@@ -429,11 +429,14 @@ describe('createDefaultInstallService', () => {
       const homeRoot = path.join(base, 'home')
       // Core's home layout is what the adapter resolves against.
       const cacheRoot = buildSkillboxHomeLayout(homeRoot).cache
-      // Two entries plus a transient partial staging dir (not counted).
+      // Two entries plus a transient partial staging dir (not counted). Core
+      // keeps each entry's integrity in a sibling `<revision>.integrity` file,
+      // which is an implementation detail of the entry, not a third entry.
       await fs.mkdir(path.join(cacheRoot, 'aaaa1111', 'rev-one'), { recursive: true })
       await fs.mkdir(path.join(cacheRoot, 'bbbb2222', 'rev-two'), { recursive: true })
       await fs.mkdir(path.join(cacheRoot, 'aaaa1111', '.partial-123'), { recursive: true })
-      await fs.writeFile(path.join(cacheRoot, 'aaaa1111', 'rev-one', '.integrity'), 'sha256:x\n')
+      await fs.writeFile(path.join(cacheRoot, 'aaaa1111', 'rev-one.integrity'), 'sha256:x\n')
+      await fs.writeFile(path.join(cacheRoot, 'bbbb2222', 'rev-two.integrity'), 'sha256:y\n')
 
       const installer = createDefaultInstallService(
         { repositoryRoot: base, homeRoot },
