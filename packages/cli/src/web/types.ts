@@ -1,6 +1,7 @@
 import type {
   AgentRegistry,
   BackupRecord,
+  CleanupStep,
   ConflictResolution,
   DoctorReport,
   FleetHostConfig,
@@ -301,12 +302,62 @@ export interface DoctorResponse {
   report: DoctorReport
 }
 
+/**
+ * One sync cleanup step that failed while the transaction was rolling itself back
+ * (GAP §4.6).  Wire copy of Core's `CleanupFailure`; see {@link SyncRollbackDto}
+ * for why the shape is copied field by field instead of being imported.
+ */
+export interface SyncRollbackFailureDto {
+  /** Which recovery step failed; the names come from Core's `CleanupStep` union. */
+  step: CleanupStep
+  /**
+   * Restore-point id or temporary-tree path the step was working on.  A server
+   * path, and deliberately the *only* path this envelope exposes — it is already
+   * in `message`, which every surface prints.
+   */
+  target: string
+  /** Deepest reason from the failure's `cause` chain, secret-scrubbed server-side. */
+  message: string
+  /**
+   * True only for `restore`: the working tree was left mid-transaction, which is
+   * the fact a UI should surface.  A false leak is clutter the next sync ignores.
+   */
+  blocking: boolean
+}
+
+/**
+ * The rollback report a failed sync transaction attaches to the error it rethrows
+ * (Core `RollbackReport`), exposed as data so the client can branch on
+ * `restoreFailed` instead of string-parsing `message`.
+ *
+ * This is the *only* part of `error.context` the API exports, and it is copied
+ * field by field rather than serialized wholesale: contexts across Core carry git
+ * command lines with embedded credentials, repository paths and full
+ * stdout/stderr dumps (see `git/git-client.ts`, and the fact that log output has
+ * to pass through `logging/redact.ts` to be safe at all).  Anything else Core
+ * starts putting in a context stays out of the response until it is whitelisted
+ * here on purpose.
+ */
+export interface SyncRollbackDto {
+  /** Restore point the transaction tried to roll back to. */
+  snapshotId: string
+  /** True when the pre-transaction working tree is still unrestored. */
+  restoreFailed: boolean
+  failures: SyncRollbackFailureDto[]
+}
+
 /** Unified error envelope required by M10.8. */
 export interface ApiErrorBody {
   error: {
     code: string
     message: string
     recoverable: boolean
+    /**
+     * Present only when a failed sync transaction could not finish rolling itself
+     * back.  Optional by design: `code`/`message`/`recoverable` are what every
+     * existing consumer reads, and the key is omitted (never `null`) otherwise.
+     */
+    rollback?: SyncRollbackDto
   }
 }
 
