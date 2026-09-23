@@ -169,6 +169,26 @@ CLI 未构建时套件自跳过并提示。
 倾向 (a)，因为本地优先的入口是 `add`。§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、
 文件读取）收敛成一处，规则集本身仍未动。
 
+### 2.5 三种冲突解决方式被接受、却没有实现（未修，需定策略）
+
+`ConflictResolution` 有六个取值，`manifest-merge.ts` 在产出冲突时把它们列进
+`allowedResolutions`（`delete`/`restore`：:84-85；`keep-both`：:141/155-156/169 与
+`skill-tree-merge.ts:105`；`merged`：:182/204/226/259/297），`repository-sync.ts:251` 也照单验收。
+但真正被执行的只有：
+
+- `local` / `remote` —— `sync-transaction.ts:374 applyManifestChoices`（manifest 字段）与
+  `:381-391 copyResolvedFile`（content 文件）
+- `keep-both` —— `:394-413`，在目录级别复制成确定性别名
+
+`delete` / `merged` / `restore` **没有任何一处实现**。后果不是崩溃而是静默误导：Web UI 与
+`merge --continue` 能把它们作为合法答案提交，引擎收下、冲突会话照旧结案，而 manifest 里那一项
+最终取三方合并的默认结果 —— 用户以为按自己的选择处理了，实际没有。
+
+要定的正是口径（我不替产品决定）：`delete` 是「两边都删掉这个 skill / 这个字段」还是「删本地留远端」；
+`merged` 与 `keep-both` 的差别在哪（现在 `keep-both` 已经做了「两个都留、后者换别名」）；`restore`
+对 `delete-modify` 是「取 base 快照」还是别的。定完再实现，或者反过来——把这些取值从
+`allowedResolutions` 与 UI 里摘掉，直到有实现为止。后者是一行改动，也不骗人。
+
 ---
 
 ## 3. P1 — 产品能力未闭环
@@ -217,6 +237,15 @@ CLI 未构建时套件自跳过并提示。
   A 的内容装到 B 名下，还带 A 的安全评级。结构化标识让 `type/package/path/version` 自动全参与，
   并且 `package` 里含 `@` 也不会与 `path` 撞车（字符串拼接做不到这点）。代价是 skills.sh 既有缓存
   目录摘要改变 → 一次重新下载（缓存本就按可丢弃设计，`CACHE_INVALID` 即 purge）。
+- ✅ `skillbox add` 不再下一遍：预检扫描（`marketplace/service.ts scanPreview`）此前把下载放进临时
+  目录、扫完就丢，事务随后再下一遍同一个 `(source, revision)`。现在评审未阻断的内容先落到托管缓存
+  再丢弃临时副本，同一次 `add` 的安装直接命中；被 HIGH 挡下的内容仍然不入缓存（与事务
+  「过了安全门才 put」的顺序一致），评审放行但安装被取消时留下的是可用缓存而非垃圾。
+  缓存写失败静默忽略：缓存按可丢弃设计，且这里的异常会被误报成下载失败。
+- ✅ 顺带修一个报错数字：`cache clean` 报的「清理了几条」把每条条目的旁文件 `<revision>.integrity`
+  也当成一条（`marketplace/loaders.ts countCacheEntries`），一条缓存算两条；本轮预览开始写缓存之后
+  更明显。过滤规则改为用 core 的 `CACHE_INTEGRITY_MARKER`，测试夹具也改成真实的旁文件布局
+  （旧夹具把 marker 放进条目目录内，正好掩盖了这个 bug）。
 - 仍留：`registry/source.ts:338 sourceToString` 是第四种拼写，但**有意的** —— 它是「能被 `parseSource`
   读回去」的输入语法序列化器（`skills.sh/<pkg>@<path>#<ver>`），与标识、展示都不同用途。别顺手合并，
   也别再往它身上加展示职责。
@@ -393,7 +422,12 @@ sync 失败，不知道自己的目录可能停在事务中间态。
 - 成功路径不变：干净回滚仍然完全静默
 - 测试：`sync-transaction.test.ts` 6 例（临时目录真事务、两条 rollback 路径、双标注幂等、无失败时零改动）
 
-未做：`context.rollback` 在 Web envelope 里的结构化呈现（目前只有拼进 message 才看得见）。
+- ✅ Web envelope 现在结构化导出 `error.rollback`（`packages/cli/src/web/errors.ts`）：只白名单
+  `snapshotId` / `restoreFailed` / `failures[].{step,target,message,blocking}`，`target` 与 `message`
+  过 `scrubText`；没有回滚报告时该键整个省略（envelope 逐字不变）。**不做**的事写在了那里的注释里：
+  `context` 里装着命令行（可能含传输凭据）、仓库路径与 git 原始 stderr，绝不整体序列化
+- `message` 里那句回滚说明保留 —— CLI 与日志只打印 message；但 UI 若改用 `rollback` 结构体，
+  别把同一件事渲染两遍（`apps/web/src/api.ts` 的类型上已写明这点）
 
 ---
 
@@ -517,14 +551,20 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
 
 零引用但**故意没删** —— 它们都是 `@skillbox/core` 的公开导出，且更像「该接上」而不是「该删」：
 
-- `sync/manifest-merge.ts:52 mergeManifests`：sync 的合并只落地文件，manifest 那一半从没被调用 ——
-  这是功能缺口。接上要先定口径（谁赢、按 skill 还是按字段）
+- ~~`sync/manifest-merge.ts mergeManifests`：sync 的 manifest 那一半从没被调用~~ —— **本轮订正：这条
+  判断是错的**。它只是 `new ManifestMergeService().merge(...)` 的死包装，真实调用在
+  `sync-transaction.ts:155`（run）与 `:373`（resolve），且 `sync-transaction.e2e.test.ts:135-159`
+  钉住了 `automaticallyMerged: 2` 与「fresh clone 里两台机器的 skill 都在」—— 没有合并后的 manifest
+  做不到这一点。包装已删除。真正的 manifest 缺口是另一件事：**§2.5**（`delete`/`merged`/`restore`
+  三种取值被接受却无人实现）
 - `operations/runtime.ts:277 rollbackOperation`：OperationRuntime 的 rollback 路径不可达
 - `secret-scan/scanner.ts:246 secretScanBlockedError`：CLI 自己 `new SkillboxError(SECRET_FOUND)`
   （`sync/pipeline.ts:196`），于是「什么算阻断」这件策略性的事不在 core 手里
 - `registry/errors.ts:53 isTransientRegistryError` / `:106 isRegistryNotFound`：重试与「找不到」的
   分类在调用点各写一遍
-- `sync/conflicts.ts:57 validateConflictSession`：冲突会话 load 完直接用，没有校验
+- `sync/conflicts.ts:57 validateConflictSession`：死包装 —— 它转调 `parseConflictSession`，而后者
+  确实在每次 load 时跑（`conflict-session-store.ts:43/64/120`）。删掉即可，不是校验缺口
+  （本条先前写作「冲突会话 load 完直接用，没有校验」，是错的，已随本轮删除该包装时订正）
 - `packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
   还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）
 
