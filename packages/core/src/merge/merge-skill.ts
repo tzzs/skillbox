@@ -49,7 +49,7 @@ import {
   type MergeStateRecord,
 } from './state.js'
 
-/** One conflicting file of a merge — mirror of the CLI's `MergeConflict`. */
+/** One conflicting file of a merge. */
 export interface MergeSkillConflict {
   /** Portable relative path (forward slashes). */
   path: string
@@ -59,7 +59,7 @@ export interface MergeSkillConflict {
   reason?: string
 }
 
-/** Result of a 3-way merge run — mirror of the CLI's `MergeResult`. */
+/** Result of a 3-way merge run. */
 export interface MergeSkillResult {
   name: string
   conflicts: MergeSkillConflict[]
@@ -71,7 +71,7 @@ export interface MergeSkillResult {
   baseRevision?: string
 }
 
-/** Result of `--continue` — mirror of the CLI's `ContinueMergeResult`. */
+/** Result of `--continue`. */
 export interface ContinueMergeResult {
   name: string
   /** True when every conflict was resolved and the metadata was updated. */
@@ -82,7 +82,7 @@ export interface ContinueMergeResult {
   baseRevision?: string
 }
 
-/** Result of `--abort` — mirror of the CLI's `AbortMergeResult`. */
+/** Result of `--abort`. */
 export interface AbortMergeResult {
   name: string
   filesRestored: number

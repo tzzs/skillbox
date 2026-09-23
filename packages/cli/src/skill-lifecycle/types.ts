@@ -2,12 +2,27 @@
  * V0.4 Skill Lifecycle — CLI-layer contracts for `fork` / `vendor` / `edit` /
  * `diff` / `merge` (GAP_ANALYSIS §4, MVP M17.1-3, M18, M19.4, M20.6-7).
  *
- * The shapes below mirror the ones `@skillbox/core` defines in
- * `packages/core/src/lifecycle/`, `diff/` and `merge/`. The CLI keeps its own
- * copies so the command layer and its renderers stay independent of core's
- * internal types; `./loaders.js` adapts the real (statically imported) core
- * exports onto these contracts — the same pattern the marketplace layer uses.
+ * Core owns the data shapes and this module imports them — a copy here could
+ * only drift, and it already had (a `renamed` diff status core never emits).
+ * What stays is what the CLI genuinely owns: the DI contracts `./loaders.js`
+ * implements, the flattened request inputs whose fields core takes differently,
+ * and the narrowed views the command layer renders — `localPath` is core's
+ * `repositoryPath`, `manifestChanged` / `lockfileChanged` are constant `true`
+ * because a fork or vendor transaction rewrites both files or rolls the whole
+ * run back, and `skillbox diff` only ever sees the two modes that have an
+ * upstream.
  */
+
+import type {
+  AbortMergeResult,
+  ContinueMergeResult,
+  MergeSkillConflict,
+  MergeSkillResult,
+  SkillDiffView,
+  SkillFileDiff,
+} from '@skillbox/core'
+
+export type { AbortMergeResult, ContinueMergeResult }
 
 /* ------------------------------------------------------------------ *
  * Fork / Vendor / Edit (agent 1 — @skillbox/core/lifecycle)
@@ -29,8 +44,10 @@ export interface ForkSkillInput {
 }
 
 /**
- * Result of a completed fork — mirror of agent 1's `ForkSkillResult`.
- * Rendering tolerates missing optional fields until the core result lands.
+ * Result of a completed fork — core's `ForkSkillResult` narrowed to what
+ * `skillbox fork` renders: the repo-relative path is `localPath`, and a fork
+ * transaction rewrites the manifest and lockfile together or rolls back, so
+ * those two flags are constants here.
  */
 export interface ForkResult {
   /** Skill alias (unchanged by the fork). */
@@ -59,7 +76,7 @@ export interface VendorSkillInput {
   homeRoot?: string
 }
 
-/** Result of a completed vendor — mirror of agent 1's `VendorSkillResult`. */
+/** Result of a completed vendor — core's `VendorSkillResult` as rendered. */
 export interface VendorResult {
   alias: string
   mode: 'vendored'
@@ -113,29 +130,22 @@ export interface LifecycleProvider {
 }
 
 /* ------------------------------------------------------------------ *
- * Diff (agent 2 — @skillbox/core/diff)
+ * Diff (@skillbox/core/diff)
  * ------------------------------------------------------------------ */
 
-/** One changed file inside a diff view (M19.4). */
-export interface DiffFile {
-  /** Repo-relative path, forward slashes on every platform. */
-  path: string
-  status: 'added' | 'modified' | 'deleted' | 'renamed'
-  /** Unified-diff body for this file (may span multiple lines). */
-  patch: string
-}
-
-/** One comparison of a skill, e.g. `Current vs Latest` or `Local`. */
-export interface DiffView {
-  /** Display label; the CLI renders it as a section header. */
-  label: string
-  files: DiffFile[]
-}
+/**
+ * A diff view and its changed files, straight from core. The local copies this
+ * replaced declared a `renamed` status core never emits — the renderer prints
+ * `status` verbatim, so the extra variant was unreachable rather than a guard.
+ */
+export type DiffFile = SkillFileDiff
+export type DiffView = SkillDiffView
 
 /**
- * Result of `skillbox diff <name>` — mirror of agent 2's `diffSkill`:
- * managed skills compare the current runtime vs the latest upstream revision;
- * forked skills get three views (Base / Local / Upstream).
+ * Result of `skillbox diff <name>` — core's `SkillDiff` with `mode` narrowed to
+ * the two modes that have an upstream. Core types it as the full `SkillMode`
+ * and rejects `local` / `vendored` with `DIFF_UPSTREAM_UNAVAILABLE`, which is
+ * what makes the narrowing in `./loaders.js` total rather than a hopeful cast.
  */
 export interface SkillDiff {
   name: string
@@ -154,45 +164,17 @@ export interface DiffProvider {
 }
 
 /* ------------------------------------------------------------------ *
- * Merge (agent 2 — @skillbox/core/merge)
+ * Merge (@skillbox/core/merge)
  * ------------------------------------------------------------------ */
 
-/** One conflicting file of a 3-way merge (M20). */
-export interface MergeConflict {
-  /** Repo-relative path, forward slashes on every platform. */
-  path: string
-  /** Number of conflict hunks in this file. */
-  hunks: number
-  /** e.g. `binary` when the file was not auto-merged. */
-  reason?: string
-}
-
-/** Result of a 3-way merge run — mirror of agent 2's `mergeSkill`. */
-export interface MergeResult {
-  name: string
-  conflicts: MergeConflict[]
-  filesMerged: number
-  changes: number
-  /** New base revision after a clean merge (upstream revision absorbed). */
-  baseRevision?: string
-}
-
-/** Result of `--continue` — mirror of agent 2's `continueMerge`. */
-export interface ContinueMergeResult {
-  name: string
-  /** True when every conflict was resolved and the metadata was updated. */
-  resolved: boolean
-  remainingConflicts: MergeConflict[]
-  filesMerged: number
-  changes: number
-  baseRevision?: string
-}
-
-/** Result of `--abort` — mirror of agent 2's `abortMerge`. */
-export interface AbortMergeResult {
-  name: string
-  filesRestored: number
-}
+/**
+ * The merge results, straight from core: they were already field-for-field
+ * what `skillbox merge` renders, so the local copies bought nothing, and core
+ * even documented them as mirrors of this file. `MergeConflict` / `MergeResult`
+ * are this module's names for them.
+ */
+export type MergeConflict = MergeSkillConflict
+export type MergeResult = MergeSkillResult
 
 /**
  * Merge provider (agent 2) behind `skillbox merge`. Satisfied at runtime by

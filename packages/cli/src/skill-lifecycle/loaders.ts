@@ -254,8 +254,8 @@ export interface MergeCoreDeps {
 const defaultMergeCore: MergeCoreDeps = { mergeSkill, continueMerge, abortMerge }
 
 /**
- * Core's merge results are shape-identical to the CLI contracts (M20.6/7), so
- * this adapter only builds the option object.
+ * The merge contracts *are* core's types now (M20.6/7), so this adapter only
+ * builds the option object.
  */
 class MergeProviderAdapter implements MergeProvider {
   constructor(private readonly deps: MergeCoreDeps) {}
