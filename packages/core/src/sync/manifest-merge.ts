@@ -49,10 +49,6 @@ export class ManifestMergeService {
   }
 }
 
-export function mergeManifests(input: ManifestMergeInput): ManifestMergeResult {
-  return new ManifestMergeService().merge(input)
-}
-
 type SkillResult = { skill?: ManifestSkill; conflicts: SyncConflict[]; automatic: boolean }
 
 function mergeSkill(
