@@ -666,13 +666,28 @@ export function buildProgram(ctx: CliContext): Command {
       'Adopt existing agent skills into the personal library (<home>/personal); idempotent',
     )
     .option('--json', 'emit JSON instead of human-readable output')
-    .action(async (options: { json?: boolean }) =>
+    .option(
+      '--ignore-agent <agent>',
+      'leave skills of this agent where they are (repeatable)',
+      collect,
+      [],
+    )
+    .option('--ignore-skill <name>', 'never import this skill name (repeatable)', collect, [])
+    .action(async (options: { json?: boolean; ignoreAgent?: string[]; ignoreSkill?: string[] }) =>
       mutation(ctx, 'adopt', async () => {
+        const configured = await new RuntimeConfigService({
+          configFilePath: path.join(ctx.homeRoot, 'config.json'),
+        }).load()
+        const librarySettings = configured.library ?? {}
+        const policy = {
+          ignoreAgents: [...(librarySettings.ignoreAgents ?? []), ...(options.ignoreAgent ?? [])],
+          ignoreSkills: [...(librarySettings.ignoreSkills ?? []), ...(options.ignoreSkill ?? [])],
+        }
         const library = new PersonalLibraryService({
           homeRoot: ctx.homeRoot,
           registry: ctx.registry,
         })
-        const report = await library.adopt()
+        const report = await library.adopt(policy)
         if (options.json === true) {
           printJson(ctx.out, report)
           return
@@ -1395,9 +1410,23 @@ export function buildProgram(ctx: CliContext): Command {
           registry: ctx.registry,
         })
         repositoryRoot = await library.ensureLibrary()
+        // `library.autoAdopt: false` keeps the personal library empty on open;
+        // the Library page button and `skillbox adopt` still adopt on demand.
         if (await library.isEmpty()) {
-          const report = await library.adopt()
-          personalNote = `  adopt  ${report.imported} imported, ${report.unchanged} unchanged, ${report.conflicts} conflicts, ${report.skipped.length} skipped`
+          if (configured.library?.autoAdopt === false) {
+            personalNote = '  adopt  skipped (library.autoAdopt is off)'
+          } else {
+            const librarySettings = configured.library ?? {}
+            const report = await library.adopt({
+              ...(librarySettings.ignoreAgents === undefined
+                ? {}
+                : { ignoreAgents: librarySettings.ignoreAgents }),
+              ...(librarySettings.ignoreSkills === undefined
+                ? {}
+                : { ignoreSkills: librarySettings.ignoreSkills }),
+            })
+            personalNote = `  adopt  ${report.imported} imported, ${report.unchanged} unchanged, ${report.conflicts} conflicts, ${report.skipped.length} skipped`
+          }
         }
       }
     }

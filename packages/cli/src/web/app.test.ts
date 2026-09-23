@@ -106,6 +106,46 @@ describe('PUT /api/settings', () => {
     })
   })
 
+  it('persists the personal-library block and trims its ignore lists', async () => {
+    await withApp(async (app, { configPath, home }) => {
+      const response = await putSettings(app, {
+        library: { autoAdopt: false, ignoreAgents: ['  Cursor '], ignoreSkills: ['scratch'] },
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        settings: { library?: { autoAdopt?: boolean; ignoreAgents?: string[] } }
+      }
+      expect(body.settings.library).toEqual({
+        autoAdopt: false,
+        ignoreAgents: ['Cursor'],
+        ignoreSkills: ['scratch'],
+      })
+
+      const persisted = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>
+      expect(persisted.library).toMatchObject({ autoAdopt: false, ignoreAgents: ['Cursor'] })
+
+      await rm(home, { recursive: true, force: true })
+    })
+  })
+
+  it('rejects a malformed personal-library block', async () => {
+    await withApp(async (app, { home }) => {
+      for (const settings of [
+        { library: { autoAdopt: 'no' } },
+        { library: { ignoreAgents: [''] } },
+        { library: { ignoreSkills: 'scratch' } },
+        { library: {} },
+      ]) {
+        const response = await putSettings(app, settings)
+        expect(response.status).toBe(400)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('INVALID_REQUEST')
+      }
+
+      await rm(home, { recursive: true, force: true })
+    })
+  })
+
   it('writes agent path overrides and clears them with an empty path', async () => {
     await withApp(async (app, { configPath, home }) => {
       await putSettings(app, {

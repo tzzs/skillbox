@@ -110,6 +110,17 @@ export interface RuntimeSettingsInput {
   linkStrategy?: LinkStrategy
   web?: { port?: number; host?: string; open?: boolean }
   agents?: Record<string, { path?: string; executable?: string; skillDirectories?: string[] }>
+  library?: LibrarySettings
+}
+
+/** Personal library (`<home>/personal`) behaviour on this machine. */
+export interface LibrarySettings {
+  /** Adopt agent skills automatically when the Web UI opens an empty library. */
+  autoAdopt?: boolean
+  /** Agent ids whose skills are left where they are. */
+  ignoreAgents?: string[]
+  /** Skill names that are never imported. */
+  ignoreSkills?: string[]
 }
 
 /**
@@ -121,6 +132,7 @@ export interface SettingsPatch {
   linkStrategy?: LinkStrategy
   web?: { port?: number; host?: string; open?: boolean }
   agents?: Record<string, { path?: string; skillDirectories?: string[] }>
+  library?: LibrarySettings
 }
 
 /* ---- V0.3 registry API (M14.7 Explore / M15 install / M16.3 updates) ---- */

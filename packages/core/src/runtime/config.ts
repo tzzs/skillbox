@@ -33,6 +33,25 @@ export const runtimeConfigSchema = z.object({
     )
     .optional(),
   /**
+   * Personal library (`<home>/personal`) behaviour on this machine. Auto-adopt
+   * only ever applies to the personal library — an explicit repository is never
+   * scanned into.
+   */
+  library: z
+    .object({
+      /**
+       * Adopt existing agent skills when the Web UI opens an *empty* personal
+       * library. Defaults to true; the manual "Scan & import existing skills"
+       * button and `skillbox adopt` ignore this flag.
+       */
+      autoAdopt: z.boolean().optional(),
+      /** Agent ids whose skills are left where they are (e.g. `["cursor"]`). */
+      ignoreAgents: z.array(z.string().trim().min(1)).optional(),
+      /** Skill names that are never imported. */
+      ignoreSkills: z.array(z.string().trim().min(1)).optional(),
+    })
+    .optional(),
+  /**
    * GitHub connection metadata (SPEC §125.1). Machine-local connection state;
    * only non-sensitive fields live here. Tokens and expiry stay in the OS
    * Credential Store and are forbidden in this block.
@@ -67,6 +86,12 @@ function sortObjectRecord<T>(record: Record<string, T>): Record<string, T> {
   return out
 }
 
+/**
+ * Rebuilds the config in a fixed key order so re-writing `config.json` never
+ * churns the diff. The list is a whitelist: a new field on
+ * {@link runtimeConfigSchema} must be copied here too, or it silently never
+ * reaches the file (covered by the serializer round-trip test).
+ */
 function sortConfig(config: RuntimeConfig): RuntimeConfig {
   const out: RuntimeConfig = {}
   if (config.version !== undefined) out.version = config.version
@@ -87,6 +112,17 @@ function sortConfig(config: RuntimeConfig): RuntimeConfig {
         ]),
       ),
     )
+  }
+  if (config.library !== undefined) {
+    out.library = {
+      ...config.library,
+      ...(config.library.ignoreAgents === undefined
+        ? {}
+        : { ignoreAgents: [...config.library.ignoreAgents] }),
+      ...(config.library.ignoreSkills === undefined
+        ? {}
+        : { ignoreSkills: [...config.library.ignoreSkills] }),
+    }
   }
   if (config.github !== undefined) out.github = { ...config.github }
   return out

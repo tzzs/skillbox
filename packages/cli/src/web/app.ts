@@ -269,11 +269,21 @@ export function createWebApp(options: WebAppOptions): Hono {
    */
   app.post('/api/library/adopt', async (c) => {
     return mutation(services, async () => {
+      const librarySettings = (await services.config.load()).library ?? {}
       const library = new PersonalLibraryService({
         homeRoot: services.homeRoot,
         registry: services.registry,
       })
-      const report = await library.adopt()
+      // The button is an explicit request, so `autoAdopt` does not apply here —
+      // but the configured ignore lists do.
+      const report = await library.adopt({
+        ...(librarySettings.ignoreAgents === undefined
+          ? {}
+          : { ignoreAgents: librarySettings.ignoreAgents }),
+        ...(librarySettings.ignoreSkills === undefined
+          ? {}
+          : { ignoreSkills: librarySettings.ignoreSkills }),
+      })
       return c.json<AdoptResponse>({ report }, 201)
     })
   })
@@ -995,6 +1005,11 @@ interface SettingsWebPatch {
   linkStrategy?: LinkStrategy
   web?: { port?: number; host?: string; open?: boolean }
   agents?: Record<string, { path?: string; skillDirectories?: string[] }>
+  library?: {
+    autoAdopt?: boolean
+    ignoreAgents?: string[]
+    ignoreSkills?: string[]
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1003,8 +1018,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Validates the editable subset of the Machine Config received by
- * `PUT /api/settings`. Only linkStrategy / web / agents are accepted; unknown
- * or malformed fields produce an `INVALID_REQUEST` envelope.
+ * `PUT /api/settings`. Only linkStrategy / web / agents / library are accepted;
+ * unknown or malformed fields produce an `INVALID_REQUEST` envelope.
  */
 function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
   if (!isRecord(body.settings)) {
@@ -1106,6 +1121,39 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
     patch.agents = agents
   }
 
+  if (raw.library !== undefined) {
+    if (!isRecord(raw.library)) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "library" must be an object')
+    }
+    const library: SettingsWebPatch['library'] = {}
+    if (raw.library.autoAdopt !== undefined) {
+      if (typeof raw.library.autoAdopt !== 'boolean') {
+        throw new WebApiError('INVALID_REQUEST', 'Field "library.autoAdopt" must be a boolean')
+      }
+      library.autoAdopt = raw.library.autoAdopt
+    }
+    for (const listField of ['ignoreAgents', 'ignoreSkills'] as const) {
+      const value = raw.library[listField]
+      if (value === undefined) {
+        continue
+      }
+      if (
+        !Array.isArray(value) ||
+        value.some((item) => typeof item !== 'string' || item.trim().length === 0)
+      ) {
+        throw new WebApiError(
+          'INVALID_REQUEST',
+          `Field "library.${listField}" must be an array of non-empty strings`,
+        )
+      }
+      library[listField] = value.map((item) => (item as string).trim())
+    }
+    if (Object.keys(library).length === 0) {
+      throw new WebApiError('INVALID_REQUEST', 'Field "library" has no editable fields')
+    }
+    patch.library = library
+  }
+
   return patch
 }
 
@@ -1131,6 +1179,19 @@ function mergeSettings(current: RuntimeConfig, patch: SettingsWebPatch): Runtime
       mergedWeb.open = patch.web.open
     }
     next.web = mergedWeb
+  }
+  if (patch.library !== undefined) {
+    const mergedLibrary: NonNullable<RuntimeConfig['library']> = { ...current.library }
+    if (patch.library.autoAdopt !== undefined) {
+      mergedLibrary.autoAdopt = patch.library.autoAdopt
+    }
+    if (patch.library.ignoreAgents !== undefined) {
+      mergedLibrary.ignoreAgents = [...patch.library.ignoreAgents]
+    }
+    if (patch.library.ignoreSkills !== undefined) {
+      mergedLibrary.ignoreSkills = [...patch.library.ignoreSkills]
+    }
+    next.library = mergedLibrary
   }
   if (patch.agents !== undefined) {
     const mergedAgents: NonNullable<RuntimeConfig['agents']> = { ...current.agents }

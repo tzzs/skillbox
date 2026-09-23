@@ -210,4 +210,46 @@ describe('PersonalLibraryService', () => {
       expect((await fs.lstat(path.join(agentB, 'valid-one'))).isSymbolicLink()).toBe(false)
     })
   })
+
+  it('leaves ignored skills and agents alone and reports why', async () => {
+    await withTempDir(async (dir) => {
+      const homeRoot = path.join(dir, 'home')
+      const agentA = path.join(dir, 'agents', 'a', 'skills')
+      const agentB = path.join(dir, 'agents', 'b', 'skills')
+      await fs.mkdir(agentA, { recursive: true })
+      await fs.mkdir(agentB, { recursive: true })
+      await writeSkill(agentA, 'keep-me', 'keep')
+      await writeSkill(agentA, 'skip-by-name', 'skip')
+      await writeSkill(agentA, 'shared-owner', 'shared')
+      await writeSkill(agentB, 'shared-owner', 'shared')
+      await writeSkill(agentB, 'only-in-b', 'b only')
+
+      const registry = new AgentRegistry([
+        new FakeAgent(agentA, 'fake-a', 'Fake A'),
+        new FakeAgent(agentB, 'fake-b', 'Fake B'),
+      ])
+      const service = new PersonalLibraryService({ homeRoot, registry })
+
+      // Entries are matched trimmed and case-insensitively, so a hand-typed
+      // config value behaves like the CLI flag.
+      const report = await service.adopt({
+        ignoreAgents: ['  FAKE-B '],
+        ignoreSkills: ['skip-by-name'],
+      })
+
+      expect(report).toMatchObject({ scanned: 4, imported: 2 })
+      expect(report.skipped).toEqual([
+        { name: 'only-in-b', agents: ['fake-b'], reason: 'every owning agent is ignored' },
+        { name: 'skip-by-name', agents: ['fake-a'], reason: 'ignored by settings' },
+      ])
+
+      const manifest = await readManifest(service.root())
+      expect(Object.keys(manifest.skills).sort()).toEqual(['keep-me', 'shared-owner'])
+      // the shared skill is still adopted for the non-ignored agent, and only
+      // for that agent
+      expect(manifest.skills['shared-owner']?.agents).toEqual(['fake-a'])
+      expect((await fs.lstat(path.join(agentB, 'only-in-b'))).isSymbolicLink()).toBe(false)
+      expect((await fs.lstat(path.join(agentA, 'skip-by-name'))).isSymbolicLink()).toBe(false)
+    })
+  })
 })
