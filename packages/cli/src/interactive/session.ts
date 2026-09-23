@@ -15,6 +15,7 @@ import {
   type SkillStatusEntry,
 } from '@skillbox/core'
 import type { CliContext } from '../program.js'
+import { reportProblems } from '../report.js'
 import type { InteractivePrompt } from './prompts.js'
 import { isCancelResult } from './prompts.js'
 import {
@@ -223,6 +224,9 @@ export class InteractiveSession {
     this.prompts.success(
       `Synced "${result.repository}" (${result.skills.length} skills, ${result.problems.length} problems, ${state}).`,
     )
+    // A bare problem count tells the user nothing: list the same detail lines
+    // `skillbox install` writes, so the menu is not the blind spot.
+    reportProblems(this.ctx.err, result.problems)
   }
 
   /* ------------------------------------------------------------------ */
@@ -611,13 +615,17 @@ export class InteractiveSession {
       return false
     }
     try {
-      if (parsed.action === 'enable') {
-        await this.skills.enableSkill({ name: detail.name, agent: parsed.agent })
-        this.prompts.success(`Enabled "${detail.name}" for ${this.agentLabel(parsed.agent)}.`)
-      } else {
-        await this.skills.disableSkill({ name: detail.name, agent: parsed.agent })
-        this.prompts.success(`Disabled "${detail.name}" for ${this.agentLabel(parsed.agent)}.`)
-      }
+      const input = { name: detail.name, agent: parsed.agent }
+      const result =
+        parsed.action === 'enable'
+          ? await this.skills.enableSkill(input)
+          : await this.skills.disableSkill(input)
+      this.prompts.success(
+        parsed.action === 'enable'
+          ? `Enabled "${detail.name}" for ${this.agentLabel(parsed.agent)}.`
+          : `Disabled "${detail.name}" for ${this.agentLabel(parsed.agent)}.`,
+      )
+      reportProblems(this.ctx.err, result.reconcile.problems)
       return true
     } catch (error) {
       this.handleError(error)

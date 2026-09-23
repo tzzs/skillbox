@@ -2,8 +2,15 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { acquireRuntimeLock, FleetService, SshClient, type FleetHostConfig } from '@skillbox/core'
+import {
+  acquireRuntimeLock,
+  FleetService,
+  SshClient,
+  setGlobalVerbosity,
+  type FleetHostConfig,
+} from '@skillbox/core'
 import type { RepositorySync } from '@skillbox/core'
+import type { GitHubProvider, GitProvider, SecretScanner } from './sync/index.js'
 import { main, splitVerbosityFlags, type CliDeps, ExitCode } from './index.js'
 
 /**
@@ -20,6 +27,10 @@ function capture(): CliDeps & { out(): string; err(): string } {
     err: () => errorChunks.join(''),
   }
 }
+
+/** A manifest declaring one local skill whose directory is absent: one reconcile problem. */
+const PROBLEM_MANIFEST =
+  'version: 1\nskills:\n  ghost:\n    source:\n      type: local\n      path: skills/ghost\n'
 
 /** A fully-stubbed `RepositorySync`; override individual methods per test. */
 function repositorySyncStub(): RepositorySync {
@@ -184,6 +195,90 @@ describe('cli', () => {
     expect(exit).toBe(ExitCode.GENERIC)
     expect(io.err()).toContain('GitHub')
     expect(io.err()).toContain('skillbox connect')
+  })
+
+  it('prints every reconcile problem as a detail line', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-problems-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      await fs.writeFile(path.join(repo, 'skillbox.yaml'), PROBLEM_MANIFEST)
+
+      const io = capture()
+      const exit = await main(['install'], { ...io, homeRoot: home, repositoryRoot: repo })
+      expect(exit).toBe(0)
+      expect(io.out()).toContain('problems 1')
+      expect(io.err()).toContain('  SKILL_MISSING ghost: Local skill directory missing:')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('prints the sync step breakdown only above normal verbosity', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-sync-steps-'))
+    const gitProvider: GitProvider = {
+      status: async () => ({
+        isRepository: true,
+        ahead: 0,
+        behind: 0,
+        changedFiles: [],
+        stagedFiles: [],
+        conflicts: [],
+      }),
+      pull: async () => ({ conflicts: [], changedFiles: [] }),
+      commit: async (message) => ({ committed: false, message }),
+      push: async () => undefined,
+    }
+    const githubProvider: GitHubProvider = {
+      connectionState: async () => 'connected',
+      startDeviceFlow: async () => {
+        throw new Error('device flow not used by this test')
+      },
+      pollDeviceFlow: async () => {
+        throw new Error('device flow not used by this test')
+      },
+      disconnect: async () => undefined,
+    }
+    const secretScanner: SecretScanner = {
+      isReady: async () => false,
+      scanChangedFiles: async () => ({ findings: [], blocked: false }),
+    }
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(path.join(repo, 'skills'), { recursive: true })
+      await fs.writeFile(path.join(repo, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
+      const deps = (io: CliDeps & { out(): string; err(): string }): CliDeps => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        gitProvider,
+        githubProvider,
+        secretScanner,
+      })
+
+      try {
+        const plain = capture()
+        expect(await main(['sync'], deps(plain))).toBe(0)
+        expect(plain.out()).toContain('Sync complete for')
+        expect(plain.out()).not.toContain('Sync steps')
+        expect(plain.err()).not.toContain('Sync steps')
+
+        const verbose = capture()
+        expect(await main(['sync', '--verbose'], deps(verbose))).toBe(0)
+        // The breakdown goes to stderr so stdout stays identical to `sync`.
+        expect(verbose.out()).not.toContain('Sync steps')
+        expect(verbose.err()).toContain('Sync steps')
+        expect(verbose.err()).toContain('secret-scan')
+      } finally {
+        setGlobalVerbosity('normal')
+      }
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
   })
 
   it('migrates a legacy config.json and reports up-to-date manifest/lockfile', async () => {

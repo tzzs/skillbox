@@ -21,9 +21,11 @@ import type {
 /**
  * V0.3 registry contract (M14.7). These shapes are the *web* front of the
  * Registry provider framework (agent 1: `packages/core/src/registry`) and the
- * Install/Updates layer (agent 2: `packages/core/src/install`). Until those
- * land the Web layer answers `REGISTRY_UNAVAILABLE`; the TODO wiring points
- * live in `services.ts`.
+ * Install/Updates layer (agent 2: `packages/core/src/install`). `services.ts`
+ * wires every one of them to the real Core layer (`createSearchService`,
+ * `createUpdatesService`, `createInstallService`); a Core failure keeps its
+ * Skillbox code, so the M10.8 envelope can report the same reason the CLI
+ * prints.
  */
 
 /** Aggregated risk level of a remote skill per the Security Scanner. */

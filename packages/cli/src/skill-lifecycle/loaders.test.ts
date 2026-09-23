@@ -4,7 +4,6 @@ import {
   createDefaultDiffProvider,
   createDefaultLifecycleProvider,
   createDefaultMergeProvider,
-  MERGE_CONFLICT_CODE,
   type DiffCoreDeps,
   type LifecycleCoreDeps,
   type MergeCoreDeps,
@@ -304,26 +303,23 @@ describe('real core defaults', () => {
       name: 'react-best-practices',
       repositoryRoot: '/tmp/skillbox-loaders-no-such-repository',
     }
-    const flows: Promise<unknown>[] = [
-      createDefaultLifecycleProvider().forkSkill(absentRepository),
-      createDefaultLifecycleProvider().vendorSkill(absentRepository),
-      createDefaultLifecycleProvider().detectManagedModifications(absentRepository),
-      createDefaultLifecycleProvider().restoreManagedSkill(absentRepository),
-      createDefaultDiffProvider().diffSkill(absentRepository),
-      createDefaultMergeProvider().mergeSkill(absentRepository),
-      createDefaultMergeProvider().continueMerge(absentRepository),
-      createDefaultMergeProvider().abortMerge(absentRepository),
+    // Thunks, not started promises: with all eight in flight at once the
+    // promises awaited later sit without a handler long enough for Node to
+    // report them as unhandled rejections.
+    const flows: Array<() => Promise<unknown>> = [
+      () => createDefaultLifecycleProvider().forkSkill(absentRepository),
+      () => createDefaultLifecycleProvider().vendorSkill(absentRepository),
+      () => createDefaultLifecycleProvider().detectManagedModifications(absentRepository),
+      () => createDefaultLifecycleProvider().restoreManagedSkill(absentRepository),
+      () => createDefaultDiffProvider().diffSkill(absentRepository),
+      () => createDefaultMergeProvider().mergeSkill(absentRepository),
+      () => createDefaultMergeProvider().continueMerge(absentRepository),
+      () => createDefaultMergeProvider().abortMerge(absentRepository),
     ]
     for (const flow of flows) {
-      const error = await flow.catch((caught: unknown) => caught)
+      const error = await flow().catch((caught: unknown) => caught)
       expect(isSkillboxError(error)).toBe(true)
       expect((error as SkillboxError).code).toBe(ErrorCode.MANIFEST_NOT_FOUND)
     }
-  })
-})
-
-describe('exit-code codes', () => {
-  it('defines the CLI-level MERGE_CONFLICT code (exit 3 mapping lives in exit-codes.ts)', () => {
-    expect(MERGE_CONFLICT_CODE).toBe('MERGE_CONFLICT')
   })
 })

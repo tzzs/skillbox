@@ -106,6 +106,46 @@ describe('PUT /api/settings', () => {
     })
   })
 
+  it('persists the personal-library block and trims its ignore lists', async () => {
+    await withApp(async (app, { configPath, home }) => {
+      const response = await putSettings(app, {
+        library: { autoAdopt: false, ignoreAgents: ['  Cursor '], ignoreSkills: ['scratch'] },
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        settings: { library?: { autoAdopt?: boolean; ignoreAgents?: string[] } }
+      }
+      expect(body.settings.library).toEqual({
+        autoAdopt: false,
+        ignoreAgents: ['Cursor'],
+        ignoreSkills: ['scratch'],
+      })
+
+      const persisted = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>
+      expect(persisted.library).toMatchObject({ autoAdopt: false, ignoreAgents: ['Cursor'] })
+
+      await rm(home, { recursive: true, force: true })
+    })
+  })
+
+  it('rejects a malformed personal-library block', async () => {
+    await withApp(async (app, { home }) => {
+      for (const settings of [
+        { library: { autoAdopt: 'no' } },
+        { library: { ignoreAgents: [''] } },
+        { library: { ignoreSkills: 'scratch' } },
+        { library: {} },
+      ]) {
+        const response = await putSettings(app, settings)
+        expect(response.status).toBe(400)
+        const body = (await response.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('INVALID_REQUEST')
+      }
+
+      await rm(home, { recursive: true, force: true })
+    })
+  })
+
   it('writes agent path overrides and clears them with an empty path', async () => {
     await withApp(async (app, { configPath, home }) => {
       await putSettings(app, {
@@ -411,8 +451,11 @@ describe('POST /api/registry/install', () => {
         allowPolicy: 'safe',
       })
       expect(response.status).toBe(400)
-      const body = (await response.json()) as { error: { code: string } }
+      const body = (await response.json()) as { error: { code: string; message: string } }
       expect(body.error.code).toBe('INVALID_REQUEST')
+      // The Updates batch shows this message per failed row, so it has to name
+      // the rejected field rather than being an empty or generic string.
+      expect(body.error.message).toContain('targetAgents')
     })
   })
 
@@ -443,9 +486,14 @@ describe('POST /api/registry/install', () => {
           allowPolicy: 'safe',
         })
         expect(response.status).toBe(403)
-        const body = (await response.json()) as { error: { code: string; recoverable: boolean } }
+        const body = (await response.json()) as {
+          error: { code: string; message: string; recoverable: boolean }
+        }
         expect(body.error.code).toBe('INSTALL_SECURITY_BLOCKED')
         expect(body.error.recoverable).toBe(true)
+        // The Core message reaches the client verbatim — the Updates page
+        // prints it as the reason of the matching failed row.
+        expect(body.error.message).toBe('high risk')
       },
     )
   })

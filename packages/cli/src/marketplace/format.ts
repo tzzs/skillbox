@@ -1,8 +1,8 @@
+import { describeSource } from '@skillbox/core'
 import { renderTable } from '../table.js'
 import type {
   AddOutcome,
   InstallStep,
-  NormalizedSource,
   OutdatedEntry,
   RegistrySearchResult,
   SecurityScanResult,
@@ -117,20 +117,9 @@ export function progressStepLabel(step: InstallStep): string {
   return INSTALL_STEP_LABELS[step] ?? step
 }
 
-/** Compact canonical expression of a normalized source (SPEC §23). */
-export function formatSource(source: NormalizedSource): string {
-  switch (source.type) {
-    case 'github':
-      return `github:${source.repo}${source.path !== undefined ? `@${source.path}` : ''}`
-    case 'skills-sh':
-      return source.package
-    case 'git': {
-      let value = `git:${source.url}`
-      if (source.path !== undefined) value += `@${source.path}`
-      if (source.ref !== undefined) value += `#${source.ref}`
-      return value
-    }
-    case 'local':
-      return source.path
-  }
-}
+/**
+ * Compact expression of a normalized source (SPEC §23). Core spells sources in
+ * one place (`describeSource`, `install/cache.ts`); this local switch is what
+ * let a CLI line, a core error and a cache key name one source three ways.
+ */
+export const formatSource = describeSource

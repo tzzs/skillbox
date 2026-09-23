@@ -50,7 +50,7 @@ export interface SkillDiffView {
   files: SkillFileDiff[]
 }
 
-/** Result of `diffSkill` — mirror of the CLI's `SkillDiff` contract. */
+/** Result of `diffSkill`. */
 export interface SkillDiff {
   name: string
   mode: SkillMode

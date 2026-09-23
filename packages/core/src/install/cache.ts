@@ -15,26 +15,64 @@ export interface CacheEntry {
   integrity: string
 }
 
-/** Canonical textual form of a source, used for the cache key. */
+/**
+ * The fields that decide *which* skill a source selects, in a stable order. This
+ * is the cache-key input; it is hashed by {@link cacheSourceKey} and never shown.
+ *
+ * Deliberately not a hand-written spelling: a string joined with `@` / `#` can
+ * collide with a `package` that contains those characters, and a new optional
+ * field would join the key only if someone remembered to extend a switch. Two
+ * skills.sh sources that differ only by `path` once shared a cache entry that
+ * way, and the second install read the first skill's content.
+ */
+export function sourceIdentityFields(source: NormalizedSource): [string, unknown][] {
+  const fields = new Map<string, unknown>(
+    Object.entries(source).filter(([, value]) => value !== undefined),
+  )
+  // `branch` is a resolved `ref` pin rather than a second selector (see
+  // `registry/source.ts` `toManifestSource`), so both spellings of one pin have
+  // to land in the same entry.
+  const branch = fields.get('branch')
+  if (!fields.has('ref') && typeof branch === 'string') {
+    fields.set('ref', branch)
+  }
+  fields.delete('branch')
+  return [...fields.entries()].sort(([left], [right]) => (left < right ? -1 : 1))
+}
+
+/**
+ * Identity of a source as serialized text — the exact string whose digest names
+ * `cache/<source-key>/`. Renaming a field orphans the entries written under the
+ * old digest, which cost nothing more than one re-download.
+ */
 export function canonicalSourceString(source: NormalizedSource): string {
+  return JSON.stringify(sourceIdentityFields(source))
+}
+
+/**
+ * Human-readable source expression used in transaction errors and CLI lines.
+ * Independent of the cache key by design, so it must not drop a field that
+ * {@link sourceIdentityFields} keeps: two sources sharing one cache entry is a
+ * bug, and two sources sharing one error message is the same bug made invisible.
+ */
+export function describeSource(source: NormalizedSource): string {
   switch (source.type) {
     case 'github': {
-      let canonical = `github:${source.repo}`
-      if (source.path !== undefined) canonical += `@${source.path}`
-      if (source.ref !== undefined) canonical += `#${source.ref}`
-      else if (source.branch !== undefined) canonical += `#${source.branch}`
-      return canonical
+      let text = `github:${source.repo}`
+      if (source.path !== undefined) text += `@${source.path}`
+      const pin = source.ref ?? source.branch
+      return pin === undefined ? text : `${text}#${pin}`
     }
     case 'skills-sh': {
-      let canonical = `skills-sh:${source.package}`
-      if (source.version !== undefined) canonical += `@${source.version}`
-      return canonical
+      // Mirrors the `skills.sh/<package>@<path>#<version>` input grammar.
+      let text = `skills-sh:${source.package}`
+      if (source.path !== undefined) text += `@${source.path}`
+      return source.version === undefined ? text : `${text}#${source.version}`
     }
     case 'git': {
-      let canonical = `git:${source.url}`
-      if (source.path !== undefined) canonical += `@${source.path}`
-      if (source.ref !== undefined) canonical += `#${source.ref}`
-      return canonical
+      let text = `git:${source.url}`
+      if (source.path !== undefined) text += `@${source.path}`
+      return source.ref === undefined ? text : `${text}#${source.ref}`
     }
     case 'local':
       return `local:${source.path}`
@@ -131,7 +169,7 @@ export class ManagedCache {
     if (entry === null) {
       throw new SkillboxError(
         ErrorCode.CACHE_MISS,
-        `No cache entry for ${canonicalSourceString(source)} at revision ${revision}`,
+        `No cache entry for ${describeSource(source)} at revision ${revision}`,
         {
           context: { source, revision },
         },

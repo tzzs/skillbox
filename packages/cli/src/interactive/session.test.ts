@@ -2,9 +2,17 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { AgentRegistry } from '@skillbox/core'
-import { Logger } from '@skillbox/core'
-import { defaultLogFilePath } from '@skillbox/core'
+import {
+  AgentRegistry,
+  Logger,
+  defaultLogFilePath,
+  type AgentAdapter,
+  type AgentCapabilities,
+  type AgentDetectionResult,
+  type AgentInstalledSkill,
+  type AgentLinkOptions,
+  type AgentUnlinkResult,
+} from '@skillbox/core'
 import type { CliContext } from '../program.js'
 import type { InteractivePrompt } from './prompts.js'
 import { FIRST_RUN_FILE_NAME, InteractiveSession } from './session.js'
@@ -61,24 +69,87 @@ class FakePrompts implements InteractivePrompt {
 interface SessionHarness {
   ctx: CliContext
   prompts: FakePrompts
+  /** Everything the session wrote to stderr. */
+  errors(): string
+}
+
+/** Declares a local skill whose directory does not exist: one reconcile problem. */
+const PROBLEM_MANIFEST = `version: 1
+skills:
+  ghost:
+    source:
+      type: local
+      path: skills/ghost
+`
+
+/** Minimal detectable agent whose skill directory is a throwaway folder. */
+class FakeAgentAdapter implements AgentAdapter {
+  readonly name: string
+  readonly capabilities: AgentCapabilities = {
+    supportsGlobalSkills: true,
+    supportsProjectSkills: true,
+    supportsSymlinks: true,
+    supportsNestedSkillDirectories: false,
+    requiresRestartAfterChange: false,
+  }
+
+  constructor(
+    readonly id: string,
+    private readonly dir: string,
+  ) {
+    this.name = id
+  }
+
+  async detect(): Promise<AgentDetectionResult> {
+    return { detected: true, skillDirectories: [this.dir], confidence: 'high' }
+  }
+  async getSkillDirectories(): Promise<string[]> {
+    return [this.dir]
+  }
+  async scanSkills(): Promise<AgentInstalledSkill[]> {
+    return []
+  }
+  async linkSkill(source: string, options?: AgentLinkOptions): Promise<void> {
+    fs.mkdirSync(path.join(this.dir, options?.name ?? path.basename(source)), { recursive: true })
+  }
+  async unlinkSkill(name: string): Promise<AgentUnlinkResult> {
+    fs.rmSync(path.join(this.dir, name), { recursive: true, force: true })
+    return { name, path: path.join(this.dir, name), removed: true, reason: 'managed' }
+  }
 }
 
 /** Builds a throwaway repo + home and a minimal manifest so reconcile works. */
-function createHarness(answers: string[], options: { manifest?: boolean } = {}): SessionHarness {
+function createHarness(
+  answers: string[],
+  options: { manifest?: string | false; withAgent?: boolean } = {},
+): SessionHarness {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'skillbox-session-'))
   const repoRoot = path.join(base, 'repo')
   const homeRoot = path.join(base, 'home')
+  const agentRoot = path.join(base, 'agent')
   fs.mkdirSync(repoRoot)
   fs.mkdirSync(homeRoot)
+  fs.mkdirSync(agentRoot)
   if (options.manifest !== false) {
-    fs.writeFileSync(path.join(repoRoot, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
+    fs.writeFileSync(
+      path.join(repoRoot, 'skillbox.yaml'),
+      options.manifest ?? 'version: 1\nskills: {}\n',
+    )
   }
+  const errorChunks: string[] = []
+  const registry =
+    options.withAgent === true
+      ? new AgentRegistry([new FakeAgentAdapter('demo', agentRoot)])
+      : new AgentRegistry()
   const ctx: CliContext = {
     repositoryRoot: repoRoot,
     homeRoot,
-    registry: new AgentRegistry(),
+    registry,
+    verbosity: 'normal',
     out: (): void => undefined,
-    err: (): void => undefined,
+    err: (chunk): void => {
+      errorChunks.push(chunk)
+    },
     logger: new Logger({ logFile: defaultLogFilePath(homeRoot) }),
     gitProvider: {
       status: async () => ({
@@ -110,7 +181,7 @@ function createHarness(answers: string[], options: { manifest?: boolean } = {}):
     },
   }
   const prompts = new FakePrompts(answers)
-  return { ctx, prompts }
+  return { ctx, prompts, errors: () => errorChunks.join('') }
 }
 
 function cleanup(harness: SessionHarness): void {
@@ -171,6 +242,34 @@ describe('InteractiveSession', () => {
       expect(all).toContain('select:exit')
       expect(harness.prompts.calls.some((call) => call.startsWith('success:Synced'))).toBe(false)
       expect(fs.existsSync(markerPathOf(harness))).toBe(true)
+    } finally {
+      cleanup(harness)
+    }
+  })
+
+  it('lists the reconcile problems the onboarding sync reports', async () => {
+    const harness = createHarness(['exit'], { manifest: PROBLEM_MANIFEST })
+    try {
+      await new InteractiveSession({ ctx: harness.ctx, prompts: harness.prompts }).run()
+      const all = harness.prompts.calls.join('\n')
+      expect(all).toContain('success:Synced "')
+      expect(harness.errors()).toContain('  SKILL_MISSING ghost: Local skill directory missing:')
+    } finally {
+      cleanup(harness)
+    }
+  })
+
+  it('lists the reconcile problems an agent toggle reports', async () => {
+    const harness = createHarness(
+      ['my-skills', 'ghost', 'toggle', 'demo:enable', 'back', '__back__', 'exit'],
+      { manifest: PROBLEM_MANIFEST, withAgent: true },
+    )
+    try {
+      markOnboarded(harness)
+      await new InteractiveSession({ ctx: harness.ctx, prompts: harness.prompts }).run()
+      const all = harness.prompts.calls.join('\n')
+      expect(all).toContain('success:Enabled "ghost" for demo.')
+      expect(harness.errors()).toContain('  SKILL_MISSING ghost: Local skill directory missing:')
     } finally {
       cleanup(harness)
     }

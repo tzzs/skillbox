@@ -18,6 +18,50 @@ import type {
   SyncOutcome,
 } from './types.js'
 
+/** Git-port members the transaction needs; `hasTransactionGit` proves they exist. */
+type TransactionGitPort = RepositoryGitPort &
+  Required<
+    Pick<
+      RepositoryGitPort,
+      | 'fetch'
+      | 'revParse'
+      | 'mergeBase'
+      | 'createWorktree'
+      | 'removeWorktree'
+      | 'commit'
+      | 'stage'
+      | 'beginSemanticMerge'
+      | 'abortMerge'
+      | 'createPrivateRef'
+      | 'deletePrivateRef'
+    >
+  >
+
+/** Cleanup step run while leaving a failed transaction. */
+export type CleanupStep = 'abort-merge' | 'restore' | 'remove-worktree' | 'remove-tree'
+
+/** One rollback/cleanup step that failed, reported through the thrown error's context. */
+export interface CleanupFailure {
+  step: CleanupStep
+  /** Restore-point id or path the step was working on. */
+  target: string
+  message: string
+  /**
+   * A leaked worktree is clutter the next sync ignores, while a working tree that
+   * was never restored leaves the user mid-transaction.  Reporting them the same
+   * way would bury the one fact the user has to act on.
+   */
+  blocking: boolean
+}
+
+/** `context.rollback` attached to the error a failed transaction rethrows. */
+export interface RollbackReport {
+  snapshotId: string
+  /** True only when the pre-transaction working tree is still unrestored. */
+  restoreFailed: boolean
+  failures: CleanupFailure[]
+}
+
 /** Performs all repository mutations through a temporary, semantic merge tree. */
 export class SyncTransaction {
   constructor(
@@ -89,6 +133,9 @@ export class SyncTransaction {
       localRoot = path.join(treeRoot, 'local'),
       remoteRoot = path.join(treeRoot, 'remote'),
       outputRoot = path.join(treeRoot, 'merged')
+    const worktreeRoots = [baseRoot, localRoot, remoteRoot]
+    const cleanup: CleanupFailure[] = []
+    let released = false
     try {
       await Promise.all([
         git.createWorktree(repositoryRoot, baseRoot, base),
@@ -235,16 +282,11 @@ export class SyncTransaction {
         },
       }
     } catch (error) {
-      await git.abortMerge(repositoryRoot).catch(() => undefined)
-      await snapshots.restore(snapshot.id).catch(() => undefined)
-      throw error
+      await this.rollback(git, snapshots, snapshot.id, worktreeRoots, treeRoot, cleanup)
+      released = true
+      throw reportCleanup(error, cleanup, snapshot.id)
     } finally {
-      await Promise.all([
-        git.removeWorktree(repositoryRoot, baseRoot).catch(() => undefined),
-        git.removeWorktree(repositoryRoot, localRoot).catch(() => undefined),
-        git.removeWorktree(repositoryRoot, remoteRoot).catch(() => undefined),
-      ])
-      await fs.rm(treeRoot, { recursive: true, force: true }).catch(() => undefined)
+      if (!released) await this.releaseTrees(git, worktreeRoots, treeRoot, cleanup)
     }
   }
 
@@ -309,6 +351,9 @@ export class SyncTransaction {
       remoteRoot = path.join(treeRoot, 'remote'),
       outputRoot = path.join(treeRoot, 'merged')
     const snapshots = new SnapshotService({ repositoryRoot, homeRoot: this.input.homeRoot, git })
+    const worktreeRoots = [baseRoot, localRoot, remoteRoot]
+    const cleanup: CleanupFailure[] = []
+    let released = false
     try {
       await Promise.all([
         git.createWorktree(repositoryRoot, baseRoot, session.baseRevision),
@@ -397,17 +442,60 @@ export class SyncTransaction {
         },
       }
     } catch (error) {
-      await git.abortMerge(repositoryRoot).catch(() => undefined)
-      await snapshots.restore(session.snapshotId).catch(() => undefined)
-      throw error
+      await this.rollback(git, snapshots, session.snapshotId, worktreeRoots, treeRoot, cleanup)
+      released = true
+      throw reportCleanup(error, cleanup, session.snapshotId)
     } finally {
-      await Promise.all([
-        git.removeWorktree(repositoryRoot, baseRoot).catch(() => undefined),
-        git.removeWorktree(repositoryRoot, localRoot).catch(() => undefined),
-        git.removeWorktree(repositoryRoot, remoteRoot).catch(() => undefined),
-      ])
-      await fs.rm(treeRoot, { recursive: true, force: true }).catch(() => undefined)
+      if (!released) await this.releaseTrees(git, worktreeRoots, treeRoot, cleanup)
     }
+  }
+
+  /**
+   * Leaves a failed transaction the way it was entered: unstage the semantic
+   * merge, replay the restore point and release the temporary trees.  Every step
+   * is best-effort, so failures accumulate in `cleanup` for the caller to report
+   * instead of being swallowed here.
+   */
+  private async rollback(
+    git: TransactionGitPort,
+    snapshots: SnapshotService,
+    snapshotId: string,
+    worktreeRoots: readonly string[],
+    treeRoot: string,
+    cleanup: CleanupFailure[],
+  ): Promise<void> {
+    const repositoryRoot = this.input.repositoryRoot
+    await recordCleanup(cleanup, 'abort-merge', repositoryRoot, () =>
+      git.abortMerge(repositoryRoot),
+    )
+    await recordCleanup(cleanup, 'restore', snapshotId, () => snapshots.restore(snapshotId))
+    await this.releaseTrees(git, worktreeRoots, treeRoot, cleanup)
+  }
+
+  /** Drops the temporary merge trees; safe to call once per transaction. */
+  private async releaseTrees(
+    git: TransactionGitPort,
+    worktreeRoots: readonly string[],
+    treeRoot: string,
+    cleanup: CleanupFailure[],
+  ): Promise<void> {
+    const repositoryRoot = this.input.repositoryRoot
+    await Promise.all(
+      worktreeRoots.map((root) =>
+        recordCleanup(
+          cleanup,
+          'remove-worktree',
+          root,
+          () => git.removeWorktree(repositoryRoot, root),
+          // When the transaction died *creating* a worktree there is nothing left
+          // behind, and "1 temporary worktree were left behind" would be a lie.
+          (reason) => reason.includes('is not a working tree'),
+        ),
+      ),
+    )
+    await recordCleanup(cleanup, 'remove-tree', treeRoot, () =>
+      fs.rm(treeRoot, { recursive: true, force: true }),
+    )
   }
 
   private operationRuntime(): OperationRuntime {
@@ -490,6 +578,109 @@ function isPushRejected(error: unknown): boolean {
   return error instanceof SkillboxError && error.code === ErrorCode.GIT_PUSH_REJECTED
 }
 
+/**
+ * Runs a best-effort cleanup step, recording only its failure. `benign` matches
+ * reasons that mean there was nothing to clean up — reporting them would point
+ * the user at a leak that does not exist.
+ */
+async function recordCleanup(
+  cleanup: CleanupFailure[],
+  step: CleanupStep,
+  target: string,
+  operation: () => Promise<unknown>,
+  benign?: (reason: string) => boolean,
+): Promise<void> {
+  try {
+    await operation()
+  } catch (error) {
+    const reason = reasonOf(error)
+    if (benign?.(reason) === true) return
+    cleanup.push({ step, target, message: reason, blocking: step === 'restore' })
+  }
+}
+
+/**
+ * Deepest message in the `cause` chain: the sync services re-wrap the actual
+ * git/filesystem failure, and "could not restore" without the reason underneath
+ * tells the user nothing they can act on.
+ */
+function reasonOf(error: unknown): string {
+  let current: unknown = error
+  let message = current instanceof Error ? current.message : String(current)
+  while (current instanceof Error && current.cause !== undefined) {
+    current = current.cause
+    message = current instanceof Error ? current.message : String(current)
+  }
+  return message
+}
+
+/** How a non-blocking leak reads to the user; '' means that step did not fail. */
+const LEAKED: Record<
+  Exclude<CleanupStep, 'restore'>,
+  (failures: readonly CleanupFailure[]) => string
+> = {
+  'abort-merge': (failures) =>
+    failures.length === 0 ? '' : `the merge could not be aborted (${reasons(failures)})`,
+  'remove-worktree': (failures) =>
+    failures.length === 0
+      ? ''
+      : `${failures.length} temporary worktree${failures.length === 1 ? '' : 's'} were left behind (${reasons(failures)})`,
+  'remove-tree': (failures) =>
+    failures.length === 0 ? '' : `the temporary sync tree was left behind (${reasons(failures)})`,
+}
+
+function reasons(failures: readonly CleanupFailure[]): string {
+  return [...new Set(failures.map((failure) => failure.message))].join(', ')
+}
+
+/**
+ * Returns the error to rethrow.  It stays the very same object so callers keep
+ * classifying it by `code`; the rollback that failed alongside it is reported in
+ * `context.rollback` for programmatic surfaces and in `message`, which is the one
+ * field every surface prints.
+ */
+function reportCleanup(error: unknown, cleanup: CleanupFailure[], snapshotId: string): unknown {
+  // Nothing failed, so nothing is added: a clean rollback must stay silent.
+  // A non-Error throwable has nowhere to carry a report, and wrapping it would
+  // change the code a caller matches on, so it is rethrown as-is.
+  if (cleanup.length === 0 || !(error instanceof Error)) return error
+  const blocking = cleanup.filter((failure) => failure.blocking)
+  const leaked = cleanup.filter((failure) => !failure.blocking)
+  const notes: string[] = []
+  if (blocking.length > 0)
+    notes.push(
+      `rollback is incomplete: the working tree was not restored from sync restore point "${snapshotId}" (${reasons(blocking)}), so your files may still hold mid-transaction state`,
+    )
+  const leaks = (Object.keys(LEAKED) as (keyof typeof LEAKED)[])
+    .map((step) => LEAKED[step](leaked.filter((failure) => failure.step === step)))
+    .filter((text) => text !== '')
+  if (leaks.length > 0) notes.push(`rollback cleanup was also incomplete: ${leaks.join('; ')}`)
+  const previous = (error as { context?: unknown }).context
+  const earlier =
+    typeof previous === 'object' && previous !== null
+      ? (previous as { rollback?: RollbackReport }).rollback
+      : undefined
+  const report: RollbackReport = {
+    snapshotId,
+    restoreFailed: blocking.length > 0 || earlier?.restoreFailed === true,
+    // A retried transaction rolls back twice, once per restore point; the outer
+    // report must add to the inner one rather than replace it.
+    failures: [...(earlier?.failures ?? []), ...cleanup],
+  }
+  // Assigning onto the caught error is how this package annotates errors it did
+  // not construct; see `git-client.ts`, which does the same for stdout/stderr.
+  // One error can be annotated twice across a retry, so the merged report grows
+  // while the sentence is only ever appended once — a message that repeats
+  // "rollback is incomplete" reads like two distinct disasters.
+  const sentence = earlier === undefined ? { message: `${error.message}; ${notes.join('; ')}` } : {}
+  return Object.assign(error, sentence, {
+    context: {
+      ...(typeof previous === 'object' && previous !== null ? previous : {}),
+      rollback: report,
+    },
+  })
+}
+
 async function exists(target: string): Promise<boolean> {
   try {
     await fs.lstat(target)
@@ -500,25 +691,7 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-function hasTransactionGit(
-  git: RepositoryGitPort,
-): git is RepositoryGitPort &
-  Required<
-    Pick<
-      RepositoryGitPort,
-      | 'fetch'
-      | 'revParse'
-      | 'mergeBase'
-      | 'createWorktree'
-      | 'removeWorktree'
-      | 'commit'
-      | 'stage'
-      | 'beginSemanticMerge'
-      | 'abortMerge'
-      | 'createPrivateRef'
-      | 'deletePrivateRef'
-    >
-  > {
+function hasTransactionGit(git: RepositoryGitPort): git is TransactionGitPort {
   return [
     'fetch',
     'revParse',
