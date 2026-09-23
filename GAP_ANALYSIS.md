@@ -147,13 +147,13 @@ CLI 未构建时套件自跳过并提示。
 同一件事有两个扫描器，规则集不同，而它们各自看不见的正是对方看得见的（`add` 走 `security/`，
 `sync` 走 `secret-scan/`）：
 
-| | `security/`（`skillbox add` / install / update） | `secret-scan/`（`skillbox sync`） |
-| --- | --- | --- |
-| 规则数 | 12（11 content + 1 file） | 18（14 content + 4 file） |
-| token 形态 secret | **0** | `github-pat`、`openai-api-key`、`anthropic-api-key`、`stripe-live-key`、`aws-access-key`、`aws-secret-key`、`google-api-key`、`slack-token`、`telegram-bot-token`、`jwt-token`、`generic-bearer` |
-| 私钥材料 | **0** | `private-key-block`、`private-key-file`、`ssh-private-key` |
-| 凭据文件 | **0** | `dotenv-file`、`credential-file` |
-| 行为形态 | `shell-exec`、`curl-bash-pipe`、`network-request`、`fs-destructive`、`env-credential-read`、`ssh-credential-path`、`shell-script-file` | 无 |
+|                   | `security/`（`skillbox add` / install / update）                                                                                       | `secret-scan/`（`skillbox sync`）                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 规则数            | 12（11 content + 1 file）                                                                                                              | 18（14 content + 4 file）                                                                                                                                                                        |
+| token 形态 secret | **0**                                                                                                                                  | `github-pat`、`openai-api-key`、`anthropic-api-key`、`stripe-live-key`、`aws-access-key`、`aws-secret-key`、`google-api-key`、`slack-token`、`telegram-bot-token`、`jwt-token`、`generic-bearer` |
+| 私钥材料          | **0**                                                                                                                                  | `private-key-block`、`private-key-file`、`ssh-private-key`                                                                                                                                       |
+| 凭据文件          | **0**                                                                                                                                  | `dotenv-file`、`credential-file`                                                                                                                                                                 |
+| 行为形态          | `shell-exec`、`curl-bash-pipe`、`network-request`、`fs-destructive`、`env-credential-read`、`ssh-credential-path`、`shell-script-file` | 无                                                                                                                                                                                               |
 
 实测形状：一个 skill 目录里放 `id_rsa`（private key block）+ 含 `STRIPE_SECRET_KEY=sk_live_…` 的
 `.env` —— `sync` 报 4 条 blocking（critical/high），`add` 报
