@@ -28,6 +28,8 @@ interface FailureSwitches {
   restoreFails?: boolean
   /** Leaks a temporary worktree during cleanup. */
   worktreeRemovalFails?: boolean
+  /** Git reports the worktree was never created (the transaction died creating it). */
+  worktreeNeverCreated?: boolean
 }
 
 const LOCAL = 'local-rev'
@@ -85,7 +87,9 @@ class FakeTransactionGit implements RepositoryGitPort {
   async createWorktree(): Promise<void> {
     throw this.switches.mergeFailure
   }
-  async removeWorktree(): Promise<void> {
+  async removeWorktree(_repositoryRoot: string, root: string): Promise<void> {
+    if (this.switches.worktreeNeverCreated === true)
+      throw new Error(`fatal: '${root}' is not a working tree`)
     if (this.switches.worktreeRemovalFails === true) throw new Error('worktree is in use')
   }
   async commit(): Promise<{ hash: string }> {
@@ -215,6 +219,27 @@ describe('SyncTransaction rollback reporting', () => {
         /rollback cleanup was also incomplete: 3 temporary worktrees were left behind/,
       )
       expect((thrown as Error).message).not.toMatch(/restored/)
+    })
+  })
+
+  /**
+   * The regression CI caught on macOS: a transaction that dies *creating* a
+   * worktree then fails to remove it, because there is nothing to remove. Git's
+   * "is not a working tree" must not be reported as a leak the user should chase.
+   */
+  it('does not claim a leak for a worktree that was never created', async () => {
+    await withTempDir(async (dir) => {
+      const repositoryRoot = path.join(dir, 'repo')
+      await fs.mkdir(repositoryRoot, { recursive: true })
+      const original = new Error('no merge tree')
+      const git = new FakeTransactionGit({ mergeFailure: original, worktreeNeverCreated: true })
+
+      const thrown = await rejected(transaction(dir, git, repositoryRoot).run())
+
+      expect((thrown as Error).message).toBe('no merge tree')
+      expect(
+        (thrown as { context?: Record<string, unknown> }).context?.['rollback'],
+      ).toBeUndefined()
     })
   })
 

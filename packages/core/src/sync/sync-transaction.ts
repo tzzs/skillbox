@@ -482,8 +482,14 @@ export class SyncTransaction {
     const repositoryRoot = this.input.repositoryRoot
     await Promise.all(
       worktreeRoots.map((root) =>
-        recordCleanup(cleanup, 'remove-worktree', root, () =>
-          git.removeWorktree(repositoryRoot, root),
+        recordCleanup(
+          cleanup,
+          'remove-worktree',
+          root,
+          () => git.removeWorktree(repositoryRoot, root),
+          // When the transaction died *creating* a worktree there is nothing left
+          // behind, and "1 temporary worktree were left behind" would be a lie.
+          (reason) => reason.includes('is not a working tree'),
         ),
       ),
     )
@@ -572,22 +578,24 @@ function isPushRejected(error: unknown): boolean {
   return error instanceof SkillboxError && error.code === ErrorCode.GIT_PUSH_REJECTED
 }
 
-/** Runs a best-effort cleanup step, recording only its failure. */
+/**
+ * Runs a best-effort cleanup step, recording only its failure. `benign` matches
+ * reasons that mean there was nothing to clean up — reporting them would point
+ * the user at a leak that does not exist.
+ */
 async function recordCleanup(
   cleanup: CleanupFailure[],
   step: CleanupStep,
   target: string,
   operation: () => Promise<unknown>,
+  benign?: (reason: string) => boolean,
 ): Promise<void> {
   try {
     await operation()
   } catch (error) {
-    cleanup.push({
-      step,
-      target,
-      message: reasonOf(error),
-      blocking: step === 'restore',
-    })
+    const reason = reasonOf(error)
+    if (benign?.(reason) === true) return
+    cleanup.push({ step, target, message: reason, blocking: step === 'restore' })
   }
 }
 
