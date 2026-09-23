@@ -9,6 +9,7 @@ import {
   createDefaultAgentRegistry,
   defaultLogFilePath,
   ErrorCode,
+  getGlobalVerbosity,
   isSkillboxError,
   Logger,
   PersonalLibraryService,
@@ -34,12 +35,14 @@ import {
   type SkillboxErrorCode,
   type SkillboxLockfile,
   type SkillboxManifest,
+  type Verbosity,
   SkillService,
   StatusService,
   version,
 } from '@skillbox/core'
 import type { RepositoryStatus, SkillStatusEntry } from '@skillbox/core'
 import { renderTable } from './table.js'
+import { reportProblems } from './report.js'
 import type { InteractivePrompt } from './interactive/prompts.js'
 import { createClackPrompts, isInteractiveTTY } from './interactive/prompts.js'
 import {
@@ -53,6 +56,7 @@ import {
   createDefaultGitProvider,
   createDefaultSecretScanner,
   createSyncGitTransport,
+  renderSyncSteps,
   SyncService,
   type GitHubProvider,
   type GitProvider,
@@ -128,6 +132,8 @@ export interface CliDeps {
   registry?: AgentRegistry
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
+  /** Output verbosity from `--verbose`/`--debug`; defaults to the process-wide level. */
+  verbosity?: Verbosity
   /** Prompt implementation used by the interactive mode (defaults to @clack/prompts). */
   prompts?: InteractivePrompt
   /** Override the interactive-terminal check (used by tests). */
@@ -156,6 +162,8 @@ export interface CliContext {
   registry: AgentRegistry
   out: (chunk: string) => void
   err: (chunk: string) => void
+  /** Verbosity resolved from `--verbose`/`--debug`; commands add detail above `normal`. */
+  verbosity: Verbosity
   /** Structured audit logger (info/warn to ~/.skillbox/logs/skillbox.log). */
   logger: Logger
   gitProvider: GitProvider
@@ -186,6 +194,7 @@ export function buildContext(deps: CliDeps = {}): CliContext {
     registry,
     out,
     err,
+    verbosity: deps.verbosity ?? getGlobalVerbosity(),
     logger: deps.logger ?? new Logger({ logFile: defaultLogFilePath(homeRoot) }),
     gitProvider: deps.gitProvider ?? createDefaultGitProvider(repositoryRoot),
     githubProvider: deps.githubProvider ?? createDefaultGitHubProvider(homeRoot),
@@ -311,13 +320,6 @@ function buildLifecycleService(
 
 function printJson(out: (chunk: string) => void, value: unknown): void {
   out(`${JSON.stringify(value, null, 2)}\n`)
-}
-
-function reportProblems(ctx: CliContext, problems: readonly ReconcileProblem[]): void {
-  for (const problem of problems) {
-    const alias = problem.alias === undefined ? '' : ` ${problem.alias}`
-    ctx.err(`  ${problem.code}${alias}: ${problem.message}\n`)
-  }
 }
 
 function skillTable(skills: readonly SkillStatusEntry[]): string {
@@ -607,7 +609,7 @@ export function buildProgram(ctx: CliContext): Command {
         ctx.out(
           `Enabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (already enabled)'}\n`,
         )
-        reportProblems(ctx, result.reconcile.problems)
+        reportProblems(ctx.err, result.reconcile.problems)
       }),
     )
 
@@ -621,7 +623,7 @@ export function buildProgram(ctx: CliContext): Command {
         ctx.out(
           `Disabled "${result.name}" for agent "${options.agent}"${result.manifestChanged ? '' : ' (was not enabled)'}\n`,
         )
-        reportProblems(ctx, result.reconcile.problems)
+        reportProblems(ctx.err, result.reconcile.problems)
       }),
     )
 
@@ -656,7 +658,7 @@ export function buildProgram(ctx: CliContext): Command {
         ctx.out(
           `  skills   ${report.skills.length}\n  problems ${report.problems.length}\n  changed  ${report.changed ? 'yes' : 'no'}\n`,
         )
-        reportProblems(ctx, report.problems)
+        reportProblems(ctx.err, report.problems)
       }),
     )
 
@@ -798,9 +800,14 @@ export function buildProgram(ctx: CliContext): Command {
           ctx.out(
             `\nSync complete for "${result.repository}" · ${result.committed ? 'committed' : 'no commit'} · ${result.pushed ? 'pushed' : 'not pushed'}\n`,
           )
+          // The pipeline streams each step as it runs; the table is the
+          // at-a-glance breakdown of the finished run (which step warned).
+          if (ctx.verbosity !== 'normal') {
+            ctx.err(`\nSync steps\n${renderSyncSteps(result.steps)}\n`)
+          }
           if (result.problems.length > 0) {
             ctx.out('\nReconcile problems\n')
-            reportProblems(ctx, result.problems)
+            reportProblems(ctx.err, result.problems)
           }
         }),
     )
@@ -814,7 +821,7 @@ export function buildProgram(ctx: CliContext): Command {
         ctx.out(
           `Pulled ${result.pulledFiles.length} file(s) for "${result.repository}"\n  skills   ${result.reconcile.skills.length}\n  problems ${result.reconcile.problems.length}\n  changed  ${result.reconcile.changed ? 'yes' : 'no'}\n`,
         )
-        reportProblems(ctx, result.reconcile.problems)
+        reportProblems(ctx.err, result.reconcile.problems)
       }),
     )
 

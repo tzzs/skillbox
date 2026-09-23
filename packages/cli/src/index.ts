@@ -72,7 +72,9 @@ export async function main(
 ): Promise<number> {
   const { args, verbosity } = splitVerbosityFlags(argv)
   setGlobalVerbosity(verbosity)
-  const ctx = buildContext(deps)
+  // Handed to the context explicitly: `--verbose` must not reach a command
+  // through whatever the process-global happened to be when it was built.
+  const ctx = buildContext({ ...deps, verbosity })
 
   const logger = new Logger({
     verbosity,
