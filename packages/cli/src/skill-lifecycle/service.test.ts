@@ -9,7 +9,6 @@ import {
   type RepositoryStatus,
   type SkillStatusEntry,
 } from '@skillbox/core'
-import { LIFECYCLE_UNAVAILABLE_CODE, MERGE_CONFLICT_CODE } from './loaders.js'
 import {
   createDefaultEditorLauncher,
   SkillLifecycleService,
@@ -346,7 +345,7 @@ describe('SkillLifecycleService.edit', () => {
     const h = createHarness()
     h.status.skills = [managedEntry()]
     h.lifecycle.detectError = new SkillboxError(
-      LIFECYCLE_UNAVAILABLE_CODE,
+      ErrorCode.LIFECYCLE_UNAVAILABLE,
       'detection not available',
     )
     const outcome = await h.service.edit({ name: 'react-best-practices' })
@@ -456,7 +455,7 @@ describe('SkillLifecycleService.merge', () => {
       .merge({ name: 'react-best-practices', action: 'merge' })
       .catch((caught: unknown) => caught)
     expect(isSkillboxError(error)).toBe(true)
-    expect((error as SkillboxError).code).toBe(MERGE_CONFLICT_CODE)
+    expect((error as SkillboxError).code).toBe(ErrorCode.MERGE_CONFLICT)
     expect((error as SkillboxError).message).toContain('2 conflicting file(s)')
     expect((error as SkillboxError).message).toContain('src/index.ts (3 hunks)')
     expect((error as SkillboxError).message).toContain('assets/logo.png (1 hunk, binary)')
@@ -486,7 +485,7 @@ describe('SkillLifecycleService.merge', () => {
     const error = await h.service
       .merge({ name: 'react-best-practices', action: 'continue' })
       .catch((caught: unknown) => caught)
-    expect((error as SkillboxError).code).toBe(MERGE_CONFLICT_CODE)
+    expect((error as SkillboxError).code).toBe(ErrorCode.MERGE_CONFLICT)
     expect((error as SkillboxError).message).toContain('still has 1 unresolved')
     expect((error as SkillboxError).message).toContain('src/index.ts (2 hunks)')
   })

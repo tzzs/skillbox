@@ -13,7 +13,6 @@ import {
   type ManifestSkillSource,
   type RestoreManagedSkillResult,
   type SkillMode,
-  type SkillboxErrorCode,
   type VendorSkillResult,
 } from '@skillbox/core'
 import type {
@@ -56,16 +55,6 @@ import type {
  * - `diffSkill` / `mergeSkill` / `continueMerge` / `abortMerge`
  *                                                (diff/ and merge/)
  */
-
-/**
- * CLI-level error codes: core's ErrorCode defines neither of them, and the
- * exit-code mapping (`../exit-codes.js`) is a `Set<string>`, so the cast keeps
- * them typed. TODO(lifecycle): drop the casts once core ships
- * `LIFECYCLE_UNAVAILABLE` / `MERGE_CONFLICT`.
- */
-export const MERGE_CONFLICT_CODE = 'MERGE_CONFLICT' as SkillboxErrorCode
-/** Code the service layer wraps non-Skillbox lifecycle failures in. */
-export const LIFECYCLE_UNAVAILABLE_CODE = 'LIFECYCLE_UNAVAILABLE' as SkillboxErrorCode
 
 /** Options built once per input and handed to every core call. */
 function coreOptions(input: { repositoryRoot: string; homeRoot?: string }): {

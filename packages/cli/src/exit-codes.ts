@@ -1,5 +1,5 @@
 import { isSkillboxError } from '@skillbox/core'
-import { FsIoErrorCode, SkillboxFsError } from '@skillbox/core'
+import { FsIoErrorCode, SkillboxFsError, type SkillboxErrorCode } from '@skillbox/core'
 
 /**
  * M8.11 Exit Codes. Stable, machine-readable process exit statuses:
@@ -15,8 +15,12 @@ export const ExitCode = {
 
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode]
 
+// The classification tables below hold `SkillboxErrorCode` members rather than
+// free strings, so a code core renames or drops fails to compile here instead
+// of leaving a silently unreachable exit code.
+
 /** Config/data that is structurally invalid: bad manifest, lockfile, config. */
-const VALIDATION_CODES = new Set<string>([
+const VALIDATION_CODES = new Set<SkillboxErrorCode>([
   'INVALID_SKILL',
   'INVALID_MANIFEST',
   'UNSUPPORTED_MANIFEST_VERSION',
@@ -38,7 +42,7 @@ const VALIDATION_CODES = new Set<string>([
 ])
 
 /** Two parties disagree over the same resource (duplicate, locked mismatch). */
-const CONFLICT_CODES = new Set<string>([
+const CONFLICT_CODES = new Set<SkillboxErrorCode>([
   'IMPORT_CONFLICT',
   'AGENT_LINK_CONFLICT',
   'INTEGRITY_MISMATCH',
@@ -47,13 +51,12 @@ const CONFLICT_CODES = new Set<string>([
   'GIT_PUSH_REJECTED',
   // V0.3 marketplace: install collides with an existing skill.
   'INSTALL_CONFLICT',
-  // V0.4 lifecycle: a 3-way merge has unresolved conflicts (M20). CLI-level
-  // code until agent 2 lands `MERGE_CONFLICT` in core's ErrorCode.
+  // V0.4 lifecycle: a 3-way merge has unresolved conflicts (M20).
   'MERGE_CONFLICT',
 ])
 
 /** Path traversal / unsafe links / blocked secrets: refuse before anything else. */
-const SECURITY_CODES = new Set<string>([
+const SECURITY_CODES = new Set<SkillboxErrorCode>([
   'UNSAFE_PATH',
   'UNSAFE_SYMLINK',
   'SECRET_FOUND',
