@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { describeSource } from '@skillbox/core'
 import {
   formatSource,
   progressStepLabel,
@@ -9,7 +10,13 @@ import {
   renderUpdateSummary,
   shortRevision,
 } from './format.js'
-import type { AddOutcome, OutdatedEntry, SecurityScanResult, UpdateOutcome } from './types.js'
+import type {
+  AddOutcome,
+  NormalizedSource,
+  OutdatedEntry,
+  SecurityScanResult,
+  UpdateOutcome,
+} from './types.js'
 
 describe('renderSearchTable', () => {
   it('renders NAME / SOURCE / POPULARITY / SECURITY columns (MVP #125)', () => {
@@ -146,15 +153,45 @@ describe('renderUpdateSummary', () => {
 })
 
 describe('formatSource', () => {
-  it('formats github sources canonically (SPEC §23)', () => {
-    expect(formatSource({ type: 'github', repo: 'org/repo' })).toBe('github:org/repo')
-    expect(formatSource({ type: 'github', repo: 'org/repo', path: 'skills/foo' })).toBe(
-      'github:org/repo@skills/foo',
-    )
-    expect(formatSource({ type: 'skills-sh', package: 'org/repo@skills/foo' })).toBe(
-      'org/repo@skills/foo',
-    )
-    expect(formatSource({ type: 'local', path: 'skills/foo' })).toBe('skills/foo')
+  /** Every `NormalizedSource` variant, with the pins a user can express. */
+  const SOURCES: readonly NormalizedSource[] = [
+    { type: 'github', repo: 'org/repo' },
+    { type: 'github', repo: 'org/repo', path: 'skills/foo' },
+    { type: 'github', repo: 'org/repo', path: 'skills/foo', ref: 'v1.0.0' },
+    { type: 'github', repo: 'org/repo', branch: 'main' },
+    { type: 'skills-sh', package: 'org/repo' },
+    { type: 'skills-sh', package: 'org/repo', path: 'skills/foo' },
+    { type: 'skills-sh', package: 'org/repo', path: 'skills/foo', version: '1.2.0' },
+    { type: 'git', url: 'https://git.example.com/org/repo.git' },
+    { type: 'git', url: 'https://git.example.com/org/repo.git', path: 'skills/foo', ref: 'main' },
+    { type: 'local', path: 'skills/foo' },
+  ]
+
+  const EXPECTED = [
+    'github:org/repo',
+    'github:org/repo@skills/foo',
+    'github:org/repo@skills/foo#v1.0.0',
+    'github:org/repo#main',
+    'skills-sh:org/repo',
+    'skills-sh:org/repo@skills/foo',
+    'skills-sh:org/repo@skills/foo#1.2.0',
+    'git:https://git.example.com/org/repo.git',
+    'git:https://git.example.com/org/repo.git@skills/foo#main',
+    'local:skills/foo',
+  ]
+
+  it('spells every source variant as core does (SPEC §23)', () => {
+    SOURCES.forEach((source, index) => {
+      expect(formatSource(source)).toBe(EXPECTED[index])
+    })
+  })
+
+  it("is core's display projection, not a second opinion", () => {
+    // A CLI line and a transaction error must not name the same source
+    // differently; core's display form is the single owner.
+    for (const source of SOURCES) {
+      expect(formatSource(source)).toBe(describeSource(source))
+    }
   })
 })
 

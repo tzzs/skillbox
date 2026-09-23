@@ -34,7 +34,7 @@ import { linkSkillToAgent } from '../runtime/linker.js'
 import { buildSkillboxHomeLayout, resolveSkillboxHome } from '../runtime/paths.js'
 import { scanSkillForSecurity } from '../security/index.js'
 import { emitSkillboxEvent } from '../events/index.js'
-import { ManagedCache, type CacheEntry } from './cache.js'
+import { ManagedCache, describeSource, type CacheEntry } from './cache.js'
 import type { InstallResult, InstallSkillOptions, UpdateSkillOptions } from './types.js'
 
 export type {
@@ -43,27 +43,6 @@ export type {
   InstallAllowPolicy,
   UpdateSkillOptions,
 } from './types.js'
-
-/** Human-readable source expression used in errors and messages. */
-export function describeSource(source: NormalizedSource): string {
-  switch (source.type) {
-    case 'github': {
-      let description = `github:${source.repo}`
-      if (source.path !== undefined) description += `@${source.path}`
-      return description
-    }
-    case 'skills-sh':
-      return `skills-sh:${source.package}`
-    case 'git': {
-      let description = `git:${source.url}`
-      if (source.path !== undefined) description += `@${source.path}`
-      if (source.ref !== undefined) description += `#${source.ref}`
-      return description
-    }
-    case 'local':
-      return `local:${source.path}`
-  }
-}
 
 /**
  * Derives the default skill alias from a source: the last path segment of a
@@ -397,7 +376,9 @@ async function runInstallTransaction(
         throw rethrowOrWrap(
           error,
           ErrorCode.INSTALL_DOWNLOAD_FAILED,
-          `Failed to download ${describeSource(source)}@${revision}`,
+          // Spelled out separately: `describeSource` may itself end in a `#ref`
+          // pin, so `source@revision` would read as one ambiguous expression.
+          `Failed to download ${describeSource(source)} at revision ${revision}`,
         )
       }
       downloadUsed = true
