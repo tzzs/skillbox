@@ -100,7 +100,7 @@ function makeSyncService(gitTransport?: SyncGitTransport): SyncService {
     githubProvider: fakeGitHub(),
     secretScanner: {
       isReady: async () => false,
-      scanChangedFiles: async () => ({ findings: [], blocked: false }),
+      scanChangedFiles: async () => ({ findings: [], blocked: [], block: false }),
     },
     skills: { install: async () => reconcileResult(REPO) } as unknown as SkillService,
     out: () => undefined,

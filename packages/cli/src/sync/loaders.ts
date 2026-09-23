@@ -342,15 +342,9 @@ class SecretScannerAdapter implements SecretScanner {
 
   async scanChangedFiles(paths: readonly string[]): Promise<SecretScanResult> {
     const result = await this.scan(paths, { root: this.repositoryRoot })
-    return {
-      blocked: result.block,
-      findings: result.findings.map((finding) => ({
-        path: finding.file,
-        rule: finding.patternId,
-        severity: finding.severity,
-        message: `[${finding.name}] ${finding.snippet}`,
-      })),
-    }
+    // Core's classification passes through untouched: `blocked`/`block` are
+    // Core's decision, and the pipeline renders them with Core's error helper.
+    return { findings: result.findings, blocked: result.blocked, block: result.block }
   }
 }
 

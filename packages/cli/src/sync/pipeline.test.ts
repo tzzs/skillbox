@@ -14,6 +14,7 @@ import {
   type GitStatusResult,
   type ReconcileResult,
   type ScanResult,
+  type SecretFinding,
   type SkillService,
 } from '@skillbox/core'
 import {
@@ -114,7 +115,7 @@ class FakeGitHubProvider implements GitHubProvider {
 
 class FakeSecretScanner implements SecretScanner {
   ready = true
-  result: SecretScanResult = { findings: [], blocked: false }
+  result: SecretScanResult = { findings: [], blocked: [], block: false }
   scanned: string[][] = []
 
   async isReady(): Promise<boolean> {
@@ -238,20 +239,36 @@ describe('SyncService.sync', () => {
 
   it('blocks the pipeline on critical/high secret findings', async () => {
     const h = harness()
-    h.secrets.result = {
-      blocked: true,
-      findings: [
-        {
-          path: 'skills/foo/.env',
-          rule: 'env-file',
-          severity: 'high',
-          message: 'environment file',
-        },
-      ],
+    const blocking: SecretFinding = {
+      file: 'skills/foo/.env',
+      patternId: 'dotenv-file',
+      name: 'Dotenv file',
+      severity: 'high',
+      scope: 'file',
+      snippet: '.env',
+      recommendation: 'Remove the file from the repository.',
     }
+    // Core did not classify this one as blocking: it must not reach the
+    // refusal message the user sees.
+    const warning: SecretFinding = {
+      file: 'skills/notes/SKILL.md',
+      patternId: 'generic-bearer',
+      name: 'Bearer token',
+      severity: 'medium',
+      scope: 'content',
+      snippet: 'Bearer ****',
+      recommendation: 'Confirm this is not a live token.',
+    }
+    h.secrets.result = { block: true, findings: [blocking, warning], blocked: [blocking] }
     const error = await h.sync.sync().catch((e: unknown) => e)
     expect(isSkillboxError(error)).toBe(true)
     expect(error).toMatchObject({ code: ErrorCode.SECRET_FOUND })
+    // The wording comes from Core, so it still names the offending file and
+    // stays actionable for the user.
+    expect((error as SkillboxError).message).toContain('skills/foo/.env')
+    expect((error as SkillboxError).message).not.toContain('skills/notes/SKILL.md')
+    expect((error as SkillboxError).recoverable).toBe(true)
+    expect((error as SkillboxError).context).toMatchObject({ count: 1, files: ['skills/foo/.env'] })
     expect(h.git.pushCalls).toBe(0)
   })
 
@@ -710,25 +727,24 @@ describe('loaders (wiring points)', () => {
     }
   })
 
-  it('maps core scan results onto the CLI secret-scan contract', async () => {
+  it('passes core scan results through onto the CLI secret-scan contract', async () => {
     const seen: Array<{ files: readonly string[]; root: string | undefined }> = []
+    const finding = {
+      file: 'skills/foo/SKILL.md',
+      line: 12,
+      patternId: 'aws-access-key',
+      name: 'AWS access key id',
+      severity: 'high' as const,
+      scope: 'content' as const,
+      snippet: 'AKIA****',
+      recommendation: 'Rotate the key.',
+    }
     const scan: CoreSecretScan = async (files, options) => {
       seen.push({ files, root: options?.root })
       const result: ScanResult = {
         filesScanned: files.length,
-        findings: [
-          {
-            file: 'skills/foo/SKILL.md',
-            line: 12,
-            patternId: 'aws-access-key',
-            name: 'AWS access key id',
-            severity: 'high',
-            scope: 'content',
-            snippet: 'AKIA****',
-            recommendation: 'Rotate the key.',
-          },
-        ],
-        blocked: [],
+        findings: [finding],
+        blocked: [finding],
         warnings: [],
         infos: [],
         block: true,
@@ -739,16 +755,12 @@ describe('loaders (wiring points)', () => {
     }
     const scanner = createDefaultSecretScanner(REPO, scan)
     expect(await scanner.isReady()).toBe(true)
+    // Core owns the finding shape and the blocking classification, so the
+    // adapter no longer re-maps either of them.
     expect(await scanner.scanChangedFiles(['skills/foo/SKILL.md'])).toEqual({
-      blocked: true,
-      findings: [
-        {
-          path: 'skills/foo/SKILL.md',
-          rule: 'aws-access-key',
-          severity: 'high',
-          message: '[AWS access key id] AKIA****',
-        },
-      ],
+      findings: [finding],
+      blocked: [finding],
+      block: true,
     })
     // The scanner anchors relative paths on the configured repository root.
     expect(seen).toEqual([{ files: ['skills/foo/SKILL.md'], root: REPO }])
@@ -762,7 +774,8 @@ describe('loaders (wiring points)', () => {
       expect(await scanner.isReady()).toBe(true)
       expect(await scanner.scanChangedFiles(['SKILL.md'])).toEqual({
         findings: [],
-        blocked: false,
+        blocked: [],
+        block: false,
       })
     } finally {
       await fs.rm(root, { recursive: true, force: true })

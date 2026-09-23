@@ -1,7 +1,7 @@
 /**
  * Typed client for the M10 JSON API served by the Skillbox web server
  * (packages/cli/src/web/app.ts). Every request mirrors a Hono route and the
- * M10.8 error envelope `{ error: { code, message, recoverable } }`.
+ * M10.8 error envelope `{ error: { code, message, recoverable, rollback? } }`.
  */
 
 export interface HealthStatus {
@@ -445,11 +445,44 @@ export interface DoctorReport {
   probes: DoctorProbe[]
 }
 
+/**
+ * One sync cleanup step the server could not finish while rolling a failed
+ * transaction back.  Mirrors `SyncRollbackFailureDto` in
+ * `packages/cli/src/web/types.ts`; the server whitelists these fields one by one
+ * and never exports the rest of the error's context.
+ */
+export interface SyncRollbackFailureView {
+  step: 'abort-merge' | 'restore' | 'remove-worktree' | 'remove-tree'
+  /** Restore-point id or temporary sync-tree path the step was working on. */
+  target: string
+  /** Failure reason, secret-scrubbed server-side. */
+  message: string
+  blocking: boolean
+}
+
+/**
+ * Data form of the rollback report a failed `sync`/conflict-resolve leaves behind
+ * (GAP §4.6).  `restoreFailed` is the actionable one: the working tree may still
+ * hold mid-transaction state.
+ *
+ * Note before rendering it: the server deliberately keeps the same facts in
+ * `error.message` too, because the CLI and the log lines print only that field.
+ * A banner built from `rollback` therefore restates what the generic error text
+ * already says — render one or the other, not both.
+ */
+export interface SyncRollbackView {
+  snapshotId: string
+  restoreFailed: boolean
+  failures: SyncRollbackFailureView[]
+}
+
 export interface ApiErrorBody {
   error: {
     code: string
     message: string
     recoverable: boolean
+    /** Only present when a failed sync could not finish restoring the working tree. */
+    rollback?: SyncRollbackView
   }
 }
 

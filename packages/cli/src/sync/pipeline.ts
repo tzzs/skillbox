@@ -2,6 +2,7 @@ import {
   AgentRegistry,
   ErrorCode,
   isSkillboxError,
+  secretScanBlockedError,
   SkillboxError,
   type ReconcileProblem,
   type ReconcileResult,
@@ -203,33 +204,18 @@ export class SyncService {
       if (scan.findings.length > 0) {
         emitSkillboxEvent({
           type: 'security:finding',
-          severity: scan.findings.some(
-            (finding) => finding.severity === 'critical' || finding.severity === 'high',
-          )
-            ? 'high'
-            : 'low',
+          severity: scan.blocked.length > 0 ? 'high' : 'low',
           count: scan.findings.length,
         })
       }
-      if (scan.blocked) {
-        const blockedPaths = scan.findings
-          .filter(
-            (finding: SecretFinding) =>
-              finding.severity === 'critical' || finding.severity === 'high',
-          )
-          .map((finding: SecretFinding) => finding.path)
+      if (scan.block) {
         this.recordStep(
           steps,
           'secret-scan',
           'warning',
           `${findings.length} finding(s) — critical/high findings block the sync`,
         )
-        throw new SkillboxError(
-          ErrorCode.SECRET_FOUND,
-          `Secret scan blocked the sync: ${[...new Set(blockedPaths)].join(', ')}. ` +
-            `Review and remove the secrets, or add them to your ignore policy, then re-run \`skillbox sync\`.`,
-          { context: { findings: scan.findings } },
-        )
+        throw secretScanBlockedError(scan.blocked)
       }
       this.recordStep(
         steps,

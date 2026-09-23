@@ -221,19 +221,26 @@ function severityCompare(left: SecretFinding, right: SecretFinding): number {
 }
 
 /**
- * Typed error the sync pipeline can throw/return when `result.block` is true.
+ * Typed error the sync pipeline throws when `result.block` is true.
  * Uses the shared `SECRET_FOUND` error code; recoverable so the CLI can offer
  * `Ignore once` / `Add to Ignore`.
+ *
+ * Pass `ScanResult.blocked` — this helper is the single place that turns
+ * "these findings block the sync" into the user-facing refusal, so the blocking
+ * decision and its wording stay in Core instead of being re-derived by every
+ * caller.
  */
 export function secretScanBlockedError(findings: ReadonlyArray<SecretFinding>): SkillboxError {
+  const files = [...new Set(findings.map((finding) => finding.file))]
   return new SkillboxError(
     ErrorCode.SECRET_FOUND,
-    `Secret scan found ${findings.length} blocking finding(s); resolving required before sync`,
+    `Secret scan blocked the sync: ${files.join(', ')}. ` +
+      `Review and remove the secrets, or add them to your ignore policy, then re-run \`skillbox sync\`.`,
     {
       recoverable: true,
       context: {
         count: findings.length,
-        files: [...new Set(findings.map((finding) => finding.file))],
+        files,
         patternIds: [...new Set(findings.map((finding) => finding.patternId))],
       },
     },

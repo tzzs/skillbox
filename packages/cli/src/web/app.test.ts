@@ -2138,6 +2138,198 @@ describe('Sync API', () => {
     })
   })
 
+  /**
+   * GAP §4.6 follow-up — `SyncTransaction` reports a rollback that could not
+   * finish twice: as `context.rollback` (data) and as a sentence appended to
+   * `message` (prose), because `message` is the only field every surface prints.
+   * The envelope has to hand the data over, so a UI can branch on
+   * `restoreFailed` ("your files may not be restored") instead of parsing prose —
+   * while the rest of `context` (command lines, credentials, stdout) stays inside
+   * the process.
+   */
+  it('answers a sync failure whose rollback was incomplete with structured error.rollback', async () => {
+    const SECRET = 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    const sync = fakeRepositorySync({
+      sync: async () => {
+        throw new SkillboxError(
+          ErrorCode.GIT_PUSH_REJECTED,
+          `git push failed; rollback is incomplete: the working tree was not restored from sync restore point "snap-1" (restore point "snap-1" could not be restored), so your files may still hold mid-transaction state`,
+          {
+            cause: new Error('non-fast-forward'),
+            context: {
+              command: `git push https://x-access-token:${SECRET}@github.com/acme/skills.git`,
+              repositoryRoot: '/Users/dev/company-secret-repo',
+              stdout: `remote: ${SECRET}`,
+              rollback: {
+                snapshotId: 'snap-1',
+                restoreFailed: true,
+                failures: [
+                  {
+                    step: 'restore',
+                    target: 'snap-1',
+                    message: 'restore point "snap-1" could not be restored',
+                    blocking: true,
+                  },
+                  {
+                    step: 'remove-worktree',
+                    target: '/Users/dev/.skillbox/state/sync-trees/snap-1/base',
+                    // Cleanup messages carry the raw git failure, which can hold
+                    // a credential the envelope must never echo back.
+                    message: `worktree removal failed: token=${SECRET}`,
+                    blocking: false,
+                  },
+                ],
+              },
+            },
+          },
+        )
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(409)
+      const body = (await response.json()) as { error: Record<string, unknown> }
+
+      expect(body.error.rollback).toEqual({
+        snapshotId: 'snap-1',
+        restoreFailed: true,
+        failures: [
+          {
+            step: 'restore',
+            target: 'snap-1',
+            message: 'restore point "snap-1" could not be restored',
+            blocking: true,
+          },
+          {
+            step: 'remove-worktree',
+            target: '/Users/dev/.skillbox/state/sync-trees/snap-1/base',
+            message: 'worktree removal failed: token=[REDACTED]',
+            blocking: false,
+          },
+        ],
+      })
+      /* Keep the prose: the CLI and the log lines print only `message`. */
+      expect(body.error.message).toContain('rollback is incomplete')
+      expect(Object.keys(body.error).sort()).toEqual(['code', 'message', 'recoverable', 'rollback'])
+      const wire = JSON.stringify(body)
+      expect(wire).not.toContain(SECRET)
+      expect(wire).not.toContain('company-secret-repo')
+      expect(wire).not.toContain('"command"')
+      expect(wire).not.toContain('"stdout"')
+    })
+  })
+
+  it('leaves a non-rollback envelope exactly as it was and never serializes context', async () => {
+    const SECRET = 'ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+    const sync = fakeRepositorySync({
+      sync: async () => {
+        throw new SkillboxError(ErrorCode.GIT_AUTH_FAILED, 'git push failed: permission denied', {
+          context: {
+            command: `git push https://x-access-token:${SECRET}@github.com/acme/skills.git`,
+            stderr: `fatal: Authentication failed for ${SECRET}`,
+            accessToken: SECRET,
+            nested: { password: SECRET },
+            /* Near-misses must not be mistaken for a rollback report. */
+            rollbackish: { restoreFailed: true },
+          },
+        })
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(401)
+      const text = await response.text()
+      expect(JSON.parse(text)).toEqual({
+        error: {
+          code: 'GIT_AUTH_FAILED',
+          message: 'git push failed: permission denied',
+          recoverable: false,
+        },
+      })
+      expect(text).not.toContain(SECRET)
+    })
+  })
+
+  it('drops a rollback report it cannot read instead of exporting what it was handed', async () => {
+    const SECRET = 'ghp_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'
+    for (const rollback of [
+      'the working tree was not restored',
+      { restoreFailed: true },
+      { snapshotId: 'snap-1', restoreFailed: true, failures: 'restore failed' },
+      { snapshotId: 'snap-1', restoreFailed: 'yes', failures: [] },
+    ]) {
+      const sync = fakeRepositorySync({
+        sync: async () => {
+          throw new SkillboxError(ErrorCode.GIT_PUSH_REJECTED, 'git push failed', {
+            context: {
+              command: `git push https://x-access-token:${SECRET}@github.com/a/b.git`,
+              rollback,
+            },
+          })
+        },
+      })
+      await withSyncApp(sync, async (app) => {
+        const response = await app.request('/api/sync', { method: 'POST' })
+        const text = await response.text()
+        expect(JSON.parse(text)).toEqual({
+          error: { code: 'GIT_PUSH_REJECTED', message: 'git push failed', recoverable: false },
+        })
+        expect(text).not.toContain(SECRET)
+      })
+    }
+  })
+
+  it('exports a rollback reported on a plain (non-Skillbox) error too', async () => {
+    const sync = fakeRepositorySync({
+      sync: async () => {
+        const error = new Error('sync aborted') as Error & {
+          context?: Record<string, unknown>
+        }
+        error.context = {
+          rollback: {
+            snapshotId: 'snap-9',
+            restoreFailed: false,
+            failures: [
+              {
+                step: 'remove-tree',
+                target: '/Users/dev/.skillbox/state/sync-trees/snap-9',
+                message: 'EBUSY: resource busy or locked',
+                blocking: false,
+              },
+              // A step Core might add later is not whitelisted, so this entry is
+              // dropped rather than exported with a shape the client cannot read.
+              {
+                step: 'rewrite-history',
+                target: 'HEAD',
+                message: 'nonsense',
+                blocking: false,
+              },
+            ],
+          },
+        }
+        throw error
+      },
+    })
+    await withSyncApp(sync, async (app) => {
+      const response = await app.request('/api/sync', { method: 'POST' })
+      expect(response.status).toBe(500)
+      const body = (await response.json()) as { error: Record<string, unknown> }
+      expect(body.error.code).toBe('INTERNAL_ERROR')
+      expect(body.error.rollback).toEqual({
+        snapshotId: 'snap-9',
+        restoreFailed: false,
+        failures: [
+          {
+            step: 'remove-tree',
+            target: '/Users/dev/.skillbox/state/sync-trees/snap-9',
+            message: 'EBUSY: resource busy or locked',
+            blocking: false,
+          },
+        ],
+      })
+    })
+  })
+
   it('POST /api/sync/disconnect removes only local credentials/metadata', async () => {
     let disconnects = 0
     const sync = fakeRepositorySync({

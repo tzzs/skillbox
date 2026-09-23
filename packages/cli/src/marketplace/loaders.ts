@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
   buildSkillboxHomeLayout,
+  CACHE_INTEGRITY_MARKER,
   clearCache,
   defaultRegistry,
   GitHubProvider,
@@ -209,7 +210,9 @@ async function countCacheEntries(cacheRoot: string): Promise<number> {
     } catch {
       continue
     }
-    entries += revisions.filter((revision) => !revision.startsWith('.partial-')).length
+    entries += revisions.filter(
+      (revision) => !revision.startsWith('.partial-') && !revision.endsWith(CACHE_INTEGRITY_MARKER),
+    ).length
   }
   return entries
 }

@@ -4,6 +4,7 @@ import {
   RegistryError,
   RegistryErrorCode,
   isRegistryError,
+  isTransientRegistryError,
   toRegistryError,
   isRegistryRecord,
   type RegistryErrorCodeName,
@@ -377,13 +378,10 @@ export class GitHubProvider implements RegistryProvider {
       try {
         response = await this.rawFetch(url)
       } catch (error) {
-        if (attempt + 1 < maxAttempts && isRegistryError(error)) {
-          const reason = error.reason
-          if (reason === 'network' || reason === 'timeout') {
-            attempt += 1
-            await sleep(this.retryBackoffMs * attempt)
-            continue
-          }
+        if (attempt + 1 < maxAttempts && isTransientRegistryError(error)) {
+          attempt += 1
+          await sleep(this.retryBackoffMs * attempt)
+          continue
         }
         throw error
       }

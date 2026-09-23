@@ -243,7 +243,7 @@ describe('cli', () => {
     }
     const secretScanner: SecretScanner = {
       isReady: async () => false,
-      scanChangedFiles: async () => ({ findings: [], blocked: false }),
+      scanChangedFiles: async () => ({ findings: [], blocked: [], block: false }),
     }
     try {
       const home = path.join(base, 'home')

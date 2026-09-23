@@ -102,11 +102,6 @@ export function toRegistryError(
   })
 }
 
-/** True when a failure means the registry has no such skill/repo/ref. */
-export function isRegistryNotFound(error: unknown): boolean {
-  return isRegistryError(error) && error.code === RegistryErrorCode.REGISTRY_NOT_FOUND
-}
-
 /** Narrowing guard for response bodies and untrusted JSON. */
 export function isRegistryRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

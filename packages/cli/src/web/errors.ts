@@ -1,9 +1,19 @@
-import { ErrorCode, isSkillboxError, SkillboxFsError, type SkillboxErrorCode } from '@skillbox/core'
-import type { ApiErrorBody } from './types.js'
+import {
+  ErrorCode,
+  isSkillboxError,
+  scrubText,
+  SkillboxFsError,
+  type CleanupFailure,
+  type CleanupStep,
+  type RollbackReport,
+  type SkillboxErrorCode,
+} from '@skillbox/core'
+import type { ApiErrorBody, SyncRollbackDto, SyncRollbackFailureDto } from './types.js'
 
 /**
  * M10.8 — every failing request is answered with the same envelope:
- * `{ "error": { "code", "message", "recoverable" } }`.
+ * `{ "error": { "code", "message", "recoverable" } }`, plus the optional
+ * `rollback` report described on {@link ApiErrorBody}'s `error.rollback`.
  */
 
 /** HTTP status chosen for a known Skillbox error code. */
@@ -142,13 +152,114 @@ export class WebApiError extends Error {
   }
 }
 
-function envelope(code: string, message: string, recoverable: boolean): ApiErrorBody {
-  return { error: { code, message, recoverable } }
+function envelope(
+  code: string,
+  message: string,
+  recoverable: boolean,
+  rollback?: SyncRollbackDto,
+): ApiErrorBody {
+  return {
+    error: {
+      code,
+      message,
+      recoverable,
+      /* Omitted, not `null`: an envelope without a rollback must be byte-for-byte
+         what it was before this field existed. */
+      ...(rollback === undefined ? {} : { rollback }),
+    },
+  }
 }
 
 /** Default recoverable value for a known error code. */
 function defaultRecoverable(code: unknown): boolean {
   return typeof code === 'string' && RECOVERABLE.has(code)
+}
+
+/**
+ * The *only* slice of `error.context` this API exports, read field by field.
+ *
+ * Contexts across Core hold whatever the failing layer had to hand — `git-client.ts`
+ * puts a full command line (which can embed a transport credential), the repository
+ * path and raw stdout/stderr into one — so serializing `context` as-is would put
+ * secrets in a JSON response.  Logs never print context unfiltered either
+ * (`logging/redact.ts` masks it first).  The sync transaction's rollback report is
+ * the exception worth carving out (GAP §4.6): `restoreFailed` is the one fact a UI
+ * has to act on, and today it only reaches the client as prose inside `message`.
+ *
+ * Every exported field is already in that `message`, so the whitelist reveals
+ * nothing new; what it buys is structure *and* the guarantee that a context key
+ * Core adds later cannot reach the browser without an explicit edit here.
+ */
+function rollbackOf(error: unknown): SyncRollbackDto | undefined {
+  const context = (error as { context?: unknown }).context
+  if (typeof context !== 'object' || context === null) return undefined
+  const report = (context as { rollback?: unknown }).rollback
+  if (!isRollbackReport(report)) return undefined
+  return {
+    snapshotId: report.snapshotId,
+    restoreFailed: report.restoreFailed,
+    // Only the array itself was checked, so each entry is re-validated from
+    // `unknown`: an entry this layer cannot read is dropped rather than passed
+    // through, so the response under-reports instead of shipping a shape the
+    // client can't type.
+    failures: (report.failures as unknown[]).flatMap((failure) =>
+      isCleanupFailure(failure) ? [toRollbackFailureDto(failure)] : [],
+    ),
+  }
+}
+
+function toRollbackFailureDto(failure: CleanupFailure): SyncRollbackFailureDto {
+  return {
+    step: failure.step,
+    // `target` is a restore-point id or a temporary sync-tree path, `message` the
+    // deepest reason from the failure's `cause` chain — free text straight from
+    // git/filesystem, so it goes through the same masking the log pipeline uses.
+    target: scrubText(failure.target),
+    message: scrubText(failure.message),
+    blocking: failure.blocking,
+  }
+}
+
+/** Structural check, not a cast: a hand-built or older `context.rollback` must not be trusted. */
+function isRollbackReport(value: unknown): value is RollbackReport {
+  if (typeof value !== 'object' || value === null) return false
+  const report = value as Record<string, unknown>
+  return (
+    typeof report.snapshotId === 'string' &&
+    typeof report.restoreFailed === 'boolean' &&
+    Array.isArray(report.failures)
+  )
+}
+
+/**
+ * Cleanup steps this envelope is allowed to name.  Typed as Core's `CleanupStep`
+ * so renaming a step there is a compile error on one of these literals; a step
+ * *added* there is dropped here until it is listed, which keeps the response from
+ * advertising a step no client can render.
+ */
+const REPORTED_STEPS: readonly CleanupStep[] = [
+  'abort-merge',
+  'restore',
+  'remove-worktree',
+  'remove-tree',
+]
+
+/**
+ * Validates one cleanup entry.  Nothing here is cast from `unknown` to a domain
+ * type without being checked first: an older or hand-built report must degrade to
+ * a missing entry, never to a field the client types as a string but receives as
+ * an object.
+ */
+function isCleanupFailure(value: unknown): value is CleanupFailure {
+  if (typeof value !== 'object' || value === null) return false
+  const failure = value as Record<string, unknown>
+  return (
+    typeof failure.step === 'string' &&
+    (REPORTED_STEPS as readonly string[]).includes(failure.step) &&
+    typeof failure.target === 'string' &&
+    typeof failure.message === 'string' &&
+    typeof failure.blocking === 'boolean'
+  )
 }
 
 /** Converts any thrown value into the M10.8 JSON error envelope. */
@@ -165,7 +276,7 @@ export function toApiError(error: unknown): ApiErrorResult {
     const recoverable = error.recoverable || defaultRecoverable(error.code)
     return {
       status,
-      body: envelope(error.code, error.message, recoverable),
+      body: envelope(error.code, error.message, recoverable, rollbackOf(error)),
     }
   }
 
@@ -181,9 +292,11 @@ export function toApiError(error: unknown): ApiErrorResult {
   }
 
   if (error instanceof Error) {
+    /* `reportCleanup` annotates the error it rethrows, and the sync transaction
+       can fail on a plain fs/git Error, so this branch reads the report too. */
     return {
       status: 500,
-      body: envelope('INTERNAL_ERROR', error.message, false),
+      body: envelope('INTERNAL_ERROR', error.message, false, rollbackOf(error)),
     }
   }
 

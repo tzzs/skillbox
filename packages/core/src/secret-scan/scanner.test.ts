@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { ErrorCode } from '../errors.js'
 import { withTempDir } from '../fs/test-utils.js'
 import { SkillboxIgnore } from '../ignore/skillbox-ignore.js'
 import { findingKey, SecretPolicyStore } from './policy.js'
-import { scanFiles } from './scanner.js'
+import { scanFiles, secretScanBlockedError } from './scanner.js'
+import type { SecretFinding } from './types.js'
 
 async function writeFiles(root: string, files: Record<string, string>): Promise<void> {
   for (const [name, content] of Object.entries(files)) {
@@ -162,6 +164,48 @@ describe('scanFiles - ignore and policy wiring', () => {
       })
       expect(result.block).toBe(false)
       expect(result.findings).toEqual([])
+    })
+  })
+})
+
+describe('secretScanBlockedError', () => {
+  const findings: SecretFinding[] = [
+    {
+      file: 'skills/a/.env',
+      patternId: 'dotenv-file',
+      name: 'Dotenv file',
+      severity: 'high',
+      scope: 'file',
+      snippet: '.env',
+      recommendation: 'Remove the file.',
+    },
+    {
+      file: 'skills/a/.env',
+      line: 7,
+      patternId: 'github-pat',
+      name: 'GitHub personal access token',
+      severity: 'critical',
+      scope: 'content',
+      snippet: 'ghp_****',
+      recommendation: 'Rotate the token.',
+    },
+  ]
+
+  it('refuses with the shared SECRET_FOUND code and names each affected file once', () => {
+    const error = secretScanBlockedError(findings)
+    expect(error.code).toBe(ErrorCode.SECRET_FOUND)
+    expect(error.message).toContain('skills/a/.env')
+    expect(error.message.match(/skills\/a\/\.env/g)).toHaveLength(1)
+    expect(error.message).toContain('ignore policy')
+  })
+
+  it('stays recoverable and carries the deduped facts callers report', () => {
+    const error = secretScanBlockedError(findings)
+    expect(error.recoverable).toBe(true)
+    expect(error.context).toMatchObject({
+      count: 2,
+      files: ['skills/a/.env'],
+      patternIds: ['dotenv-file', 'github-pat'],
     })
   })
 })
