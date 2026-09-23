@@ -18,8 +18,8 @@ export * from './ignore/index.js'
 export * from './install/index.js'
 // Both the manifest helper and the install transaction export `updateSkill`;
 // the transaction shape `updateSkill(source, options)` (M16.2) is the one the
-// CLI adapter picks up via its arity check — re-export it explicitly so the
-// name resolves to the transaction instead of the ambiguous star export.
+// CLI imports — re-export it explicitly so the name resolves to the transaction
+// instead of whichever star export the compiler happens to pick.
 export { updateSkill } from './install/index.js'
 export * from './lifecycle/index.js'
 export * from './secret-scan/index.js'

@@ -293,6 +293,34 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
 
 仍缺：TUI 实时订阅 OperationRuntime journal（§4.4 残余）。
 
+### 3.6 任意写操作会把本地改动吸收进 lockfile，`modified` 只活到下一次写（未修）
+
+`reconcile/engine.ts` 每次运行都用 `computeSkillIntegrity(sourcePath)`（磁盘现状）重写
+`skillbox.lock`（`writeLockfileIfChanged`），而 `enable` / `disable`（CLI 与 Web API 都是）
+内部必然跑一次 reconcile。沙箱实测（`demo`，`mode: local`）：
+
+| 步骤                        | 结果                                                                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `install`                   | lock `integrity: sha256:f43d2a78…`                                                                                               |
+| 追加一行本地改动 → `status` | `demo local modified`                                                                                                            |
+| `enable demo -a codex`      | 打印 `INTEGRITY_MISMATCH demo: Locked integrity f43d2a78… differs from repository 9aff01bb…`，**同时**把 lock 改写成 `9aff01bb…` |
+| 再 `status`                 | `demo local ready` —— 那行改动成了新基线                                                                                         |
+
+所以它不是「完全静默」：CLI 看得到一行 mismatch，Web API 把它放进 `reconcile.problems`。
+问题是那一行讲的是「锁与磁盘不一致」，而不是「不一致即将被抹平、你的改动将成为新基线」；
+`apps/web` 根本没有渲染 `reconcile.problems` 的地方（也没有调用 enable/disable），sync 流水线
+里同一件事表现为一行 `resolve warning（lockfile 重算）`。根因是 `local` 源的 integrity 语义
+没定下来：它到底指「导入时快照」还是「磁盘现状」，engine 取后者、`status` 的 `modified` 取前者。
+
+待定的是策略：
+
+- (a) reconcile 只在真正 materialize 了新内容时改写 integrity，本地改动保持 `modified`
+  —— 需要先把上面那个语义定下来；
+- (b) 维持吸收，但把提示改成可行动的（「本地改动已写入锁基线；要保留上游基线请先
+  `skillbox fork` / 用 `edit` 流程」），并让 Web 端把 `reconcile.problems` 显示出来。
+
+(b) 便宜、不改锁语义，可先做；(a) 才是让 `modified` 可信的那一步。
+
 ---
 
 ## 4. P1 — 可靠性与架构基础设施
@@ -415,7 +443,11 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
 - ✅ **private remote auth failure 旅程**：`skillbox connect`（file store 跨进程持久化 token）→
   二次进程 `skillbox push` 打到 401 git 远端 → 干净失败并报认证错误（证明 connection gate 通过、
   credential bridge 到达传输层）
-- 仍缺：三平台 manual acceptance（Windows/macOS/Linux 真实 Agent 目录 + Credential Store）
+- 仍缺：三平台 manual acceptance。macOS 已跑过一轮 10/10（`docs/e2e-acceptance.md` §3.1–§3.3，
+  假 `HOME` + 伪造的 `~/.claude`·`~/.codex` skill 目录，真实用户目录只读核验过），剩下的具体是：
+  真实第三方 Agent 目录下的扫描/迁移/回链、macOS Keychain 读写（沙箱里 `doctor` 报
+  `Keychain unavailable`）、`skillbox connect` 设备流与真实私仓 push、Windows/Linux（junction
+  与路径分隔符分支）
 
 ---
 
@@ -428,6 +460,8 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   `sync/loaders.ts` 的旧 GitHub 构造器注释
 - ✅ 已清理：`install/transaction.ts` 的 provider TODO（registry 框架已落地，注释更新为现状描述）、
   `marketplace/types.ts` 的 updateSkill TODO（已由 `@skillbox/core/install` 提供）
+- ✅ 已清理：`packages/core/src/index.ts` 说 CLI 靠 `updateSkill` 的 arity 探测选事务版本——
+  arity 探测已在 §7.2 移除，注释改为「the transaction shape the CLI imports」
 - ✅ 已清理（2026-09-24）：`exit-codes.ts`「until agent 2 lands `MERGE_CONFLICT`」—— core 的
   `ErrorCode` 现在有 `MERGE_CONFLICT` / `LIFECYCLE_UNAVAILABLE`，CLI 不再自造；
   `web/types.ts` 指向 `services.ts`「TODO wiring points」的那句 —— registry / updates / install

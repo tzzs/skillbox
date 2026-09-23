@@ -121,7 +121,7 @@ class FakeAgentAdapter implements AgentAdapter {
 /** Builds a throwaway repo + home and a minimal manifest so reconcile works. */
 function createHarness(
   answers: string[],
-  options: { manifest?: string; withAgent?: boolean } = {},
+  options: { manifest?: string | false; withAgent?: boolean } = {},
 ): SessionHarness {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'skillbox-session-'))
   const repoRoot = path.join(base, 'repo')
@@ -130,10 +130,12 @@ function createHarness(
   fs.mkdirSync(repoRoot)
   fs.mkdirSync(homeRoot)
   fs.mkdirSync(agentRoot)
-  fs.writeFileSync(
-    path.join(repoRoot, 'skillbox.yaml'),
-    options.manifest ?? 'version: 1\nskills: {}\n',
-  )
+  if (options.manifest !== false) {
+    fs.writeFileSync(
+      path.join(repoRoot, 'skillbox.yaml'),
+      options.manifest ?? 'version: 1\nskills: {}\n',
+    )
+  }
   const errorChunks: string[] = []
   const registry =
     options.withAgent === true
@@ -189,9 +191,13 @@ function cleanup(harness: SessionHarness): void {
 
 /** Writes the first-run marker so the session skips onboarding. */
 function markOnboarded(harness: SessionHarness): void {
-  const markerDir = path.join(harness.ctx.homeRoot, 'state')
-  fs.mkdirSync(markerDir, { recursive: true })
-  fs.writeFileSync(path.join(markerDir, FIRST_RUN_FILE_NAME), '{"onboarded": true}\n')
+  const marker = markerPathOf(harness)
+  fs.mkdirSync(path.dirname(marker), { recursive: true })
+  fs.writeFileSync(marker, '{"onboarded": true}\n')
+}
+
+function markerPathOf(harness: SessionHarness): string {
+  return path.join(harness.ctx.homeRoot, 'state', FIRST_RUN_FILE_NAME)
 }
 
 /** Polls until `predicate` becomes true (bounds the test instead of hanging). */
@@ -215,6 +221,27 @@ describe('InteractiveSession', () => {
       expect(all).toContain('note:Step 1 · Detect agents')
       expect(all).toContain('note:Step 2 · Scan existing skills')
       expect(all).toContain('select:exit')
+    } finally {
+      cleanup(harness)
+    }
+  })
+
+  /**
+   * A first run in a folder with no manifest has nothing to materialise, and
+   * `install()` fails on it — so onboarding must not call it. Before the guard
+   * this rejected with MANIFEST_NOT_FOUND, which killed the session before the
+   * menu and before the first-run marker was written.
+   */
+  it('finishes onboarding when the repository has no manifest yet', async () => {
+    const harness = createHarness(['exit'], { manifest: false })
+    try {
+      await new InteractiveSession({ ctx: harness.ctx, prompts: harness.prompts }).run()
+
+      const all = harness.prompts.calls.join('\n')
+      expect(all).toContain('note:Step 2 · Scan existing skills')
+      expect(all).toContain('select:exit')
+      expect(harness.prompts.calls.some((call) => call.startsWith('success:Synced'))).toBe(false)
+      expect(fs.existsSync(markerPathOf(harness))).toBe(true)
     } finally {
       cleanup(harness)
     }
