@@ -54,10 +54,6 @@ export function serializeConflictSession(session: ConflictSession): string {
   return JSON.stringify(parseConflictSession(session))
 }
 
-export function validateConflictSession(session: ConflictSession): void {
-  parseConflictSession(session)
-}
-
 function parseConflict(value: unknown): SyncConflict {
   if (
     !isRecord(value) ||

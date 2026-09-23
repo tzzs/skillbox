@@ -12,6 +12,12 @@
  * core exports onto these interfaces, and the pipeline only sees these shapes.
  */
 
+import type {
+  ScanResult as CoreScanResult,
+  SecretFinding as CoreSecretFinding,
+  SecretSeverity as CoreSecretSeverity,
+} from '@skillbox/core'
+
 export type GithubConnectionState =
   'not-connected' | 'authorizing' | 'connected' | 'refresh-required' | 'reauthorization-required'
 
@@ -98,22 +104,21 @@ export interface GitHubProvider {
   disconnect(): Promise<void>
 }
 
-export type SecretSeverity = 'critical' | 'high' | 'medium' | 'low'
+export type SecretSeverity = CoreSecretSeverity
 
-export interface SecretFinding {
-  /** Repo-relative path the finding was reported on. */
-  path: string
-  /** Matching rule id. */
-  rule: string
-  severity: SecretSeverity
-  message: string
-}
+/**
+ * A secret finding, in Core's shape. The CLI used to declare its own copy
+ * (`path` / `rule` / `message`), which forced the pipeline to re-derive which
+ * findings block; Core's `SecretFinding` is now the single shape.
+ */
+export type SecretFinding = CoreSecretFinding
 
-export interface SecretScanResult {
-  findings: SecretFinding[]
-  /** Critical/High findings require blocking the pipeline. */
-  blocked: boolean
-}
+/**
+ * The slice of Core's `ScanResult` the pipeline consumes. `blocked` is the
+ * critical/high set Core already classified, and `block` is its refusal signal:
+ * the pipeline never decides either of them itself.
+ */
+export type SecretScanResult = Pick<CoreScanResult, 'findings' | 'blocked' | 'block'>
 
 /** Changed-file secret scanning (agent 4 contract). */
 export interface SecretScanner {

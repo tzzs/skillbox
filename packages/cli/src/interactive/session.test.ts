@@ -177,7 +177,7 @@ function createHarness(
     },
     secretScanner: {
       isReady: async () => false,
-      scanChangedFiles: async () => ({ findings: [], blocked: false }),
+      scanChangedFiles: async () => ({ findings: [], blocked: [], block: false }),
     },
   }
   const prompts = new FakePrompts(answers)
