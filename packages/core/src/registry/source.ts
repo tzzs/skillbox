@@ -17,6 +17,7 @@ import type { NormalizedSource } from './types.js'
  * | `org/repo#main`                      | `{type:'github', repo, ref}`     |
  * | `https://github.com/org/repo/tree/main/p` | `{type:'github', repo, ref, path}` |
  * | `skills.sh/<name>`                   | `{type:'skills-sh', package}`    |
+ * | `skills.sh/<pkg>@<path>#<version>`   | `{type:'skills-sh', package, path, version}` |
  * | `git:https://host/org/repo.git`      | `{type:'git', url}`              |
  * | `git:https://host/org/repo.git#main` | `{type:'git', url, ref}`         |
  * | `git@host:org/repo.git`              | `{type:'git', url}`              |
@@ -375,9 +376,14 @@ export function normalizeSourceString(input: string): string {
  * the manifest may persist the user-readable expression (SPEC §23) — this
  * helper exists for consumers that write to the schema-backed files.
  *
- * Limitations: the manifest schema has no `branch` field (a resolved branch
- * falls back to `ref`) and no skills.sh path (the path is dropped; re-resolution
- * refills it from registry metadata).
+ * A skills.sh `path` (which skill inside the package the user named) is
+ * carried onto the registry source as `path`, so
+ * `add skills.sh/acme/skillz@skills/b` records `skills/b` and
+ * {@link fromManifestSource} reproduces it instead of silently falling back to
+ * "the package".
+ *
+ * Limitation: the manifest schema has no `branch` field (a resolved branch
+ * falls back to `ref`).
  */
 export function toManifestSource(source: NormalizedSource): ManifestSkillSource {
   switch (source.type) {
@@ -397,6 +403,7 @@ export function toManifestSource(source: NormalizedSource): ManifestSkillSource 
         type: 'registry',
         registry: 'skills.sh',
         package: source.package,
+        ...(source.path !== undefined ? { path: source.path } : {}),
         ...(source.version !== undefined ? { version: source.version } : {}),
       }
     case 'git':
@@ -431,6 +438,7 @@ export function fromManifestSource(source: ManifestSkillSource): NormalizedSourc
       return {
         type: 'skills-sh',
         package: source.package,
+        ...(source.path !== undefined ? { path: source.path } : {}),
         ...(source.version !== undefined ? { version: source.version } : {}),
       }
     case 'git':

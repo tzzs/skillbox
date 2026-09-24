@@ -45,6 +45,9 @@ function sourceToNode(source: ManifestSkillSource): Record<string, unknown> {
         registry: source.registry,
         package: source.package,
       }
+      // Which skill inside the package was installed is part of the source, not
+      // a detail of the moment: dropping it makes `update` resolve another skill.
+      if (source.path !== undefined) node.path = source.path
       if (source.version !== undefined) node.version = source.version
       return node
     }

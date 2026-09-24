@@ -142,6 +142,46 @@ describe('SkillsShProvider.resolve', () => {
     )
   })
 
+  it('lets an explicit source path win over the registry metadata path', async () => {
+    const github = stubGithubProvider()
+    const resolveSpy = vi.spyOn(github, 'resolve')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/acme%2Fskillz`,
+        handler: () =>
+          jsonResponse(200, { package: 'acme/skillz', repo: 'acme/skillz', path: 'skills/a' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.resolve({ type: 'skills-sh', package: 'acme/skillz', path: 'skills/b' })
+    // The user named `@skills/b`; the registry's own `skills/a` must not
+    // overwrite it (spread order used to let it).
+    expect(resolveSpy).toHaveBeenCalledWith({
+      type: 'github',
+      repo: 'acme/skillz',
+      path: 'skills/b',
+    })
+  })
+
+  it('falls back to the registry metadata path when the source names none', async () => {
+    const github = stubGithubProvider()
+    const resolveSpy = vi.spyOn(github, 'resolve')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/acme%2Fskillz`,
+        handler: () =>
+          jsonResponse(200, { package: 'acme/skillz', repo: 'acme/skillz', path: 'skills/a' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.resolve({ type: 'skills-sh', package: 'acme/skillz' })
+    expect(resolveSpy).toHaveBeenCalledWith({
+      type: 'github',
+      repo: 'acme/skillz',
+      path: 'skills/a',
+    })
+  })
+
   it('falls back to the registry version for non-repo packages', async () => {
     const fetchImpl = mockFetch([
       {
@@ -197,6 +237,28 @@ describe('SkillsShProvider.download', () => {
     await provider.download({ type: 'skills-sh', package: 'pkg' }, 'GH_HEAD_SHA', '/tmp/target')
     expect(downloadSpy).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'github', repo: 'org/repo', path: 'skills/foo' }),
+      'GH_HEAD_SHA',
+      '/tmp/target',
+    )
+  })
+
+  it('lets an explicit source path win over metadata path when downloading', async () => {
+    const github = stubGithubProvider()
+    const downloadSpy = vi.spyOn(github, 'download')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/pkg`,
+        handler: () => jsonResponse(200, { package: 'pkg', repo: 'org/repo', path: 'skills/a' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.download(
+      { type: 'skills-sh', package: 'pkg', path: 'skills/b' },
+      'GH_HEAD_SHA',
+      '/tmp/target',
+    )
+    expect(downloadSpy).toHaveBeenCalledWith(
+      { type: 'github', repo: 'org/repo', path: 'skills/b' },
       'GH_HEAD_SHA',
       '/tmp/target',
     )
