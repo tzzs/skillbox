@@ -169,6 +169,14 @@ CLI 未构建时套件自跳过并提示。
 倾向 (a)，因为本地优先的入口是 `add`。§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、
 文件读取）收敛成一处，规则集本身仍未动。
 
+本轮先做掉不需要选边的那半：**我们自己的这道检查已改按它实际查的东西命名** ——
+`Risk: low — behaviour/risk-pattern review: … It reads behaviour (shell execution, network calls,
+destructive writes, credential access), not committed secrets — those are scanned at sync`，
+交互标题、`add` 命令说明、install 事务的报错同批跟上。刻意**没改**的是注册表自报的
+`securityReviewed` / "reviewed" 徽章（那是 skills.sh 的说法，不是我们的扫描），也没有改任何 JSON 键名
+（`risk` / `securityRisk` / `INSTALL_SECURITY_BLOCKED` 等一律保留），因为改名就是破坏性 API 变更。
+目录合并本身仍待你定。
+
 已落地：`delete`/`merged`/`restore` 从所有 `allowedResolutions`、`isResolution` 校验与 Web 的
 `CONFLICT_RESOLUTIONS` / `api.ts` / `ConflictResolutionPage` 标签里删除，`ConflictResolution` 类型收窄到
 `'local' | 'remote' | 'keep-both'`（编译器从此站在这条不变量这边）。更糟的是发现 delete-modify 冲突
@@ -176,10 +184,10 @@ CLI 未构建时套件自跳过并提示。
 的选项里去掉：那边根本没有「两边」可留（一侧没有这个 skill 条目），事务会在
 `remote.skills[alias].source` 上抛 TypeError，这已由测试钉住。
 
-仍留一个真 bug（本轮未修）：delete-modify 选 `remote`（接受删除）后，manifest 正确去掉了该 skill，
-但 `resolveUnsafe` 不像 `runUnsafe`（`:165` 先删 `skills/` 再按合并结果重建）那样清理目录，于是
-`skills/<alias>` 作为孤儿留在工作树里被继续跟踪。修法是重建时对「已不在 merged manifest 里」的别名做
-同一套清理，但要先确认对未参与冲突的目录无副作用。
+已修：`applyManifestChoices` 现在返回「被 local/remote 选择从合并结果里移除」的别名，
+`resolveUnsafe` 用 `pruneResolvedSkills()` 精确删这些目录（在工作树与索引里，`writeManifest` 之前）。
+不在那个列表里的别名不可能被删 —— 未参与冲突的目录、以及 `keep-both` 生成的确定性别名副本都有测试
+钉住不受影响；反向（选 `local`）也钉住「skill 原样保留」。修前是真实数据后果：孤儿目录被提交并推走。
 
 ### 2.5 ✅ 冲突解决词汇表已收敛到引擎真会执行的那三个（2026-09-24）
 
@@ -302,7 +310,10 @@ mutation」并给出命令。两个动作都走 `mutation(ctx, …)`，进审计
   `UNSUPPORTED_MANIFEST_VERSION` 拒绝整个文件。两条兼容方向都有测试钉住。
 - ✅ **已修**：`SkillsShProvider` 的 `source.path ?? metadata.path`（用户显式 path 优先，注册表 metadata
   退为兜底）—— 原先 spread 顺序让 metadata 赢，且 `resolve` 与 `download` 两处都错，已抽成一个带注释的
-  helper。`ref`/`version` 的优先顺序未动，仍是另一个问题。
+  helper。
+- ✅ **已修（同一处、同一形状）**：pin 也反了 —— 实际代码是三元而非两个 spread，`ref` 取
+  `metadata.version ?? source.version`，注册表公布的版本会盖掉用户在源表达式里写死的 `#1.2.0`。
+  现在同一个 helper 里显式 pin 优先，`resolve` 与 `download` 共享；未 pin 时仍用 metadata.version。
 
 ### 3.2 ✅ Web 与 CLI Lifecycle 能力不对等（已闭环，2026-08-14）
 
@@ -393,6 +404,12 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
   `skillbox fork` / 用 `edit` 流程」），并让 Web 端把 `reconcile.problems` 显示出来。
 
 (b) 便宜、不改锁语义，可先做；(a) 才是让 `modified` 可信的那一步。
+
+**已落地的是「不谎报」这半条**（与选 (a) 还是 (b) 无关）：`reconcile/engine.ts` 那条
+`INTEGRITY_MISMATCH` 现在把后果写进同一行 —— 「locked integrity 已按仓库副本重算，这次本地改动成为
+基线」，`enable`/`disable`/`install`/`pull`/`sync` 与交互菜单、Web 的 enable/disable 响应都会把它带到
+用户面前（复用已有的 `reconcile.problems` 通道，没有新加一条播报口）。若最终选 (a)，这句话连同它背后的
+吸收行为一起消失。
 
 ---
 
@@ -580,8 +597,9 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
 - ✅ 已清：两套扫描器的**基元**重复（2 MiB 内容上限、severity/risk 排序、可扫描内容的读取）
   收进 `secret-scan/scan-primitives.ts` 一处。规则集仍各自为政，见 §2.4 —— 边界是刻意划的：
   两边阻断阈值不同（install 看 high，sync 看 high+critical），顺手统一会静默改变「什么会被挡下」
-- 残留：`SyncService.connect/disconnect` 保留为 legacy fallback（生产默认路径已走
-  RepositorySync）
+- 更正（本轮查证）：`SyncService.connect/disconnect` 不是可删的 legacy —— `program.ts:897/913` 在
+  未注入 `repositorySync` 时确实走它，`web/app.ts:533` 的 disconnect 路由**只**有这一条路。留着是对的，
+  之前写成「legacy fallback」把话说小了；要收的是让 Web 路由也走 RepositorySync，那是接线不是删除
 - 附带修复：`git commit` 的空提交结果只在 stdout，core 失败错误此前只带 stderr，
   导致 `nothing to commit` 永远识别不了；现在 `context.stdout` 一并暴露，适配器据此判定
 
