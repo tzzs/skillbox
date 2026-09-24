@@ -11,6 +11,7 @@ import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { RuntimeConfigService } from '../runtime/config.js'
 import { GitClient } from '../git/index.js'
 import { SkillboxHome } from '../runtime/home.js'
+import { listIncompleteOperations, RECOVERY_COMMAND } from '../operations/recovery.js'
 import type { AgentRegistry } from '../agent/index.js'
 import type { ProbeResult } from './types.js'
 
@@ -23,9 +24,9 @@ export interface DoctorProbeContext {
 
 /**
  * Runs every doctor probe (roadmap 5.3): git / node / home / config /
- * manifest / lockfile / consistency / agents / library / links / credentials.
- * Probes never throw — each failure becomes a `ProbeResult` with a scrubbed
- * message, so `skillbox doctor` always renders a full report.
+ * manifest / lockfile / consistency / agents / library / links / operations /
+ * credentials. Probes never throw — each failure becomes a `ProbeResult` with a
+ * scrubbed message, so `skillbox doctor` always renders a full report.
  */
 export async function runDoctorProbes(context: DoctorProbeContext): Promise<ProbeResult[]> {
   const filesystem = context.filesystem ?? new FilesystemService()
@@ -154,6 +155,29 @@ export async function runDoctorProbes(context: DoctorProbeContext): Promise<Prob
     push({ name: 'links', ok: true, detail: `${rows} agent(s) with recorded links` })
   } catch (error) {
     push({ name: 'links', ok: false, error: messageOf(error) })
+  }
+
+  /* unfinished operations (crash recovery) */
+  try {
+    const incomplete = await listIncompleteOperations({
+      repositoryRoot: context.repositoryRoot,
+      homeRoot: context.homeRoot,
+    })
+    push(
+      incomplete.length === 0
+        ? { name: 'operations', ok: true, detail: 'no unfinished operations' }
+        : {
+            name: 'operations',
+            ok: false,
+            error:
+              `${incomplete.length} operation(s) never finished and block every mutation: ` +
+              `${incomplete.map((operation) => `${operation.kind} ${operation.operationId}`).join(', ')}. ` +
+              `Run \`${RECOVERY_COMMAND}\` for the two choices per operation: \`--abandon\` keeps ` +
+              `the files as they are, \`--rollback\` puts back the ones it captured.`,
+          },
+    )
+  } catch (error) {
+    push({ name: 'operations', ok: false, error: messageOf(error) })
   }
 
   /* credential store */

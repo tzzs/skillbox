@@ -8,11 +8,14 @@ import {
   createRepositorySync,
   createDefaultAgentRegistry,
   defaultLogFilePath,
+  abandonOperation,
   ErrorCode,
   getGlobalVerbosity,
   isSkillboxError,
+  listIncompleteOperations,
   Logger,
   PersonalLibraryService,
+  rollbackOperation,
   RuntimeConfigService,
   migrateRepository,
   readLockfile,
@@ -27,6 +30,7 @@ import {
   type FleetOperationName,
   type FleetService,
   type FleetSkillTarget,
+  type IncompleteOperation,
   type MigrateFileReport,
   type ReconcileProblem,
   type RepositorySync,
@@ -488,6 +492,47 @@ function renderMigrateFile(report: MigrateFileReport): string {
   return `  ${report.path}   up to date`
 }
 
+/**
+ * `skillbox recover`: one row per unfinished operation, then the exact command
+ * for each of the two choices. The reasons are printed verbatim because a
+ * refused `--rollback` has to say why instead of pretending it would work.
+ */
+function renderIncompleteOperations(operations: readonly IncompleteOperation[]): string {
+  if (operations.length === 0) {
+    return 'No unfinished operations — every journal record reached a terminal status.\n'
+  }
+  const table = renderTable(
+    ['OPERATION', 'KIND', 'STAGE', 'SCOPE', 'STARTED', 'RESTORE'],
+    operations.map((operation) => [
+      operation.operationId,
+      operation.kind,
+      operation.stage,
+      operation.scope,
+      operation.startedAt,
+      operation.rollbackAvailable ? 'available' : 'no restore point',
+    ]),
+  )
+  const lines = [
+    `${operations.length} operation(s) never finished, so every further mutation is refused:`,
+    '',
+    table,
+    '',
+    'Resolve one deliberately: nothing is cleared automatically, because a journal record has no',
+    'heartbeat and skillbox cannot tell a crashed process from one that is still writing.',
+    '',
+  ]
+  for (const operation of operations) {
+    lines.push(`  ${operation.operationId} (${operation.kind})`)
+    lines.push(`    keep its files   ${operation.abandonCommand}`)
+    lines.push(
+      operation.rollbackCommand === undefined
+        ? `    undo its files   unavailable — ${operation.rollbackReason ?? 'no restore point was recorded'}`
+        : `    undo its files   ${operation.rollbackCommand}`,
+    )
+  }
+  return `${lines.join('\n')}\n`
+}
+
 function buildSyncService(ctx: CliContext, skills: SkillService): SyncService {
   return new SyncService({
     repositoryRoot: ctx.repositoryRoot,
@@ -888,7 +933,8 @@ export function buildProgram(ctx: CliContext): Command {
 
   // V0.4.2 — Unified Backup / Rollback (roadmap 2.4): list the recoverable
   // backups recorded by mutating operations (restore / remove), or restore
-  // one with `skillbox rollback <id>`.
+  // one with `skillbox rollback <id>`. An operation that *never finished* is a
+  // different thing and is resolved by `skillbox recover` below.
   program
     .command('rollback [id]')
     .description('List recoverable backups, or restore one with `skillbox rollback <id>`')
@@ -923,6 +969,83 @@ export function buildProgram(ctx: CliContext): Command {
       ctx.out(
         `Rolled back "${result.alias}" (${result.operation}) — restored ${result.filesRestored} file(s) to ${result.path}\n`,
       )
+    })
+
+  // Crash recovery (GAP §2.6): an operation interrupted mid-write leaves its
+  // journal record `running`, and the operation runtime then refuses every
+  // further mutation. `skillbox recover` lists what is stuck and offers the two
+  // endings; it never picks one by itself.
+  program
+    .command('recover')
+    .description(
+      'List operations interrupted mid-write that block further mutations, or resolve one',
+    )
+    .option('--json', 'emit JSON instead of a table')
+    .option(
+      '--abandon <operation-id>',
+      'keep every file the interrupted operation wrote and close its record (restores nothing)',
+    )
+    .option(
+      '--rollback <operation-id>',
+      'restore the files the interrupted operation captured, then close its record. Only for ' +
+        'operations that captured a restore point: a git-backed `sync` keeps its checkpoints in ' +
+        'Git (`skillbox sync --multi-device --restore-snapshot <id>`), so it can only be abandoned',
+    )
+    .action(async (options: { json?: boolean; abandon?: string; rollback?: string }) => {
+      const { abandon, rollback } = options
+      if (abandon !== undefined && rollback !== undefined) {
+        throw new SkillboxError(
+          ErrorCode.INVALID_CONFIG,
+          'Choose either --abandon or --rollback: they are opposite decisions about the same files.',
+        )
+      }
+      if (abandon !== undefined) {
+        await mutation(ctx, 'recover-abandon', async () => {
+          const result = await abandonOperation({
+            repositoryRoot: ctx.repositoryRoot,
+            homeRoot: ctx.homeRoot,
+            operationId: abandon,
+          })
+          if (options.json === true) {
+            printJson(ctx.out, result)
+            return
+          }
+          ctx.out(
+            `Abandoned operation "${result.operationId}" (${result.kind}).\n` +
+              '  files    left exactly as the interrupted operation left them; nothing was restored\n' +
+              `  journal  record closed as ${result.status}, so mutations can run again\n`,
+          )
+        })
+        return
+      }
+      if (rollback !== undefined) {
+        await mutation(ctx, 'recover-rollback', async () => {
+          const result = await rollbackOperation({
+            repositoryRoot: ctx.repositoryRoot,
+            homeRoot: ctx.homeRoot,
+            operationId: rollback,
+          })
+          if (options.json === true) {
+            printJson(ctx.out, result)
+            return
+          }
+          ctx.out(
+            `Rolled back operation "${result.operationId}"${result.kind === undefined ? '' : ` (${result.kind})`}.\n` +
+              `  files    ${result.restoredTargets.length} restored\n` +
+              `  journal  record closed as ${result.journalStatus ?? 'not recorded'}, so mutations can run again\n`,
+          )
+        })
+        return
+      }
+      const operations = await listIncompleteOperations({
+        repositoryRoot: ctx.repositoryRoot,
+        homeRoot: ctx.homeRoot,
+      })
+      if (options.json === true) {
+        printJson(ctx.out, { operations })
+        return
+      }
+      ctx.out(renderIncompleteOperations(operations))
     })
 
   // V0.4.3 — Doctor / debug bundle (roadmap 5.3): environment + repository

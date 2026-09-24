@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -80,6 +81,59 @@ function repositorySyncStub(): RepositorySync {
     }),
     restoreSnapshot: async () => undefined,
   }
+}
+
+/** sha256 key Core derives for a repository path (`repositoryKey` is internal). */
+function repositoryKeyOf(repositoryRoot: string): string {
+  const absolute = path.resolve(repositoryRoot)
+  const normalized = process.platform === 'win32' ? absolute.toLowerCase() : absolute
+  return createHash('sha256').update(normalized).digest('hex')
+}
+
+/**
+ * Writes an unfinished operation journal record in exactly the shape Core
+ * persists it — the state a killed process leaves behind. Deliberately raw:
+ * recovery has to read durable state, not an in-memory object.
+ */
+async function plantInterruptedOperation(
+  home: string,
+  repo: string,
+  operationId: string,
+  kind = 'install',
+): Promise<void> {
+  const key = repositoryKeyOf(repo)
+  const timestamp = new Date().toISOString()
+  const record = {
+    version: 1,
+    operationId,
+    repositoryKey: key,
+    kind,
+    owner: { id: 'cli-recovery-test', pid: process.pid },
+    status: 'running',
+    stage: 'mutate',
+    startedAt: timestamp,
+    updatedAt: timestamp,
+  }
+  const dir = path.join(home, 'operations', 'journals', key)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, `${operationId}.json`), `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+/** Reads back the persisted status of one journal record. */
+async function readJournalStatus(
+  home: string,
+  repo: string,
+  operationId: string,
+): Promise<string | undefined> {
+  const file = path.join(
+    home,
+    'operations',
+    'journals',
+    repositoryKeyOf(repo),
+    `${operationId}.json`,
+  )
+  const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { status?: string }
+  return parsed.status
 }
 
 describe('cli', () => {
@@ -436,6 +490,181 @@ describe('cli', () => {
         leakCheck: { findings: unknown[] }
       }
       expect(bundle.leakCheck.findings).toEqual([])
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('lists an interrupted operation and unblocks the tool with `recover --abandon`', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-recover-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      const manifest = path.join(repo, 'skillbox.yaml')
+      await fs.writeFile(manifest, 'version: 1\n', 'utf8')
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      await plantInterruptedOperation(home, repo, 'op-cli-crashed')
+
+      const listIo = capture()
+      expect(await main(['recover'], deps(listIo))).toBe(0)
+      expect(listIo.out()).toContain('op-cli-crashed')
+      expect(listIo.out()).toContain('install')
+      expect(listIo.out()).toContain('skillbox recover --abandon op-cli-crashed')
+      // No snapshot was captured, so undoing is honestly refused, not faked.
+      expect(listIo.out()).toContain('undo its files   unavailable')
+      expect(listIo.out()).not.toContain('skillbox recover --rollback op-cli-crashed')
+
+      // `--rollback` is refused for a record that captured nothing, and says so
+      // instead of rewriting files it never snapshotted.
+      const rollbackIo = capture()
+      expect(await main(['recover', '--rollback', 'op-cli-crashed'], deps(rollbackIo))).toBe(
+        ExitCode.GENERIC,
+      )
+      expect(rollbackIo.err()).toContain('recorded no restore point')
+      expect(rollbackIo.err()).toContain('skillbox recover --abandon op-cli-crashed')
+      expect(await readJournalStatus(home, repo, 'op-cli-crashed')).toBe('running')
+
+      const abandonIo = capture()
+      expect(await main(['recover', '--abandon', 'op-cli-crashed'], deps(abandonIo))).toBe(0)
+      expect(abandonIo.out()).toContain('Abandoned operation "op-cli-crashed"')
+      expect(await readJournalStatus(home, repo, 'op-cli-crashed')).toBe('abandoned')
+      // The interrupted operation keeps whatever it had already written.
+      await expect(fs.readFile(manifest, 'utf8')).resolves.toBe('version: 1\n')
+
+      const log = await fs.readFile(path.join(home, 'logs', 'skillbox.log'), 'utf8')
+      expect(log).toContain('mutation:recover-abandon:start')
+      expect(log).toContain('mutation:recover-abandon:done')
+
+      const afterIo = capture()
+      expect(await main(['recover'], deps(afterIo))).toBe(0)
+      expect(afterIo.out()).toContain('No unfinished operations')
+
+      // Deciding twice about the same record is refused, not silently accepted.
+      const repeatIo = capture()
+      expect(await main(['recover', '--abandon', 'op-cli-crashed'], deps(repeatIo))).toBe(
+        ExitCode.GENERIC,
+      )
+      expect(repeatIo.err()).toContain('already abandoned')
+
+      const unknownIo = capture()
+      expect(await main(['recover', '--abandon', 'op-nope'], deps(unknownIo))).toBe(
+        ExitCode.GENERIC,
+      )
+      expect(unknownIo.err()).toContain('skillbox recover')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('emits the recovery decisions and the stuck state as JSON', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-recover-json-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+      await plantInterruptedOperation(home, repo, 'op-cli-crashed', 'sync')
+
+      const io = capture()
+      expect(await main(['recover', '--json'], deps(io))).toBe(0)
+      const body = JSON.parse(io.out()) as {
+        operations: Array<Record<string, unknown> & { operationId: string }>
+      }
+      expect(body.operations.map((operation) => operation.operationId)).toEqual(['op-cli-crashed'])
+      expect(body.operations[0]).toEqual({
+        operationId: 'op-cli-crashed',
+        kind: 'sync',
+        status: 'running',
+        stage: 'mutate',
+        startedAt: expect.any(String),
+        updatedAt: expect.any(String),
+        scope: '(no restore point recorded)',
+        backupExists: false,
+        rollbackAvailable: false,
+        rollbackReason: expect.stringContaining('sync'),
+        abandonCommand: 'skillbox recover --abandon op-cli-crashed',
+      })
+      expect('rollbackCommand' in (body.operations[0] ?? {})).toBe(false)
+
+      const actionIo = capture()
+      expect(await main(['recover', '--abandon', 'op-cli-crashed', '--json'], deps(actionIo))).toBe(
+        0,
+      )
+      expect(JSON.parse(actionIo.out())).toEqual({
+        operationId: 'op-cli-crashed',
+        kind: 'sync',
+        status: 'abandoned',
+        restoredTargets: [],
+      })
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses contradictory recovery flags and surfaces the stuck journal in doctor', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-recover-doctor-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(repo, { recursive: true })
+      const deps = (io: CliDeps & { out(): string; err(): string }) => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+      })
+
+      const cleanIo = capture()
+      expect(await main(['doctor', '--json'], deps(cleanIo))).not.toBe(0)
+      const cleanReport = JSON.parse(cleanIo.out()) as {
+        probes: Array<{ name: string; ok: boolean; detail?: string }>
+      }
+      expect(cleanReport.probes.find((probe) => probe.name === 'operations')).toMatchObject({
+        ok: true,
+        detail: 'no unfinished operations',
+      })
+
+      await plantInterruptedOperation(home, repo, 'op-cli-crashed')
+
+      const bothIo = capture()
+      expect(
+        await main(
+          ['recover', '--abandon', 'op-cli-crashed', '--rollback', 'op-cli-crashed'],
+          deps(bothIo),
+        ),
+      ).toBe(ExitCode.VALIDATION)
+      expect(bothIo.err()).toContain('opposite decisions')
+
+      const doctorIo = capture()
+      expect(await main(['doctor'], deps(doctorIo))).not.toBe(0)
+      const line = doctorIo
+        .out()
+        .split('\n')
+        .find((row) => row.includes('operations'))
+      expect(line).toContain('op-cli-crashed')
+      expect(line).toContain('skillbox recover')
+
+      const jsonIo = capture()
+      expect(await main(['doctor', '--json'], deps(jsonIo))).not.toBe(0)
+      const report = JSON.parse(jsonIo.out()) as {
+        probes: Array<{ name: string; ok: boolean; error?: string }>
+      }
+      const probe = report.probes.find((item) => item.name === 'operations')
+      expect(probe?.ok).toBe(false)
+      expect(probe?.error).toContain('install op-cli-crashed')
+      // Doctor only reports: the record is still the user's to close.
+      expect(await readJournalStatus(home, repo, 'op-cli-crashed')).toBe('running')
     } finally {
       await fs.rm(base, { recursive: true, force: true })
     }
