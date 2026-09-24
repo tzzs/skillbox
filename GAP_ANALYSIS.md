@@ -169,7 +169,19 @@ CLI 未构建时套件自跳过并提示。
 倾向 (a)，因为本地优先的入口是 `add`。§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、
 文件读取）收敛成一处，规则集本身仍未动。
 
-### 2.5 三种冲突解决方式被接受、却没有实现（未修，需定策略）
+已落地：`delete`/`merged`/`restore` 从所有 `allowedResolutions`、`isResolution` 校验与 Web 的
+`CONFLICT_RESOLUTIONS` / `api.ts` / `ConflictResolutionPage` 标签里删除，`ConflictResolution` 类型收窄到
+`'local' | 'remote' | 'keep-both'`（编译器从此站在这条不变量这边）。更糟的是发现 delete-modify 冲突
+**默认推荐** `restore` —— 一个什么都不做的按钮，现在这种冲突不再预推荐。`keep-both` 也从 delete-modify
+的选项里去掉：那边根本没有「两边」可留（一侧没有这个 skill 条目），事务会在
+`remote.skills[alias].source` 上抛 TypeError，这已由测试钉住。
+
+仍留一个真 bug（本轮未修）：delete-modify 选 `remote`（接受删除）后，manifest 正确去掉了该 skill，
+但 `resolveUnsafe` 不像 `runUnsafe`（`:165` 先删 `skills/` 再按合并结果重建）那样清理目录，于是
+`skills/<alias>` 作为孤儿留在工作树里被继续跟踪。修法是重建时对「已不在 merged manifest 里」的别名做
+同一套清理，但要先确认对未参与冲突的目录无副作用。
+
+### 2.5 ✅ 冲突解决词汇表已收敛到引擎真会执行的那三个（2026-09-24）
 
 `ConflictResolution` 有六个取值，`manifest-merge.ts` 在产出冲突时把它们列进
 `allowedResolutions`（`delete`/`restore`：:84-85；`keep-both`：:141/155-156/169 与
@@ -189,7 +201,7 @@ CLI 未构建时套件自跳过并提示。
 对 `delete-modify` 是「取 base 快照」还是别的。定完再实现，或者反过来——把这些取值从
 `allowedResolutions` 与 UI 里摘掉，直到有实现为止。后者是一行改动，也不骗人。
 
-### 2.6 一次崩溃之后，用户被永久锁在自己的工具外面（未修）
+### 2.6 ✅ 崩溃锁死已有出口：`skillbox recover`（2026-09-24）
 
 `OperationRuntime` 的 journal 语义是：进程在写操作中途死掉，记录停在 `status: 'running'`；此后
 `assertNoIncompleteJournal`（`packages/core/src/operations/runtime.ts:184-196`）对**每一次** mutation
@@ -200,6 +212,22 @@ CLI 未构建时套件自跳过并提示。
 结果：用户要么手删 `~/.skillbox/state/…` 里的 journal 文件（工具从没告诉过他这条路），要么永久卡在
 「有操作未完成」上。§3.3 里「Journal 已记录写操作状态并支持崩溃恢复标记」说的正是这半条路径 ——
 标记有，恢复没有。本地优先的工具不该有这种终局，所以它记在 P0 而不是 §7。
+
+已落地（`packages/core/src/operations/recovery.ts` + `skillbox recover`）：两处
+`OPERATION_RECOVERY_REQUIRED` 现在把 operation id / kind / stage 和两条可选命令写进消息；
+`skillbox recover`（无参）列出未完成项 + `--json`，`--abandon <id>` 只把 journal 落成
+`abandoned` 终态、**不碰任何用户文件**，`--rollback <id>` 才走真正的恢复点回滚并落
+`rolled-back` 终态；没有恢复点的操作（git 型 `sync` 的 `retainForRollback: false`）直接拒绝并说明原因，
+`--abandon` 作为替代印在帮助与报错里。`skillbox doctor` 多一个只读探针，报「N 个操作未完成且阻塞所有
+mutation」并给出命令。两个动作都走 `mutation(ctx, …)`，进审计日志、持 mutation 锁。
+刻意不做的事：不按时长自动判定陈旧 —— journal 没有心跳，误判等于在另一个进程写到一半时解开闸门；
+也不给 Web 加路由（doctor 探针已经能被 `GET /api/doctor` 看到，动作要 UI 的话得先定谁来点）。
+
+已知限制（未修）：`snapshot-service.ts:145-149` 的 restore 是「先 `rm` 目标再拷 payload」。对
+「事务前不存在」的托管路径这个删除是**正确语义**（`managedPaths` 是固定四条，不是捕获时存在的集合，
+缺 payload 就该意味着该路径原本没有），但拷贝本身失败时会留下被删的空位 —— 兜底只有那条私有 ref
+（`createPrivateRef` 仍保留 pre-transaction 提交），而工具没告诉用户可以用它取回。要收的是这个窗口：
+拷到同目录的暂存名再 rename 换入，语义不变。
 
 ---
 
@@ -264,13 +292,17 @@ CLI 未构建时套件自跳过并提示。
 
 待定（skills.sh 的 `path` 在别处仍然丢）：
 
-- **`toManifestSource` 对 skills-sh 丢 `path`**（`registry/source.ts:395-401` 只写
-  `type/registry/package/version`）：manifest/lock 里的 skills.sh 条目不再说明是包里的**哪一个** skill；
-  缓存键修好之后，「重装 / update / 新机器 clone」仍会重新解析出另一个子路径。改法牵出 schema
-  （给 registry source 加 `path`，或把 path 折进 package 表达式）+ 迁移，本轮未动。
-- **`SkillsShProvider.resolve` 让注册表的 `metadata.path` 覆盖用户显式 `path`**
-  （`registry/skills-sh.ts:149-150` 的 spread 顺序：`source.path` 在前、`metadata.path` 在后）：
-  与用户意图相反，应显式 path 优先。属策略修正，本轮未动。
+- ✅ **已落（2026-09-24）**：`registryManifestSourceSchema` 加了可选 `path`（与 git 变体同一写法），
+  `toManifestSource` / `fromManifestSource` 双向带上，并且真正落盘 —— 序列化是逐字段重建节点的，
+  `manifest/manifest-io.ts` 与 `lockfile/lockfile-io.ts` 的 `registry` 分支原先不写 `path`，所以只改
+  schema 会「内存里对、磁盘上丢」；两处都补了，另加 `sources/resolver.ts` 的 legacy 转换（skills-sh 与
+  `git` 两条分支都在丢 path）。**没有升 `CURRENT_MANIFEST_VERSION`**，理由是实测而非推测：zod 默认
+  strip、仓库里没有任何 `.strict()`/`.passthrough()`，所以旧版读到新 manifest 只是丢掉这一个键（行为等同
+  今天），新版读到旧文件得到 `path: undefined`；反倒如果升版本，旧二进制会在 `manifest-io.ts:148` 以
+  `UNSUPPORTED_MANIFEST_VERSION` 拒绝整个文件。两条兼容方向都有测试钉住。
+- ✅ **已修**：`SkillsShProvider` 的 `source.path ?? metadata.path`（用户显式 path 优先，注册表 metadata
+  退为兜底）—— 原先 spread 顺序让 metadata 赢，且 `resolve` 与 `download` 两处都错，已抽成一个带注释的
+  helper。`ref`/`version` 的优先顺序未动，仍是另一个问题。
 
 ### 3.2 ✅ Web 与 CLI Lifecycle 能力不对等（已闭环，2026-08-14）
 
