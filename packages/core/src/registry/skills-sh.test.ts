@@ -182,6 +182,38 @@ describe('SkillsShProvider.resolve', () => {
     })
   })
 
+  it('lets an explicit version pin win over the registry metadata version', async () => {
+    const github = stubGithubProvider()
+    const resolveSpy = vi.spyOn(github, 'resolve')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/acme%2Fskillz`,
+        handler: () =>
+          jsonResponse(200, { package: 'acme/skillz', repo: 'acme/skillz', version: '9.9.9' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    // `skills.sh/acme/skillz#1.2.0` — the user named the revision, so the version the
+    // registry happens to advertise today must not replace it (spread order used to).
+    await provider.resolve({ type: 'skills-sh', package: 'acme/skillz', version: '1.2.0' })
+    expect(resolveSpy).toHaveBeenCalledWith({ type: 'github', repo: 'acme/skillz', ref: '1.2.0' })
+  })
+
+  it('still applies the registry version when the source pins none', async () => {
+    const github = stubGithubProvider()
+    const resolveSpy = vi.spyOn(github, 'resolve')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/acme%2Fskillz`,
+        handler: () =>
+          jsonResponse(200, { package: 'acme/skillz', repo: 'acme/skillz', version: '2.3.4' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.resolve({ type: 'skills-sh', package: 'acme/skillz' })
+    expect(resolveSpy).toHaveBeenCalledWith({ type: 'github', repo: 'acme/skillz', ref: '2.3.4' })
+  })
+
   it('falls back to the registry version for non-repo packages', async () => {
     const fetchImpl = mockFetch([
       {
@@ -259,6 +291,48 @@ describe('SkillsShProvider.download', () => {
     )
     expect(downloadSpy).toHaveBeenCalledWith(
       { type: 'github', repo: 'org/repo', path: 'skills/b' },
+      'GH_HEAD_SHA',
+      '/tmp/target',
+    )
+  })
+
+  it('lets an explicit version pin win over metadata version when downloading', async () => {
+    const github = stubGithubProvider()
+    const downloadSpy = vi.spyOn(github, 'download')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/pkg`,
+        handler: () => jsonResponse(200, { package: 'pkg', repo: 'org/repo', version: '9.9.9' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.download(
+      { type: 'skills-sh', package: 'pkg', version: '1.2.0' },
+      'GH_HEAD_SHA',
+      '/tmp/target',
+    )
+    // The pin also has to survive here: `download` maps the same source onto GitHub and
+    // a metadata override would fetch a different tree than `resolve` pinned.
+    expect(downloadSpy).toHaveBeenCalledWith(
+      { type: 'github', repo: 'org/repo', ref: '1.2.0' },
+      'GH_HEAD_SHA',
+      '/tmp/target',
+    )
+  })
+
+  it('applies the metadata version when downloading an unpinned source', async () => {
+    const github = stubGithubProvider()
+    const downloadSpy = vi.spyOn(github, 'download')
+    const fetchImpl = mockFetch([
+      {
+        url: `${BASE}/api/packages/pkg`,
+        handler: () => jsonResponse(200, { package: 'pkg', repo: 'org/repo', version: '2.3.4' }),
+      },
+    ])
+    const provider = new SkillsShProvider({ fetchImpl, githubProvider: github })
+    await provider.download({ type: 'skills-sh', package: 'pkg' }, 'GH_HEAD_SHA', '/tmp/target')
+    expect(downloadSpy).toHaveBeenCalledWith(
+      { type: 'github', repo: 'org/repo', ref: '2.3.4' },
       'GH_HEAD_SHA',
       '/tmp/target',
     )

@@ -71,19 +71,20 @@ const DEFAULT_RETRIES = 1
 /**
  * Maps a repo-backed skills.sh package onto the GitHub source that holds it.
  *
- * `path` precedence is the reason this is a function and not two spreads: two
- * spreads in the previous shape (`...source.path`, then `...metadata.path`)
- * made the LAST one win, so the registry's own `metadata.path` overwrote the
- * path the user typed. The correct order is the opposite —
- * - `source.path` (explicit, e.g. `skills.sh/acme/skillz@skills/b` →
- *   `skills/b`) WINS: it names which skill inside the package the user asked
- *   for;
- * - `metadata.path` is only the FALLBACK, used when the user named no path and
- *   the registry says where the package lives in the repo.
+ * Both fields follow the same rule, and the reason this is a function and not two
+ * spreads is that two spreads (`...source.x`, then `...metadata.x`) make the LAST
+ * one win — i.e. the registry silently overwrites whatever the user typed:
+ * - `source.path` (explicit, e.g. `skills.sh/acme/skillz@skills/b` → `skills/b`)
+ *   WINS: it names which skill inside the package the user asked for;
+ *   `metadata.path` is only the FALLBACK for a user who named no path.
+ * - `source.version` (explicit, e.g. `skills.sh/acme/skillz#1.2.0`) WINS over
+ *   `metadata.version` for the same reason: a pin is a promise about which
+ *   revision gets installed, and the version a registry advertises today is not
+ *   it.  `metadata.version` still fills in when the user pinned nothing.
  *
- * `ref` keeps its pre-existing order untouched: `metadata.version` still wins
- * over a user `version` pin. That is a separate policy question (arguably it
- * should flip too) and deliberately not changed under this path fix.
+ * The `??` order is also what keeps `resolve` and `download` agreeing: both map the
+ * same source here, so a metadata override in one place alone would download a
+ * different tree than the one that was pinned.
  */
 function toGithubPackageSource(
   source: SkillsShNormalizedSource,
@@ -97,7 +98,7 @@ function toGithubPackageSource(
       ? { path: source.path ?? metadata.path }
       : {}),
     ...(source.version !== undefined || metadata.version !== undefined
-      ? { ref: metadata.version ?? source.version }
+      ? { ref: source.version ?? metadata.version }
       : {}),
   }
 }
