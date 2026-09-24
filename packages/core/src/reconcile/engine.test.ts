@@ -156,6 +156,58 @@ describe('reconcile', () => {
     })
   })
 
+  /**
+   * GAP §3.6 (honesty part): a write absorbs a local modification into the lock
+   * baseline — `computeSkillIntegrity` is recomputed from the current disk
+   * content and persisted by every reconcile. Reporting only "these two
+   * disagree" let that happen silently, so the line also has to state what the
+   * run did about it.
+   */
+  it('states that an absorbed local modification became the lock baseline', async () => {
+    await withTempDir(async (dir) => {
+      const repoRoot = path.join(dir, 'repo')
+      await fs.mkdir(repoRoot)
+      await writeRepoSkill(repoRoot, 'hello', '# hello v1')
+      const manifest = addSkill(emptyManifest(), 'hello', {
+        source: { type: 'local', path: 'skills/hello' },
+        mode: 'local',
+      })
+      await writeManifest(repoRoot, manifest)
+
+      const { library, linkState } = makeFixture(path.join(dir, 'home'))
+      const options = { repositoryRoot: repoRoot, library, linkState }
+
+      const baseline = await reconcile(options)
+      const lockedIntegrity = baseline.skills.find((skill) => skill.alias === 'hello')?.integrity
+      expect(lockedIntegrity).toBeDefined()
+
+      // The user edits the skill on disk; the next write re-locks that content.
+      await writeRepoSkill(repoRoot, 'hello', '# hello v2 (my edit)')
+      const absorbed = await reconcile(options)
+
+      const hello = absorbed.skills.find((skill) => skill.alias === 'hello')
+      expect(hello?.integrityValid).toBe(false)
+      expect(absorbed.problems).toEqual([
+        {
+          code: ErrorCode.INTEGRITY_MISMATCH,
+          alias: 'hello',
+          message:
+            `Locked integrity ${lockedIntegrity} differs from repository ${hello?.integrity}; ` +
+            'the locked integrity was recomputed from the repository copy — this local change is now the baseline.',
+        },
+      ])
+      // The statement matches what actually happened on disk.
+      const lock = await readLockfile(repoRoot)
+      expect(lock.skills.hello?.integrity).toBe(hello?.integrity)
+
+      // Once absorbed, the following write has nothing left to report.
+      const settled = await reconcile(options)
+      expect(
+        settled.problems.filter((problem) => problem.code === ErrorCode.INTEGRITY_MISMATCH),
+      ).toEqual([])
+    })
+  })
+
   it('removes a dropped Skillbox link but preserves an external skill (M7.4)', async () => {
     await withTempDir(async (dir) => {
       const repoRoot = path.join(dir, 'repo')

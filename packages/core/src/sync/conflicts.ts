@@ -110,15 +110,14 @@ function parseConflict(value: unknown): SyncConflict {
   }
 }
 
+/**
+ * A stored session is only usable if every choice in it can still be applied, so this
+ * mirrors `ConflictResolution` exactly.  A session written by a build that offered a
+ * choice the engine never acted on is therefore refused as incompatible — the user
+ * re-syncs and reviews honest options instead of closing a conflict on a no-op.
+ */
 function isResolution(value: unknown): value is ConflictResolution {
-  return (
-    value === 'local' ||
-    value === 'remote' ||
-    value === 'keep-both' ||
-    value === 'merged' ||
-    value === 'delete' ||
-    value === 'restore'
-  )
+  return value === 'local' || value === 'remote' || value === 'keep-both'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

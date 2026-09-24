@@ -339,7 +339,7 @@ curl -X POST http://127.0.0.1:43821/api/skills/existing-skill-a/enable \
 
 - **a. 导入结果 `MODE = local` 而非 `managed`**：第 3/4/6 步的旧预期把外部 Skill 写成 `mode: managed`。实测导入写的是 `mode: local` + `source.type: local`，实体落在 `library/local/`；`managed` 只由远程来源推导（`packages/core/src/manifest/schema.ts` 的 `deriveMode`：`local` 源 → `local`，其余 → `managed`）。
 - **b. 首启 onboarding 选择 Skip 会终止会话（已修）**：跳过导入后 `onboarding()` 无条件调 `syncNow()` → `install()`，无 `skillbox.yaml` 的空仓库直接抛 `No skillbox.yaml found in "<repo>"`、rc=1；更糟的是 `markOnboarded()` 在其后，标记没写上，所以每次启动都重演一遍。现在仓库无 manifest 时跳过这一步并提示「Nothing to sync yet」，菜单与标记照常到达（回归测试：`session.test.ts > finishes onboarding when the repository has no manifest yet`）。单独执行 `skillbox install` 在空仓库仍然 rc=1 —— 那是显式命令的正当报错，不在本次修复范围。
-- **c. 任何写操作都会把 `modified` 吸收进锁基线**：第 9 步看到的 `modified` 会在下一次 `enable`/`disable`（含 Web API，二者都会 `reconcile`）后消失 —— 实测 `skillbox.lock` 的 integrity 被改写成磁盘现状，状态回到 `ready`。CLI 会打一行 `INTEGRITY_MISMATCH …`（Web API 把它放在 `reconcile.problems` 里），但那一行讲的是「锁与磁盘不一致」，不是「即将抹平」，`apps/web` 也没有渲染 `reconcile.problems` 的地方。integrity 验收必须在改动之后、任何写操作之前读取。已记入 GAP §3.6（尚未修）。
+- **c. 任何写操作都会把 `modified` 吸收进锁基线**：第 9 步看到的 `modified` 会在下一次 `enable`/`disable`（含 Web API，二者都会 `reconcile`）后消失 —— 实测 `skillbox.lock` 的 integrity 被改写成磁盘现状，状态回到 `ready`。CLI 会打一行 `INTEGRITY_MISMATCH …`（Web API 把它放在 `reconcile.problems` 里）；当时那一行只讲「锁与磁盘不一致」，不讲「即将抹平」，且 `apps/web` 没有渲染 `reconcile.problems` 的地方。本轮起该行末尾直接写明后果（locked integrity 已按仓库副本重算，这次本地改动成为基线），CLI 与交互菜单、Web enable/disable 响应都会带出来 —— 见 GAP §3.6；吸收与否的策略本身仍未定。integrity 验收仍必须在改动之后、任何写操作之前读取。
 - **d. 10a 的响应体形状不同**：实际是 `{"assignment":{"name","agent","manifestChanged","reconcile":{…}}}`，没有旧预期里的 `enabled` 字段。
 - **e. 浏览器层未验证**：CDP 工具在本轮不可用，第 10 步只做到"HTTP 200 的页面与 API + manifest 落盘一致"，页面渲染/点击路径仍需人工过一遍。
 

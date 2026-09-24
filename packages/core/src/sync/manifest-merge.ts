@@ -74,6 +74,9 @@ function mergeSkill(
       ...(modified === undefined ? {} : { skill: modified }),
       automatic: false,
       conflicts: [
+        // A deletion is answered by picking the side that performed it: choosing the
+        // device that dropped the skill removes it, choosing the other keeps it (see
+        // `applyManifestChoices`).  There is no separate `delete`/`restore` answer.
         conflict(
           alias,
           'delete-modify',
@@ -81,8 +84,11 @@ function mergeSkill(
           base,
           local,
           remote,
-          ['local', 'remote', 'keep-both', 'delete', 'restore'],
-          'restore',
+          // Only the two real answers: one side has no skill entry at all, so
+          // `keep-both` has nothing to keep and crashes trying (`remote.skills`
+          // has no such alias). Choosing keeps or removes; see applyManifestChoices.
+          ['local', 'remote'],
+          undefined,
           true,
         ),
       ],
@@ -171,6 +177,8 @@ function mergeField(
         true,
       ),
     }
+  // A field the two devices changed differently has no combinable answer: the
+  // transaction can take one side or the other, nothing else.
   return {
     conflict: conflict(
       alias,
@@ -179,7 +187,7 @@ function mergeField(
       base,
       local,
       remote,
-      ['local', 'remote', 'merged'],
+      ['local', 'remote'],
       undefined,
       false,
     ),
@@ -201,7 +209,7 @@ function mergeAgentSet(
         base,
         local,
         remote,
-        ['local', 'remote', 'merged'],
+        ['local', 'remote'],
         undefined,
         false,
       ),
@@ -223,7 +231,7 @@ function mergeAgentSet(
           base,
           local,
           remote,
-          ['local', 'remote', 'merged'],
+          ['local', 'remote'],
           undefined,
           false,
         ),
@@ -256,7 +264,7 @@ function mergeMetadata(
         base,
         local,
         remote,
-        ['local', 'remote', 'merged'],
+        ['local', 'remote'],
         undefined,
         false,
       ),
@@ -294,7 +302,7 @@ function mergeMetadataValue(
       base,
       local,
       remote,
-      ['local', 'remote', 'merged'],
+      ['local', 'remote'],
       undefined,
       false,
     ),
@@ -321,6 +329,11 @@ function mergeScalar(base: unknown, local: unknown, remote: unknown): unknown {
   return base
 }
 
+/**
+ * Builds one conflict.  `allowedResolutions` is both what every surface renders and
+ * what `resolveConflicts` accepts without further inspection, so a list here is a
+ * promise the transaction has to keep — see `ConflictResolution`.
+ */
 function conflict(
   alias: string,
   type: SyncConflict['type'],

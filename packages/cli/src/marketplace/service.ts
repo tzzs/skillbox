@@ -100,10 +100,10 @@ export class MarketplaceService {
   }
 
   /**
-   * GAP §5.2 user story: parse → resolve → security review + confirm → pick
+   * GAP §5.2 user story: parse → resolve → risk-pattern review + confirm → pick
    * the target agent → install transaction → summary.
    *
-   * The security review runs BEFORE anything is written: the pinned revision
+   * The risk-pattern review runs BEFORE anything is written: the pinned revision
    * is read from the managed cache when available, otherwise downloaded into
    * a temp dir and scanned. HIGH-risk skills are gated on explicit confirmation
    * (`--yes` or an interactive prompt). Content the review accepts is left in
@@ -146,7 +146,7 @@ export class MarketplaceService {
     )
 
     const review = await this.scanPreview(normalized, resolved.revision)
-    this.reportProgress('scanning', `security review of ${shortRevision(resolved.revision)}`)
+    this.reportProgress('scanning', `risk-pattern review of ${shortRevision(resolved.revision)}`)
     const allowHighRisk = await this.confirmReview(review, input.yes === true)
 
     const agents = await this.pickAgents(input.agent)
@@ -325,7 +325,7 @@ export class MarketplaceService {
   }
 
   /**
-   * Pre-install security review (GAP §5.2): reads the pinned revision from the
+   * Pre-install risk-pattern review (GAP §5.2): reads the pinned revision from the
    * managed cache when it has it, otherwise downloads it into a temp dir and
    * runs agent 2's static scanner over it. The install transaction scans again
    * inside its own pipeline — this preview only exists so the review can be
@@ -374,7 +374,7 @@ export class MarketplaceService {
       throw asSkillboxError(
         error,
         ErrorCode.REGISTRY_UNAVAILABLE,
-        `Cannot download "${formatSource(source)}" for the security review`,
+        `Cannot download "${formatSource(source)}" for the risk-pattern review`,
       )
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined)
@@ -484,7 +484,7 @@ export class MarketplaceService {
     const { prompts, isInteractive, out } = this.options
     const reviewText = renderSecurityReview(review)
     if (isInteractive) {
-      prompts.note(reviewText, 'Security Review')
+      prompts.note(reviewText, 'Risk-Pattern Review')
     } else {
       out(`${reviewText}\n`)
     }

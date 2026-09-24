@@ -371,7 +371,7 @@ export class SyncTransaction {
         readManifest(remoteRoot),
       ])
       const merged = new ManifestMergeService().merge({ base, local, remote })
-      applyManifestChoices(
+      const dropped = applyManifestChoices(
         merged.manifest as unknown as Record<string, unknown>,
         local as unknown as Record<string, unknown>,
         remote as unknown as Record<string, unknown>,
@@ -412,6 +412,13 @@ export class SyncTransaction {
           { recursive: true, force: true },
         )
       }
+      // `runUnsafe` rebuilds `skills/` from the merged manifest, and that rebuild is
+      // what stops a deleted skill from surviving there.  This path cannot rebuild:
+      // the output tree deliberately starts as a copy of this device's tree because
+      // the content and keep-both choices are applied onto it.  So remove exactly the
+      // directories a choice took out of the manifest — never a skill that took no
+      // part in a conflict, and never a keep-both copy, which the manifest lists.
+      await pruneResolvedSkills(outputRoot, merged.manifest, dropped)
       await writeManifest(outputRoot, merged.manifest)
       const lockfile = await new LockResolver().resolve(merged.manifest, outputRoot)
       await writeLockfile(outputRoot, lockfile)
@@ -509,14 +516,21 @@ export class SyncTransaction {
   }
 }
 
+/**
+ * Applies the whole-skill and per-field `local`/`remote` choices to the merged
+ * manifest in place, and returns the aliases a choice *removed* from it.  Those are
+ * the only skill directories the resolve path may prune: an alias no conflict
+ * mentions never appears here, so it is untouchable by construction.
+ */
 function applyManifestChoices(
   merged: Record<string, unknown>,
   local: Record<string, unknown>,
   remote: Record<string, unknown>,
   session: ConflictSession,
   resolutions: Record<string, ConflictResolution>,
-): void {
+): string[] {
   const skills = merged.skills as Record<string, Record<string, unknown>>
+  const dropped: string[] = []
   for (const conflict of session.conflicts) {
     const choice = resolutions[conflict.id]
     if (
@@ -531,13 +545,33 @@ function applyManifestChoices(
     >
     const sourceSkill = source[conflict.skillAlias]
     if (conflict.field === undefined || conflict.type === 'delete-modify') {
-      if (sourceSkill === undefined) delete skills[conflict.skillAlias]
-      else skills[conflict.skillAlias] = structuredClone(sourceSkill)
+      if (sourceSkill === undefined) {
+        delete skills[conflict.skillAlias]
+        dropped.push(conflict.skillAlias)
+      } else skills[conflict.skillAlias] = structuredClone(sourceSkill)
       continue
     }
     const target =
       skills[conflict.skillAlias] ?? (skills[conflict.skillAlias] = {} as Record<string, unknown>)
     setNested(target, conflict.field, structuredClone(sourceSkill?.[conflict.field.split('.')[0]!]))
+  }
+  return dropped
+}
+
+/**
+ * Deletes the directories left behind by an accepted deletion.  The membership test
+ * runs against the finished manifest on purpose: a later keep-both choice can put an
+ * alias back, and pruning the directory it now describes would fail validation
+ * instead of honouring the user's answer.
+ */
+async function pruneResolvedSkills(
+  outputRoot: string,
+  manifest: { skills: Record<string, unknown> },
+  dropped: readonly string[],
+): Promise<void> {
+  for (const alias of dropped) {
+    if (manifest.skills[alias] !== undefined) continue
+    await fs.rm(path.join(outputRoot, 'skills', alias), { recursive: true, force: true })
   }
 }
 function setNested(target: Record<string, unknown>, dotted: string, value: unknown): void {

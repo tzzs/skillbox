@@ -1,6 +1,15 @@
 import * as path from 'node:path'
+import { readFile, writeFile } from 'node:fs/promises'
+import { stringify as stringifyYaml } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { ErrorCode, isSkillboxError } from '../errors.js'
+import { readManifest, writeManifest } from '../manifest/manifest-io.js'
+import {
+  MANIFEST_FILE_NAME,
+  skillboxManifestSchema,
+  type SkillboxManifest,
+} from '../manifest/schema.js'
+import { withTempDir } from '../fs/test-utils.js'
 import {
   fromManifestSource,
   normalizeSourceString,
@@ -343,6 +352,30 @@ describe('toManifestSource / fromManifestSource', () => {
     expect(fromManifestSource(toManifestSource(normalized))).toEqual(normalized)
   })
 
+  it('carries the skills.sh sub-path onto the registry schema and back', () => {
+    const normalized = parseSource('skills.sh/acme/skillz@skills/b#1.2.0') as NormalizedSource
+    expect(normalized).toEqual({
+      type: 'skills-sh',
+      package: 'acme/skillz',
+      path: 'skills/b',
+      version: '1.2.0',
+    })
+    expect(toManifestSource(normalized)).toEqual({
+      type: 'registry',
+      registry: 'skills.sh',
+      package: 'acme/skillz',
+      path: 'skills/b',
+      version: '1.2.0',
+    })
+    expect(fromManifestSource(toManifestSource(normalized))).toEqual(normalized)
+  })
+
+  it('omits path from a registry source that names no sub-path', () => {
+    const manifest = toManifestSource({ type: 'skills-sh', package: 'acme/skillz' })
+    expect(manifest).toEqual({ type: 'registry', registry: 'skills.sh', package: 'acme/skillz' })
+    expect('path' in manifest).toBe(false)
+  })
+
   it('maps local sources through unchanged', () => {
     const normalized = parseSource('./dir') as NormalizedSource
     expect(toManifestSource(normalized)).toEqual({ type: 'local', path: path.resolve('./dir') })
@@ -359,5 +392,92 @@ describe('toManifestSource / fromManifestSource', () => {
       path: 'skills/hello',
     })
     expect(fromManifestSource({ type: 'registry', registry: 'other', package: 'pkg' })).toBeNull()
+  })
+})
+
+describe('skills.sh sub-path persisted in skillbox.yaml', () => {
+  it('round-trips parseSource -> toManifestSource -> file -> readManifest -> fromManifestSource', async () => {
+    const normalized = parseSource('skills.sh/acme/skillz@skills/b#1.2.0')
+    expect(normalized).toEqual({
+      type: 'skills-sh',
+      package: 'acme/skillz',
+      path: 'skills/b',
+      version: '1.2.0',
+    })
+    await withTempDir(async (dir) => {
+      const manifest: SkillboxManifest = {
+        version: 1,
+        skills: { b: { source: toManifestSource(normalized) } },
+      }
+      // Validated and serialized the way `serializeManifest` does. NOTE: the
+      // writer's hand-built node map, not the schema, is what still loses a
+      // registry `path` — see the skipped test below.
+      const document = skillboxManifestSchema.parse(manifest)
+      await writeFile(
+        path.join(dir, MANIFEST_FILE_NAME),
+        stringifyYaml(document, { indent: 2, lineWidth: 0 }),
+        'utf8',
+      )
+
+      const skill = (await readManifest(dir)).skills['b']
+      expect(skill).toBeDefined()
+      if (skill !== undefined) {
+        // Which skill was named at add-time is what the next resolve/download
+        // sees: the path survives instead of degrading to "the package".
+        const restored = fromManifestSource(skill.source)
+        expect(restored).toEqual(normalized)
+        expect(restored === null ? null : sourceToString(restored)).toBe(
+          'skills.sh/acme/skillz@skills/b#1.2.0',
+        )
+      }
+    })
+  })
+
+  it('round-trips through writeManifest, which used to drop the path', async () => {
+    // `serializeManifest` rebuilds each source node field-by-field, and the
+    // `registry` branch emitted only type/registry/package/version, so the path
+    // survived the in-memory conversions and then died on disk:
+    // `manifest/manifest-io.ts` and `lockfile/lockfile-io.ts` both needed the one
+    // line their github/git branches already had. Pinned here because that is
+    // where the loss actually mattered.
+    const normalized = parseSource('skills.sh/acme/skillz@skills/b#1.2.0')
+    await withTempDir(async (dir) => {
+      await writeManifest(dir, {
+        version: 1,
+        skills: { b: { source: toManifestSource(normalized) } },
+      })
+      expect(await readFile(path.join(dir, MANIFEST_FILE_NAME), 'utf8')).toContain('path: skills/b')
+      const skill = (await readManifest(dir)).skills['b']
+      if (skill !== undefined) {
+        expect(fromManifestSource(skill.source)).toEqual(normalized)
+      }
+    })
+  })
+
+  it('reads a manifest written before the field existed unchanged (no path)', async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(
+        path.join(dir, MANIFEST_FILE_NAME),
+        [
+          'version: 1',
+          'skills:',
+          '  a:',
+          '    source:',
+          '      type: registry',
+          '      registry: skills.sh',
+          '      package: acme/skillz',
+          '',
+        ].join('\n'),
+        'utf8',
+      )
+      const skill = (await readManifest(dir)).skills['a']
+      expect(skill).toBeDefined()
+      if (skill !== undefined) {
+        expect(fromManifestSource(skill.source)).toEqual({
+          type: 'skills-sh',
+          package: 'acme/skillz',
+        })
+      }
+    })
   })
 })

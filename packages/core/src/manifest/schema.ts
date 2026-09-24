@@ -30,6 +30,26 @@ export const registryManifestSourceSchema = z.object({
   type: z.literal('registry'),
   registry: nonEmptyString(),
   package: nonEmptyString(),
+  /**
+   * Which skill *inside* the package, e.g. `skills/b` of
+   * `skills.sh/acme/skillz@skills/b`. Optional with the same validator as the
+   * git/github `path` above, so the two variants stay symmetric.
+   *
+   * Compatibility (why `CURRENT_MANIFEST_VERSION` stays 1 — see
+   * `migrations/types.ts`): no schema in this file calls `.strict()` or
+   * `.passthrough()`, so zod's default object behaviour applies and unknown
+   * keys are silently STRIPPED. An older skillbox reading a manifest that
+   * carries this `path` therefore still parses it; it just drops the field and
+   * behaves exactly as it did before the field existed (the path gets
+   * re-resolved from registry metadata). A newer skillbox reading an older
+   * file sees `path: undefined`, also unchanged. Neither direction rejects,
+   * neither rewrites, so no bump and no migration entry. Bumping instead would
+   * be actively harmful: `readManifest` refuses any
+   * `version > MANIFEST_VERSION` with `UNSUPPORTED_MANIFEST_VERSION`, so an
+   * older binary would stop reading these manifests altogether rather than
+   * ignore one key.
+   */
+  path: nonEmptyString().optional(),
   version: nonEmptyString().optional(),
 })
 

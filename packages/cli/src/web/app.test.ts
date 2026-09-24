@@ -1296,6 +1296,60 @@ async function seedManagedSkillWeb(
   return { integrity, upstream }
 }
 
+/**
+ * GAP §3.6 (honesty part): every write path reconciles, and reconcile re-locks
+ * the content currently on disk, so enabling a `modified` skill accepts the
+ * user's edit as the new baseline. The web UI renders no `reconcile.problems`
+ * of its own, so the response itself has to carry that statement.
+ */
+describe('POST /api/skills/:id/enable — absorbing a local modification', () => {
+  it('reports the absorbed local change as the new baseline in the response', async () => {
+    await withRealRegistryApp(
+      async ({ app, repository }) => {
+        const response = await app.request('/api/skills/demo/enable', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: 'claude' }),
+        })
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as {
+          assignment: {
+            reconcile: { problems: Array<{ code: string; alias?: string; message: string }> }
+          }
+        }
+        const problem = body.assignment.reconcile.problems.find(
+          (entry) => entry.code === ErrorCode.INTEGRITY_MISMATCH,
+        )
+        expect(problem?.alias).toBe('demo')
+        expect(problem?.message).toContain(
+          'the locked integrity was recomputed from the repository copy',
+        )
+        expect(problem?.message).toContain('this local change is now the baseline')
+
+        // Not decorative: the lock moved to the edited content.
+        const lock = await readLockfile(repository)
+        expect(lock.skills.demo?.integrity).toBe(
+          await computeSkillIntegrity(join(repository, 'skills', 'demo')),
+        )
+      },
+      async ({ repository }) => {
+        const dir = join(repository, 'skills', 'demo')
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'SKILL.md'), '# demo (my edit)\n')
+        const source = { type: 'local' as const, path: 'skills/demo' }
+        await writeManifest(repository, addSkill(emptyManifest(), 'demo', { source }))
+        const lockfile = emptyLockfile()
+        lockfile.skills.demo = createLockedSkill({
+          mode: 'local',
+          source,
+          integrity: `sha256:${'a'.repeat(64)}`,
+        })
+        await writeLockfile(repository, lockfile)
+      },
+    )
+  })
+})
+
 describe('V0.4 lifecycle API — real Core transactions', () => {
   it('forks a managed skill (M17.1): 201, mode flips to forked', async () => {
     await withRealRegistryApp(
@@ -1872,8 +1926,8 @@ const conflictSession: ConflictSession = {
       id: 'conflict-1',
       type: 'content',
       skillAlias: 'incident-runbook',
-      allowedResolutions: ['local', 'remote', 'merged'],
-      recommendedResolution: 'merged',
+      allowedResolutions: ['local', 'remote', 'keep-both'],
+      recommendedResolution: 'keep-both',
       destructive: false,
       local: { preview: 'local body' },
       remote: { preview: 'remote body' },
@@ -2004,11 +2058,44 @@ describe('Sync API', () => {
         skillAlias: 'incident-runbook',
         localPreview: 'local body',
         remotePreview: 'remote body',
-        recommendedResolution: 'merged',
+        recommendedResolution: 'keep-both',
         destructive: false,
       })
     })
   })
+
+  /**
+   * GAP §2.5: this API used to accept `delete`, `merged` and `restore` because Core
+   * advertised them, and the engine closed the conflict without acting on them.  The
+   * rendered choice list is now the same three the transaction implements, so a client
+   * holding an older copy of the vocabulary gets a refusal instead of a false promise.
+   */
+  it.each(['delete', 'merged', 'restore'])(
+    'POST /api/conflicts/:id/resolve refuses the retired %s choice',
+    async (retired) => {
+      let askedToResolve = 0
+      const sync = fakeRepositorySync({
+        resolveConflicts: async () => {
+          askedToResolve += 1
+          return { kind: 'completed', summary: { automaticallyMerged: 0, retriedPushes: 0 } }
+        },
+      })
+      await withSyncApp(sync, async (app) => {
+        const response = await app.request('/api/conflicts/session-1/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resolutions: { 'conflict-1': retired } }),
+        })
+        expect(response.status).toBe(400)
+        expect(askedToResolve).toBe(0)
+        const body = (await response.json()) as { error: { code: string; message: string } }
+        expect(body.error.code).toBe('INVALID_REQUEST')
+        // The refusal renders the offer list, so it must not name a retired choice.
+        expect(body.error.message).toContain('local/remote/keep-both')
+        expect(body.error.message).not.toContain(retired)
+      })
+    },
+  )
 
   it('POST /api/conflicts/:id/resolve rejects a missing/empty resolutions field', async () => {
     const sync = fakeRepositorySync({})
