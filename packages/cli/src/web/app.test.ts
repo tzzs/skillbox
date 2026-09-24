@@ -1872,8 +1872,8 @@ const conflictSession: ConflictSession = {
       id: 'conflict-1',
       type: 'content',
       skillAlias: 'incident-runbook',
-      allowedResolutions: ['local', 'remote', 'merged'],
-      recommendedResolution: 'merged',
+      allowedResolutions: ['local', 'remote', 'keep-both'],
+      recommendedResolution: 'keep-both',
       destructive: false,
       local: { preview: 'local body' },
       remote: { preview: 'remote body' },
@@ -2004,11 +2004,44 @@ describe('Sync API', () => {
         skillAlias: 'incident-runbook',
         localPreview: 'local body',
         remotePreview: 'remote body',
-        recommendedResolution: 'merged',
+        recommendedResolution: 'keep-both',
         destructive: false,
       })
     })
   })
+
+  /**
+   * GAP §2.5: this API used to accept `delete`, `merged` and `restore` because Core
+   * advertised them, and the engine closed the conflict without acting on them.  The
+   * rendered choice list is now the same three the transaction implements, so a client
+   * holding an older copy of the vocabulary gets a refusal instead of a false promise.
+   */
+  it.each(['delete', 'merged', 'restore'])(
+    'POST /api/conflicts/:id/resolve refuses the retired %s choice',
+    async (retired) => {
+      let askedToResolve = 0
+      const sync = fakeRepositorySync({
+        resolveConflicts: async () => {
+          askedToResolve += 1
+          return { kind: 'completed', summary: { automaticallyMerged: 0, retriedPushes: 0 } }
+        },
+      })
+      await withSyncApp(sync, async (app) => {
+        const response = await app.request('/api/conflicts/session-1/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resolutions: { 'conflict-1': retired } }),
+        })
+        expect(response.status).toBe(400)
+        expect(askedToResolve).toBe(0)
+        const body = (await response.json()) as { error: { code: string; message: string } }
+        expect(body.error.code).toBe('INVALID_REQUEST')
+        // The refusal renders the offer list, so it must not name a retired choice.
+        expect(body.error.message).toContain('local/remote/keep-both')
+        expect(body.error.message).not.toContain(retired)
+      })
+    },
+  )
 
   it('POST /api/conflicts/:id/resolve rejects a missing/empty resolutions field', async () => {
     const sync = fakeRepositorySync({})

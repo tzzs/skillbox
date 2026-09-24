@@ -5,7 +5,10 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { GitClient } from '../git/index.js'
 import { ErrorCode, SkillboxError } from '../errors.js'
+import { readManifest } from '../manifest/index.js'
+import { RepositorySyncService } from './repository-sync.js'
 import { SyncTransaction } from './sync-transaction.js'
+import type { ConflictResolution, ConflictSession, RepositoryHostPort } from './types.js'
 
 const roots: string[] = []
 
@@ -220,8 +223,162 @@ async function addSkill(repository: string, alias: string, content: string): Pro
   const skillRoot = path.join(repository, 'skills', alias)
   await fs.mkdir(skillRoot, { recursive: true })
   await fs.writeFile(path.join(skillRoot, 'SKILL.md'), content)
+  await writeManifestEntry(repository, alias, '')
+}
+
+/** Points a repository's single manifest entry at a local skill, plus extra YAML lines. */
+async function writeManifestEntry(
+  repository: string,
+  alias: string,
+  extraYaml: string,
+): Promise<void> {
   await fs.writeFile(
     path.join(repository, 'skillbox.yaml'),
-    `version: 1\nskills:\n  ${alias}:\n    source:\n      type: local\n      path: skills/${alias}\n`,
+    `version: 1\nskills:\n  ${alias}:\n    source:\n      type: local\n      path: skills/${alias}\n${extraYaml}`,
   )
 }
+
+async function commit(repository: string, message: string): Promise<void> {
+  await git(repository, ['add', '.'])
+  await git(repository, ['commit', '-m', message])
+}
+
+/**
+ * GAP §2.5: `resolveConflicts` checks a submitted choice against the conflict's own
+ * `allowedResolutions`, so anything offered is accepted — and a choice the engine has
+ * no branch for closes the session while the manifest keeps the three-way default.
+ * These are the only values `SyncTransaction.resolve` acts on.
+ */
+const IMPLEMENTED: readonly string[] = ['local', 'remote', 'keep-both']
+
+/** Every conflict gets `preferred` when it may, otherwise its first legal choice. */
+function choicesFor(
+  session: ConflictSession,
+  preferred: ConflictResolution,
+): Record<string, ConflictResolution> {
+  const chosen: Record<string, ConflictResolution> = {}
+  for (const conflict of session.conflicts) {
+    const offered = conflict.allowedResolutions.includes(preferred)
+      ? preferred
+      : conflict.allowedResolutions[0]
+    if (offered === undefined) throw new Error(`conflict ${conflict.id} offers no resolution`)
+    chosen[conflict.id] = offered
+  }
+  return chosen
+}
+
+/** Only transport matters to these flows, so no account port is ever called. */
+const hostWithoutAccount: RepositoryHostPort = {
+  getConnectionState: async () => {
+    throw new Error('not expected')
+  },
+  startDeviceAuthorization: async () => {
+    throw new Error('not expected')
+  },
+  pollDeviceAuthorization: async () => {
+    throw new Error('not expected')
+  },
+  getCurrentUser: async () => {
+    throw new Error('not expected')
+  },
+  getGitTransportAuth: async () => ({ prefixArgs: [], env: {}, sensitiveEnvKeys: [] }),
+  resolveRepository: async () => {
+    throw new Error('not expected')
+  },
+  bindRepository: async () => {
+    throw new Error('not expected')
+  },
+  disconnect: async () => {},
+}
+
+function repositorySync(repositoryRoot: string, homeRoot: string): RepositorySyncService {
+  return new RepositorySyncService({
+    repositoryRoot,
+    homeRoot,
+    git: new GitClient(),
+    host: hostWithoutAccount,
+  })
+}
+
+/**
+ * Two devices sharing a `demo` skill: the other device removed the skill entirely,
+ * this device kept it and edited its manifest entry.  A deletion against a
+ * modification is the one divergence a three-way merge must not silently pick.
+ */
+async function deleteModifyDivergence(): Promise<{ local: string; home: string }> {
+  const { local, other, home } = await fixture()
+  await addSkill(local, 'demo', '# demo\n')
+  await commit(local, 'add demo')
+  await git(local, ['push'])
+  await git(other, ['pull'])
+  await fs.rm(path.join(other, 'skills', 'demo'), { recursive: true, force: true })
+  await fs.writeFile(path.join(other, 'skillbox.yaml'), 'version: 1\nskills: {}\n')
+  await commit(other, 'remove demo')
+  await git(other, ['push'])
+  await writeManifestEntry(local, 'demo', '    enabled: false\n')
+  await commit(local, 'disable demo')
+  return { local, home }
+}
+
+describe('Conflict resolution vocabulary', { timeout: 60_000 }, () => {
+  it('offers a delete/modify choice only what the engine carries out', async () => {
+    const { local, home } = await deleteModifyDivergence()
+
+    const outcome = await transaction(local, home).run()
+
+    expect(outcome.kind).toBe('conflicts')
+    if (outcome.kind !== 'conflicts') return
+    const deleteModify = outcome.session.conflicts.find((item) => item.type === 'delete-modify')
+    expect(deleteModify).toBeDefined()
+    if (deleteModify === undefined) return
+    // The offer list is the contract the user is held to, so it may not contain a
+    // word the transaction has no branch for…
+    expect(deleteModify.allowedResolutions.filter((one) => !IMPLEMENTED.includes(one))).toEqual([])
+    // …and dropping the unimplementable ones must not strand the conflict.
+    expect(deleteModify.allowedResolutions.filter((one) => IMPLEMENTED.includes(one))).not.toEqual(
+      [],
+    )
+    // A recommendation the engine ignores is worse than none: it pre-selects a lie.
+    expect(
+      deleteModify.recommendedResolution === undefined ||
+        IMPLEMENTED.includes(deleteModify.recommendedResolution),
+    ).toBe(true)
+    for (const conflict of outcome.session.conflicts) {
+      expect(conflict.allowedResolutions.filter((one) => !IMPLEMENTED.includes(one))).toEqual([])
+    }
+  })
+
+  it('really removes the skill when the device that deleted it wins', async () => {
+    const { local, home } = await deleteModifyDivergence()
+    const conflict = await transaction(local, home).run()
+    expect(conflict.kind).toBe('conflicts')
+    if (conflict.kind !== 'conflicts') return
+    const service = repositorySync(local, home)
+
+    const outcome = await service.resolveConflicts({
+      sessionId: conflict.session.id,
+      resolutions: choicesFor(conflict.session, 'remote'),
+    })
+
+    expect(outcome).toMatchObject({ kind: 'completed' })
+    expect(Object.keys((await readManifest(local)).skills)).toEqual([])
+    await expect(service.listConflicts()).resolves.toEqual([])
+  }, 30_000)
+
+  it("really keeps this device's edited skill when the local side wins", async () => {
+    const { local, home } = await deleteModifyDivergence()
+    const conflict = await transaction(local, home).run()
+    expect(conflict.kind).toBe('conflicts')
+    if (conflict.kind !== 'conflicts') return
+    const service = repositorySync(local, home)
+
+    const outcome = await service.resolveConflicts({
+      sessionId: conflict.session.id,
+      resolutions: choicesFor(conflict.session, 'local'),
+    })
+
+    expect(outcome).toMatchObject({ kind: 'completed' })
+    expect((await readManifest(local)).skills['demo']).toMatchObject({ enabled: false })
+    await expect(service.listConflicts()).resolves.toEqual([])
+  }, 30_000)
+})

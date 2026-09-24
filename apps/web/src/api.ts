@@ -399,7 +399,8 @@ export interface SyncSnapshotView {
   expired: boolean
 }
 
-export type ConflictChoice = 'local' | 'remote' | 'keep-both' | 'delete' | 'restore' | 'merged'
+/** What the sync engine can actually apply; mirrors core's `ConflictResolution`. */
+export type ConflictChoice = 'local' | 'remote' | 'keep-both'
 export type SyncConflictKind =
   'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
 
