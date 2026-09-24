@@ -1137,7 +1137,7 @@ export function buildProgram(ctx: CliContext): Command {
   program
     .command('add <source>')
     .description(
-      'Add a skill from the marketplace: resolve → security review → pick agent → install',
+      'Add a skill from the marketplace: resolve → risk-pattern review → pick agent → install',
     )
     .option('--agent <agent>', 'agent to install for (skips the interactive picker)')
     .option('--name <alias>', 'alias to install under (defaults to the source name)')

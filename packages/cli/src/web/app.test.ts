@@ -1296,6 +1296,60 @@ async function seedManagedSkillWeb(
   return { integrity, upstream }
 }
 
+/**
+ * GAP §3.6 (honesty part): every write path reconciles, and reconcile re-locks
+ * the content currently on disk, so enabling a `modified` skill accepts the
+ * user's edit as the new baseline. The web UI renders no `reconcile.problems`
+ * of its own, so the response itself has to carry that statement.
+ */
+describe('POST /api/skills/:id/enable — absorbing a local modification', () => {
+  it('reports the absorbed local change as the new baseline in the response', async () => {
+    await withRealRegistryApp(
+      async ({ app, repository }) => {
+        const response = await app.request('/api/skills/demo/enable', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: 'claude' }),
+        })
+        expect(response.status).toBe(200)
+        const body = (await response.json()) as {
+          assignment: {
+            reconcile: { problems: Array<{ code: string; alias?: string; message: string }> }
+          }
+        }
+        const problem = body.assignment.reconcile.problems.find(
+          (entry) => entry.code === ErrorCode.INTEGRITY_MISMATCH,
+        )
+        expect(problem?.alias).toBe('demo')
+        expect(problem?.message).toContain(
+          'the locked integrity was recomputed from the repository copy',
+        )
+        expect(problem?.message).toContain('this local change is now the baseline')
+
+        // Not decorative: the lock moved to the edited content.
+        const lock = await readLockfile(repository)
+        expect(lock.skills.demo?.integrity).toBe(
+          await computeSkillIntegrity(join(repository, 'skills', 'demo')),
+        )
+      },
+      async ({ repository }) => {
+        const dir = join(repository, 'skills', 'demo')
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'SKILL.md'), '# demo (my edit)\n')
+        const source = { type: 'local' as const, path: 'skills/demo' }
+        await writeManifest(repository, addSkill(emptyManifest(), 'demo', { source }))
+        const lockfile = emptyLockfile()
+        lockfile.skills.demo = createLockedSkill({
+          mode: 'local',
+          source,
+          integrity: `sha256:${'a'.repeat(64)}`,
+        })
+        await writeLockfile(repository, lockfile)
+      },
+    )
+  })
+})
+
 describe('V0.4 lifecycle API — real Core transactions', () => {
   it('forks a managed skill (M17.1): 201, mode flips to forked', async () => {
     await withRealRegistryApp(

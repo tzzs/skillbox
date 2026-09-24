@@ -5,9 +5,13 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   acquireRuntimeLock,
+  AgentRegistry,
+  ClaudeAdapter,
+  computeSkillIntegrity,
   FleetService,
-  SshClient,
+  readLockfile,
   setGlobalVerbosity,
+  SshClient,
   type FleetHostConfig,
 } from '@skillbox/core'
 import type { RepositorySync } from '@skillbox/core'
@@ -265,6 +269,60 @@ describe('cli', () => {
       expect(exit).toBe(0)
       expect(io.out()).toContain('problems 1')
       expect(io.err()).toContain('  SKILL_MISSING ghost: Local skill directory missing:')
+    } finally {
+      await fs.rm(base, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * GAP §3.6 (honesty part): `enable` reconciles, and reconcile re-locks the
+   * content currently on disk — so enabling a `modified` skill accepts the
+   * user's edit as the new baseline. The detail line has to say that, instead
+   * of only reporting that the two hashes disagree.
+   */
+  it('says what it did when enabling a skill absorbs a local modification', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'skillbox-cli-absorb-'))
+    try {
+      const home = path.join(base, 'home')
+      const repo = path.join(base, 'repo')
+      const agentDir = path.join(base, 'agent', '.claude', 'skills')
+      await fs.mkdir(home, { recursive: true })
+      await fs.mkdir(path.join(repo, 'skills', 'demo'), { recursive: true })
+      await fs.mkdir(agentDir, { recursive: true })
+      const skillFile = path.join(repo, 'skills', 'demo', 'SKILL.md')
+      await fs.writeFile(skillFile, '# demo v1\n')
+      await fs.writeFile(
+        path.join(repo, 'skillbox.yaml'),
+        'version: 1\nskills:\n  demo:\n    source:\n      type: local\n      path: skills/demo\n',
+      )
+
+      const registry = new AgentRegistry([
+        new ClaudeAdapter({ skillsDir: agentDir, searchPath: false }),
+      ])
+      const deps = (io: CliDeps & { out(): string; err(): string }): CliDeps => ({
+        ...io,
+        homeRoot: home,
+        repositoryRoot: repo,
+        registry,
+      })
+
+      // `install` locks the content as it stands...
+      expect(await main(['install'], deps(capture()))).toBe(0)
+      // ...then the user edits the skill, and the next write absorbs that edit.
+      await fs.writeFile(skillFile, '# demo v2 (my edit)\n')
+
+      const io = capture()
+      expect(await main(['enable', 'demo', '-a', 'claude'], deps(io))).toBe(0)
+      expect(io.out()).toContain('Enabled "demo" for agent "claude"')
+      expect(io.err()).toContain('  INTEGRITY_MISMATCH demo: Locked integrity sha256:')
+      expect(io.err()).toContain('the locked integrity was recomputed from the repository copy')
+      expect(io.err()).toContain('this local change is now the baseline')
+
+      // The statement is not decorative: the lock really moved to the edit.
+      const lock = await readLockfile(repo)
+      expect(lock.skills.demo?.integrity).toBe(
+        await computeSkillIntegrity(path.join(repo, 'skills', 'demo')),
+      )
     } finally {
       await fs.rm(base, { recursive: true, force: true })
     }
