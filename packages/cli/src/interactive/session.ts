@@ -14,6 +14,7 @@ import {
   type ImportResult,
   type SkillStatusEntry,
 } from '@skillbox/core'
+import { assertNever } from '@skillbox/shared'
 import type { CliContext } from '../program.js'
 import { reportProblems } from '../report.js'
 import type { InteractivePrompt } from './prompts.js'
@@ -506,7 +507,10 @@ export class InteractiveSession {
 
   private reportUnresolved(result: ImportResult): 'imported' | 'conflict' | 'none' {
     const alias = result.alias ?? 'skill'
-    switch (result.status) {
+    // Bound to a local: the `assertNever` in `default` below only type-checks
+    // because the switch narrows this one reference through every case.
+    const status = result.status
+    switch (status) {
       case 'imported':
         this.prompts.success(`Imported "${alias}".`)
         return 'imported'
@@ -522,7 +526,10 @@ export class InteractiveSession {
       case 'conflict':
         return 'conflict'
       default:
-        return 'none'
+        // Every `ImportResultStatus` is handled, so an unreported outcome used to
+        // be swallowed here as a plain 'none'. Guarded now: a status Core adds
+        // stops compiling this switch instead of quietly losing its message.
+        return assertNever(status)
     }
   }
 

@@ -656,8 +656,16 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   钉住了 `automaticallyMerged: 2` 与「fresh clone 里两台机器的 skill 都在」—— 没有合并后的 manifest
   做不到这一点。包装已删除。真正的 manifest 缺口是另一件事：**§2.5**（`delete`/`merged`/`restore`
   三种取值被接受却无人实现）
-- `packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
-  还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）
+- ~~`packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
+  还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）~~ ——
+  **已表态：用起来**。`packages/shared/src/web-api.ts` 成为 Web JSON API 契约的唯一声明处，服务端
+  （`packages/cli/src/web/types.ts`）与客户端（`apps/web/src/api.ts`）都只做类型再导出/别名，两侧不再各写一份；
+  发布顺序因此变成 `core → shared → cli`（shared 的契约类型建在 core 的领域类型上）。包**保持**
+  `private: false`：`@skillbox/cli` 的公开 `dist/index.d.ts` 经
+  `index → interactive/session.d.ts（constructor(options: InteractiveSessionOptions)）→ web/types.d.ts`
+  一条链就能走到 shared，改私有会让 `npm install @skillbox/cli` 的类型解析断掉。防重复守卫：
+  `packages/cli/src/web/contract.test.ts`（源文本 + 编译期双向可赋值断言）。`assertNever` 消费者：
+  `packages/cli/src/interactive/session.ts` 的 `reportUnresolved`
 
 ---
 
