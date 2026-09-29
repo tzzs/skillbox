@@ -314,9 +314,9 @@ describe('cli', () => {
       const io = capture()
       expect(await main(['enable', 'demo', '-a', 'claude'], deps(io))).toBe(0)
       expect(io.out()).toContain('Enabled "demo" for agent "claude"')
-      expect(io.err()).toContain('  INTEGRITY_MISMATCH demo: Locked integrity sha256:')
-      expect(io.err()).toContain('the locked integrity was recomputed from the repository copy')
-      expect(io.err()).toContain('this local change is now the baseline')
+      expect(io.err()).toContain('  LOCKFILE_BASELINE_UPDATED demo: Locked integrity sha256:')
+      expect(io.err()).toContain('your repository copy is the baseline and the lock now records it')
+      expect(io.err()).toContain('Nothing was overwritten.')
 
       // The statement is not decorative: the lock really moved to the edit.
       const lock = await readLockfile(repo)

@@ -1318,13 +1318,13 @@ describe('POST /api/skills/:id/enable — absorbing a local modification', () =>
           }
         }
         const problem = body.assignment.reconcile.problems.find(
-          (entry) => entry.code === ErrorCode.INTEGRITY_MISMATCH,
+          (entry) => entry.code === ErrorCode.LOCKFILE_BASELINE_UPDATED,
         )
         expect(problem?.alias).toBe('demo')
         expect(problem?.message).toContain(
-          'the locked integrity was recomputed from the repository copy',
+          'your repository copy is the baseline and the lock now records it',
         )
-        expect(problem?.message).toContain('this local change is now the baseline')
+        expect(problem?.message).toContain('Nothing was overwritten.')
 
         // Not decorative: the lock moved to the edited content.
         const lock = await readLockfile(repository)

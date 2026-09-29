@@ -189,11 +189,17 @@ describe('reconcile', () => {
       expect(hello?.integrityValid).toBe(false)
       expect(absorbed.problems).toEqual([
         {
-          code: ErrorCode.INTEGRITY_MISMATCH,
+          // GAP §3.6, settled: a `local` source has no upstream, so its
+          // repository copy is the baseline and adopting the edit is the
+          // definition, not a fault — which is why this is
+          // `LOCKFILE_BASELINE_UPDATED` and not the conflict-coded
+          // `INTEGRITY_MISMATCH`.
+          code: ErrorCode.LOCKFILE_BASELINE_UPDATED,
           alias: 'hello',
           message:
-            `Locked integrity ${lockedIntegrity} differs from repository ${hello?.integrity}; ` +
-            'the locked integrity was recomputed from the repository copy — this local change is now the baseline.',
+            `Locked integrity ${lockedIntegrity} differs from the repository copy ${hello?.integrity}; ` +
+            'this skill has no upstream, so your repository copy is the baseline and the lock now records it. ' +
+            'Nothing was overwritten.',
         },
       ])
       // The statement matches what actually happened on disk.
@@ -203,7 +209,7 @@ describe('reconcile', () => {
       // Once absorbed, the following write has nothing left to report.
       const settled = await reconcile(options)
       expect(
-        settled.problems.filter((problem) => problem.code === ErrorCode.INTEGRITY_MISMATCH),
+        settled.problems.filter((problem) => problem.code === ErrorCode.LOCKFILE_BASELINE_UPDATED),
       ).toEqual([])
     })
   })
@@ -369,6 +375,17 @@ describe('reconcile', () => {
       expect(thirdHello?.revision).not.toBe(firstRevision)
       const thirdLock = await readLockfile(repoRoot)
       expect(thirdLock.skills.hello?.revision).toBe(thirdHello?.revision)
+
+      // The lock moved because *upstream* moved. Nobody edited this repository,
+      // so the entry must not blame a local change (the wording it carried up to
+      // GAP §3.6 did exactly that, for a source whose content never comes from
+      // the repository copy).
+      expect(third.problems.filter((problem) => problem.alias === 'hello')).toEqual([
+        expect.objectContaining({
+          code: ErrorCode.LOCKFILE_BASELINE_UPDATED,
+          message: expect.stringContaining('the upstream this source tracks has moved'),
+        }),
+      ])
     })
   }, 30000)
 
