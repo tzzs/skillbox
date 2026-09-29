@@ -325,7 +325,7 @@ function recoveryHint(error: unknown, securityBlocked: boolean): string | undefi
         return 'The registry is unreachable right now. Check your network connection and retry.'
       case 'INSTALL_SECURITY_BLOCKED':
         return securityBlocked
-          ? 'The security review blocked this install. Review the findings and confirm to install with the allow-all policy.'
+          ? 'The behaviour/risk-pattern review blocked this install. Review the findings and confirm to install with the allow-all policy.'
           : undefined
       case 'INSTALL_CONFLICT':
       case 'INSTALL_AGENT_LINK_FAILED':
@@ -386,7 +386,7 @@ function InstallSuccess({ result }: { result: InstallResult }) {
       </div>
 
       <div className="card">
-        <h2 className="card-title">Security</h2>
+        <h2 className="card-title">Behaviour / risk-pattern review</h2>
         <div className={`risk-line risk-line--${result.security.risk}`}>
           <RiskIcon risk={result.security.risk} />
           <span>

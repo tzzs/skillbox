@@ -248,11 +248,13 @@ describe('MarketplaceService.add', () => {
     expect(outcome.agents).toEqual(['claude'])
   })
 
-  it('shows the security review and proceeds for low risk', async () => {
+  it('shows the risk-pattern review and proceeds for low risk', async () => {
     const prompts = new FakePrompts()
     const { service, prompts: p, out } = createHarness({ isInteractive: true, prompts })
     await service.add({ source: 'x' })
-    expect(p.calls).toContain('note:Security Review')
+    // Named for what it checks: the prompt title used to say "Security Review",
+    // which read as a credential scan this catalog does not perform.
+    expect(p.calls).toContain('note:Risk-Pattern Review')
     expect(out()).toBe('')
   })
 

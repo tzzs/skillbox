@@ -34,6 +34,9 @@ function sourceToNode(source: ManifestSkillSource): Record<string, unknown> {
         registry: source.registry,
         package: source.package,
       }
+      // Kept in step with `manifest-io`'s registry node: the lockfile is what a
+      // fresh clone restores from, so a missing `path` there means the wrong skill.
+      if (source.path !== undefined) node.path = source.path
       if (source.version !== undefined) node.version = source.version
       return node
     }

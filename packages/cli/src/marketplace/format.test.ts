@@ -93,7 +93,7 @@ describe('renderSecurityReview', () => {
 
   it('renders the risk summary and a findings table', () => {
     const text = renderSecurityReview(review)
-    expect(text).toContain('Risk: high — 1 finding(s) in 4 files.')
+    expect(text).toContain('Risk: high — behaviour/risk-pattern review: 1 finding(s) in 4 files.')
     expect(text).toContain('blocks install without confirmation')
     expect(text).toContain('RISK')
     expect(text).toContain('FINDING')
@@ -102,14 +102,30 @@ describe('renderSecurityReview', () => {
     expect(text).toContain('12')
   })
 
-  it('renders a clean scan as a single summary line', () => {
+  /**
+   * The catalog behind this line reads behaviour (12 patterns: shell execution,
+   * remote scripts piped into a shell, network calls, destructive file writes,
+   * credential *reads*). It never looks at credential material — that is the
+   * separate sync secret scanner — so a clean rating has to name the check
+   * rather than be phrased as an unqualified security verdict.
+   */
+  it('names the check on a clean scan instead of claiming there is nothing dangerous', () => {
     const text = renderSecurityReview({
       risk: 'low',
       filesScanned: 3,
       block: false,
       findings: [],
     })
-    expect(text).toBe('Risk: low — no risky patterns found in 3 files.')
+    expect(text).toContain('Risk: low — behaviour/risk-pattern review:')
+    expect(text).toContain('no risk pattern matched in 3 files.')
+    expect(text).toContain('not committed secrets')
+    expect(text).not.toContain('no risky patterns found')
+    expect(text).not.toMatch(/^Risk: low — no /u)
+  })
+
+  it('keeps the scope statement on a rated scan too', () => {
+    const text = renderSecurityReview({ ...review, block: false })
+    expect(text).toContain('not committed secrets')
   })
 })
 

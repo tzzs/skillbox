@@ -1,8 +1,11 @@
+import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 import { SkillboxError } from '../errors.js'
+import { CURRENT_MANIFEST_VERSION } from '../migrations/types.js'
 import {
   deriveMode,
   emptyManifest,
+  MANIFEST_VERSION,
   manifestSkillSchema,
   skillboxManifestSchema,
   validateSkillAlias,
@@ -77,6 +80,37 @@ describe('manifestSkillSchema sources', () => {
     expect(result.success).toBe(true)
   })
 
+  it('accepts a registry source that names a skill inside the package', () => {
+    const result = manifestSkillSchema.safeParse({
+      source: {
+        type: 'registry',
+        registry: 'skills.sh',
+        package: 'acme/skillz',
+        path: 'skills/b',
+        version: '1.2.0',
+      },
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.source).toEqual({
+        type: 'registry',
+        registry: 'skills.sh',
+        package: 'acme/skillz',
+        path: 'skills/b',
+        version: '1.2.0',
+      })
+    }
+  })
+
+  it('rejects an empty registry path, exactly like the git variant', () => {
+    for (const path of ['', '   ']) {
+      const result = manifestSkillSchema.safeParse({
+        source: { type: 'registry', registry: 'skills.sh', package: 'acme/skillz', path },
+      })
+      expect(result.success).toBe(false)
+    }
+  })
+
   it('accepts a local source with mode derived to local', () => {
     const result = manifestSkillSchema.safeParse({
       source: { type: 'local', path: 'skills/foo' },
@@ -145,6 +179,58 @@ describe('manifestSkillSchema sources', () => {
       source: { type: 'git', url: '' },
     })
     expect(result.success).toBe(false)
+  })
+})
+
+describe('manifest schema compatibility (why no version bump)', () => {
+  it('strips unknown keys rather than rejecting them (no .strict() in this schema)', () => {
+    // The whole file uses zod's default object behaviour — there is no
+    // `.strict()` / `.passthrough()` call anywhere in `schema.ts` — so an
+    // unrecognised key is removed, not reported. Pinned here because the
+    // "adding an optional field needs no migration" decision rests on it.
+    const result = manifestSkillSchema.safeParse({
+      source: { type: 'github', repo: 'a/b', fromTheFuture: { nested: true } },
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.source).not.toHaveProperty('fromTheFuture')
+    }
+  })
+
+  it('lets a pre-path reader parse a registry source that carries path', () => {
+    // The registry schema exactly as it was before `path` landed. Parsing a
+    // node written by the current build succeeds and drops the key: an older
+    // skillbox keeps working on a newer manifest (it just re-resolves the
+    // path from registry metadata, as it always did).
+    const oldRegistrySourceSchema = z.object({
+      type: z.literal('registry'),
+      registry: z.string().trim().min(1),
+      package: z.string().trim().min(1),
+      version: z.string().trim().min(1).optional(),
+    })
+    const parsed = oldRegistrySourceSchema.safeParse({
+      type: 'registry',
+      registry: 'skills.sh',
+      package: 'acme/skillz',
+      path: 'skills/b',
+      version: '1.2.0',
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data).toEqual({
+        type: 'registry',
+        registry: 'skills.sh',
+        package: 'acme/skillz',
+        version: '1.2.0',
+      })
+    }
+  })
+
+  it('keeps the manifest version at 1 with the optional field added', () => {
+    // ReadManifest refuses `version > MANIFEST_VERSION` outright, so bumping
+    // here would break the very readers this field is compatible with.
+    expect(MANIFEST_VERSION).toBe(1)
+    expect(CURRENT_MANIFEST_VERSION).toBe(1)
   })
 })
 

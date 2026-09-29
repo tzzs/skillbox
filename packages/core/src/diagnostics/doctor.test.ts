@@ -5,6 +5,8 @@ import { withTempDir } from '../fs/test-utils.js'
 import { createDefaultAgentRegistry } from '../agent/index.js'
 import { writeManifest, emptyManifest } from '../manifest/index.js'
 import { writeLockfile, emptyLockfile } from '../lockfile/index.js'
+import { OperationJournal } from '../operations/sync-runtime-journal.js'
+import { buildSkillboxHomeLayout } from '../runtime/paths.js'
 import { createDebugBundle, runDoctor, scanForLeaks } from './doctor.js'
 
 function context(repositoryRoot: string, homeRoot: string) {
@@ -43,6 +45,38 @@ describe('runDoctor', () => {
       const byName = new Map(report.probes.map((probe) => [probe.name, probe]))
       expect(byName.get('manifest')?.ok).toBe(false)
       expect(byName.get('lockfile')?.ok).toBe(false)
+    })
+  })
+
+  it('reports an unfinished operation journal with the id and the recovery command', async () => {
+    await withTempDir(async (dir) => {
+      const repo = path.join(dir, 'repo')
+      const home = path.join(dir, 'home')
+      await fs.mkdir(repo, { recursive: true })
+      const journal = new OperationJournal({
+        repositoryRoot: repo,
+        stateRoot: buildSkillboxHomeLayout(home).operations,
+      })
+      await journal.create({
+        operationId: 'op-crashed',
+        kind: 'sync',
+        owner: { id: 'probe-owner', pid: 7 },
+        stage: 'mutate',
+      })
+
+      const report = await runDoctor(context(repo, home))
+      const byName = new Map(report.probes.map((probe) => [probe.name, probe]))
+      expect(byName.get('operations')?.ok).toBe(false)
+      expect(byName.get('operations')?.error).toContain('op-crashed')
+      expect(byName.get('operations')?.error).toContain('skillbox recover')
+      // Read-only: a probe that healed the journal would decide for the user.
+      expect(await journal.read('op-crashed')).toMatchObject({ status: 'running' })
+
+      await journal.write({ ...(await journal.read('op-crashed'))!, status: 'abandoned' })
+      const resolved = await runDoctor(context(repo, home))
+      expect(resolved.probes.find((probe) => probe.name === 'operations')).toMatchObject({
+        ok: true,
+      })
     })
   })
 })

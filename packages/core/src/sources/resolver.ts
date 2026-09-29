@@ -129,12 +129,14 @@ export function parse(input: string): CanonicalSkillSource {
         type: 'registry',
         registry: 'skills.sh',
         package: legacy.package,
+        ...(legacy.path === undefined ? {} : { path: legacy.path }),
         ...(legacy.version === undefined ? {} : { version: legacy.version }),
       }
     case 'git':
       return {
         type: 'git',
         url: legacy.url,
+        ...(legacy.path === undefined ? {} : { path: legacy.path }),
         ...(legacy.ref === undefined ? {} : { ref: legacy.ref }),
       }
     case 'local':

@@ -11,9 +11,6 @@ const CHOICE_LABELS: Record<ConflictChoice, string> = {
   local: 'Use this device',
   remote: 'Use other device',
   'keep-both': 'Keep both',
-  delete: 'Remove it',
-  restore: 'Restore it',
-  merged: 'Use combined result',
 }
 
 /**

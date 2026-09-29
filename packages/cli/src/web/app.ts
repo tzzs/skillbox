@@ -887,14 +887,13 @@ function parseFleetHostPatchBody(body: Record<string, unknown>): FleetHostPatchR
 
 /* ---- /api/sync + /api/conflicts helpers (RepositorySync) ---- */
 
-const CONFLICT_RESOLUTIONS: ReadonlySet<string> = new Set([
-  'local',
-  'remote',
-  'keep-both',
-  'merged',
-  'delete',
-  'restore',
-])
+/**
+ * The choices this API renders and accepts, spelled from Core's
+ * `ConflictResolution` so a resolution the sync engine has no branch for cannot be
+ * offered here even as a string: `delete`, `merged` and `restore` used to be listed,
+ * accepted, and then silently dropped while the conflict closed.
+ */
+const CONFLICT_RESOLUTIONS: readonly ConflictResolution[] = ['local', 'remote', 'keep-both']
 
 /** Validates `body.resolutions`: a non-empty map of conflict id → resolution choice. */
 function requireResolutionsField(
@@ -910,13 +909,14 @@ function requireResolutionsField(
   }
   const resolutions: Record<string, ConflictResolution> = {}
   for (const [conflictId, resolution] of entries) {
-    if (typeof resolution !== 'string' || !CONFLICT_RESOLUTIONS.has(resolution)) {
+    const offered = CONFLICT_RESOLUTIONS.find((choice) => choice === resolution)
+    if (offered === undefined) {
       throw new WebApiError(
         'INVALID_REQUEST',
-        `Field "resolutions.${conflictId}" must be one of ${[...CONFLICT_RESOLUTIONS].join('/')}`,
+        `Field "resolutions.${conflictId}" must be one of ${CONFLICT_RESOLUTIONS.join('/')}`,
       )
     }
-    resolutions[conflictId] = resolution as ConflictResolution
+    resolutions[conflictId] = offered
   }
   return resolutions
 }

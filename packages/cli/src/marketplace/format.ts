@@ -45,11 +45,29 @@ export function renderOutdatedTable(entries: readonly OutdatedEntry[]): string {
   return renderTable(['NAME', 'INSTALLED', 'LATEST', 'STATUS'], rows)
 }
 
-/** Security review shown before a remote install (GAP §5 / M21.4). */
+/**
+ * What the install-time review actually is, spelled out in every rating line.
+ * The catalog behind it (core's risk patterns) reads *behaviour*: shell
+ * execution, remote scripts piped into a shell, network calls, destructive file
+ * operations, credential *reads*. Credential *material* is a different check —
+ * the sync secret scanner — so "no findings" must never be phrased so that it
+ * reads as "nothing dangerous in here" (GAP §5 / M21.4, honesty note).
+ */
+const REVIEW_LABEL = 'behaviour/risk-pattern review'
+const REVIEW_SCOPE =
+  'It reads behaviour (shell execution, network calls, destructive writes, credential ' +
+  'access), not committed secrets — those are scanned at sync.'
+
+/** Rating prefix shared by both branches, so the check is named either way. */
+function ratingPrefix(review: SecurityScanResult): string {
+  return `Risk: ${review.risk} — ${REVIEW_LABEL}: `
+}
+
+/** Risk-pattern review shown before a remote install (GAP §5 / M21.4). */
 export function renderSecurityReview(review: SecurityScanResult): string {
   const files = `${review.filesScanned} file${review.filesScanned === 1 ? '' : 's'}`
   if (review.findings.length === 0) {
-    return `Risk: ${review.risk} — no risky patterns found in ${files}.`
+    return `${ratingPrefix(review)}no risk pattern matched in ${files}. ${REVIEW_SCOPE}`
   }
   const rows = review.findings.map((finding) => [
     finding.risk,
@@ -60,7 +78,7 @@ export function renderSecurityReview(review: SecurityScanResult): string {
   ])
   const table = renderTable(['RISK', 'FINDING', 'FILE', 'LINE', 'SNIPPET'], rows)
   const block = review.block ? ' — blocks install without confirmation' : ''
-  return `Risk: ${review.risk} — ${review.findings.length} finding(s) in ${files}.${block}\n${table}`
+  return `${ratingPrefix(review)}${review.findings.length} finding(s) in ${files}.${block}\n${REVIEW_SCOPE}\n${table}`
 }
 
 /** `skillbox add` summary (manifest/lockfile changes + agent links). */

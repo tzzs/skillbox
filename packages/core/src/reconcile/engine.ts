@@ -272,7 +272,15 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
       problems.push({
         code: ErrorCode.INTEGRITY_MISMATCH,
         alias,
-        message: `Locked integrity ${lockedIntegrity} differs from repository ${integrity}`,
+        // Naming the disagreement is not enough: this run rewrites the lock
+        // from the current disk content (see `writeLockfileIfChanged` below),
+        // so the local change stops being a deviation and becomes the
+        // baseline. Say so, in the same entry, so every surface that renders
+        // `problems` — CLI, interactive menu, Web API, sync resolve step —
+        // carries it without a second channel (GAP §3.6 honesty part).
+        message:
+          `Locked integrity ${lockedIntegrity} differs from repository ${integrity}; ` +
+          'the locked integrity was recomputed from the repository copy — this local change is now the baseline.',
       })
     }
     skills.push(report)

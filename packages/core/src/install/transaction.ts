@@ -407,7 +407,7 @@ async function runInstallTransaction(
     if (securityScan.block && !allowHighRisk) {
       throw new SkillboxError(
         ErrorCode.INSTALL_SECURITY_BLOCKED,
-        `Security scan rated ${describeSource(source)} "${securityScan.risk}" risk (${securityScan.findings.length} finding(s)); pass allowPolicy: { allowHighRisk: true } to install anyway`,
+        `Risk-pattern review rated ${describeSource(source)} "${securityScan.risk}" risk (${securityScan.findings.length} finding(s)); pass allowPolicy: { allowHighRisk: true } to install anyway`,
         {
           recoverable: true,
           context: {

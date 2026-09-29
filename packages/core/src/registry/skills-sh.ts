@@ -14,6 +14,7 @@ import type {
   RegistrySearchResult,
   ResolvedSource,
   SecurityReviewState,
+  SkillsShNormalizedSource,
 } from './types.js'
 
 /**
@@ -66,6 +67,41 @@ export interface SkillsShPackageMetadata {
 const DEFAULT_BASE_URL = 'https://skills.sh'
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_RETRIES = 1
+
+/**
+ * Maps a repo-backed skills.sh package onto the GitHub source that holds it.
+ *
+ * Both fields follow the same rule, and the reason this is a function and not two
+ * spreads is that two spreads (`...source.x`, then `...metadata.x`) make the LAST
+ * one win — i.e. the registry silently overwrites whatever the user typed:
+ * - `source.path` (explicit, e.g. `skills.sh/acme/skillz@skills/b` → `skills/b`)
+ *   WINS: it names which skill inside the package the user asked for;
+ *   `metadata.path` is only the FALLBACK for a user who named no path.
+ * - `source.version` (explicit, e.g. `skills.sh/acme/skillz#1.2.0`) WINS over
+ *   `metadata.version` for the same reason: a pin is a promise about which
+ *   revision gets installed, and the version a registry advertises today is not
+ *   it.  `metadata.version` still fills in when the user pinned nothing.
+ *
+ * The `??` order is also what keeps `resolve` and `download` agreeing: both map the
+ * same source here, so a metadata override in one place alone would download a
+ * different tree than the one that was pinned.
+ */
+function toGithubPackageSource(
+  source: SkillsShNormalizedSource,
+  repo: string,
+  metadata: SkillsShPackageMetadata,
+): NormalizedSource {
+  return {
+    type: 'github',
+    repo,
+    ...(source.path !== undefined || metadata.path !== undefined
+      ? { path: source.path ?? metadata.path }
+      : {}),
+    ...(source.version !== undefined || metadata.version !== undefined
+      ? { ref: source.version ?? metadata.version }
+      : {}),
+  }
+}
 
 export class SkillsShProvider implements RegistryProvider {
   readonly id = 'skills-sh'
@@ -144,15 +180,9 @@ export class SkillsShProvider implements RegistryProvider {
     try {
       const metadata = await this.getPackageMetadata(source.package)
       if (metadata.repo !== undefined) {
-        const githubSource: NormalizedSource = {
-          type: 'github',
-          repo: metadata.repo,
-          ...(source.path !== undefined ? { path: source.path } : {}),
-          ...(metadata.path !== undefined ? { path: metadata.path } : {}),
-          ...(source.version !== undefined ? { ref: source.version } : {}),
-          ...(metadata.version !== undefined ? { ref: metadata.version } : {}),
-        }
-        const resolved = await this.githubProvider.resolve(githubSource)
+        const resolved = await this.githubProvider.resolve(
+          toGithubPackageSource(source, metadata.repo, metadata),
+        )
         return { source, revision: resolved.revision }
       }
       return {
@@ -182,14 +212,7 @@ export class SkillsShProvider implements RegistryProvider {
           { reason: 'source', context: { package: source.package } },
         )
       }
-      const githubSource: NormalizedSource = {
-        type: 'github',
-        repo: metadata.repo,
-        ...(source.path !== undefined ? { path: source.path } : {}),
-        ...(metadata.path !== undefined ? { path: metadata.path } : {}),
-        ...(source.version !== undefined ? { ref: source.version } : {}),
-        ...(metadata.version !== undefined ? { ref: metadata.version } : {}),
-      }
+      const githubSource = toGithubPackageSource(source, metadata.repo, metadata)
       await this.githubProvider.download(githubSource, revision, targetDir)
     } catch (error) {
       if (isRegistryError(error)) {

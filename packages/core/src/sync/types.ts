@@ -43,7 +43,17 @@ export interface SyncRecovery {
 export type ConflictType =
   'content' | 'delete-modify' | 'manifest-field' | 'mode' | 'source' | 'lifecycle'
 
-export type ConflictResolution = 'local' | 'remote' | 'keep-both' | 'merged' | 'delete' | 'restore'
+/**
+ * A conflict answer the sync engine can carry out: exactly the choices
+ * `SyncTransaction.resolve` branches on (`local`/`remote` via
+ * `applyManifestChoices` + `copyResolvedFile`, `keep-both` via the deterministic
+ * alias copy).  `repository-sync.ts` validates a submitted choice against a
+ * conflict's `allowedResolutions` only, so a value listed here without a branch
+ * there would be accepted and then silently dropped — which is why
+ * `delete`, `merged` and `restore` are deliberately absent.  Add one here only
+ * together with the code that applies it.
+ */
+export type ConflictResolution = 'local' | 'remote' | 'keep-both'
 
 export interface ConflictValue {
   /** Safe, bounded data suitable for a conflict preview. */
