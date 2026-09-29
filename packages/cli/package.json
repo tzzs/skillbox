@@ -8,16 +8,20 @@
     "skillbox": "./bin/skillbox.mjs"
   },
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "!dist/**/*.d.ts",
+    "!dist/**/*.d.ts.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.js.map",
+    "!dist/**/test-support.js",
+    "!dist/**/test-support.js.map"
   ],
   "engines": {
     "node": ">=20"
@@ -34,11 +38,11 @@
     "@clack/prompts": "^1.7.0",
     "@hono/node-server": "^1.13.7",
     "@skillbox/core": "^0.1.0",
-    "@skillbox/shared": "^0.1.0",
     "commander": "^13.1.0",
     "hono": "^4.6.14"
   },
   "devDependencies": {
+    "@skillbox/shared": "workspace:^",
     "@types/node": "^22.10.0",
     "typescript": "^5.6.2",
     "vitest": "^3.0.0"

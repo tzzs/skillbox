@@ -1,8 +1,8 @@
 {
   "name": "@skillbox/shared",
   "version": "0.1.0",
-  "description": "Skillbox shared contract: the Web JSON API types (types only) and cross-package helpers",
-  "private": false,
+  "description": "Workspace-private: the Web JSON API contract, declared once so the server and the SPA cannot each write their own copy. Types only — never published.",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,9 +12,6 @@
       "import": "./dist/index.js"
     }
   },
-  "files": [
-    "dist"
-  ],
   "engines": {
     "node": ">=20"
   },
@@ -23,13 +20,10 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "lint": "eslint src --max-warnings 0",
-    "format": "prettier --write src",
-    "prepublishOnly": "pnpm build"
-  },
-  "dependencies": {
-    "@skillbox/core": "workspace:^"
+    "format": "prettier --write src"
   },
   "devDependencies": {
+    "@skillbox/core": "workspace:^",
     "@types/node": "^22.10.0",
     "typescript": "^5.6.2",
     "vitest": "^3.0.0"
@@ -39,9 +33,5 @@
     "type": "git",
     "url": "https://github.com/tzzs/skillbox.git",
     "directory": "packages/shared"
-  },
-  "homepage": "https://github.com/tzzs/skillbox#readme",
-  "bugs": {
-    "url": "https://github.com/tzzs/skillbox/issues"
   }
 }

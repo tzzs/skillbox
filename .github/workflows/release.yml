@@ -1,11 +1,14 @@
 name: Release
 
-# Publishes @skillbox/{shared,core,cli} to npm. Triggered by pushing a `v*`
-# tag (e.g. `v0.1.0`) or manually via workflow_dispatch. The apps/web SPA and
-# packages/testing are `private: true` and are skipped by `pnpm publish -r`.
+# Publishes @skillbox/{core,cli} to npm. Triggered by pushing a `v*` tag
+# (e.g. `v0.1.0`) or manually via workflow_dispatch. `private: true` packages are
+# skipped by `pnpm publish -r`: apps/web, packages/testing, and packages/shared
+# (the Web API contract — types only, workspace-private by decision).
 #
-# Publish order is core → shared → cli (pnpm publishes workspace deps first;
-# shared imports Core's domain types into the Web API contract);
+# Publish order is core → cli (pnpm publishes workspace deps first; cli depends
+# on core and on nothing internal — `@skillbox/shared` is a devDependency for
+# types, erased from the shipped JS, and cli ships no .d.ts so there is no
+# declaration left pointing at it).
 # cli's `prepublishOnly` runs the full root build so `dist/web` is present,
 # then pack:verify asserts the tarball contents before anything ships.
 
@@ -90,7 +93,7 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Publish (core → shared → cli)
+      - name: Publish (core → cli)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Pass the workflow_dispatch input through env rather than

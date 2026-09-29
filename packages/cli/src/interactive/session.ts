@@ -14,7 +14,7 @@ import {
   type ImportResult,
   type SkillStatusEntry,
 } from '@skillbox/core'
-import { assertNever } from '@skillbox/shared'
+import { assertNever } from '../exhaustive.js'
 import type { CliContext } from '../program.js'
 import { reportProblems } from '../report.js'
 import type { InteractivePrompt } from './prompts.js'

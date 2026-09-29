@@ -529,7 +529,8 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
 - ✅ **`.github/workflows/release.yml`**：`v*` tag 推送或 `workflow_dispatch` 触发；`verify` job 跑
   lint/typecheck/test/build/test:e2e/pack:verify 六道门禁，`publish` job `needs: verify` 后
   `pnpm publish -r --no-git-checks --access public --provenance`（`id-token: write` + `NPM_TOKEN`），
-  发布顺序 shared → core → cli；apps/web 与 packages/testing 因 `private: true` 被 `-r` 跳过；
+  发布顺序 core → cli；`packages/shared`（类型的唯一声明处）、apps/web 与 packages/testing 因
+  `private: true` 被 `-r` 跳过；
   workflow_dispatch 默认 `dry-run: true`（只跑门禁不发布）
 
 ### 6.2 README / Release Metadata（部分修复）
@@ -670,14 +671,28 @@ pnpm --workspace-root pack:verify`（cli 的 `dist/web` 由根 build 产出，�
   三种取值被接受却无人实现）
 - ~~`packages/shared`：整包只有一个 `assertNever`，除自身测试外零引用，却挂在 `packages/cli` 的依赖上、
   还在 `shared → core → cli` 发布序列里。删包 or 用起来要表态（对外发布面，本轮未动）~~ ——
-  **已表态：用起来**。`packages/shared/src/web-api.ts` 成为 Web JSON API 契约的唯一声明处，服务端
-  （`packages/cli/src/web/types.ts`）与客户端（`apps/web/src/api.ts`）都只做类型再导出/别名，两侧不再各写一份；
-  发布顺序因此变成 `core → shared → cli`（shared 的契约类型建在 core 的领域类型上）。包**保持**
-  `private: false`：`@skillbox/cli` 的公开 `dist/index.d.ts` 经
-  `index → interactive/session.d.ts（constructor(options: InteractiveSessionOptions)）→ web/types.d.ts`
-  一条链就能走到 shared，改私有会让 `npm install @skillbox/cli` 的类型解析断掉。防重复守卫：
-  `packages/cli/src/web/contract.test.ts`（源文本 + 编译期双向可赋值断言）。`assertNever` 消费者：
-  `packages/cli/src/interactive/session.ts` 的 `reportUnresolved`
+  **已表态两轮，最终形状：用起来，但不发布。**
+  1）用起来：`packages/shared/src/web-api.ts` 是 Web JSON API 契约的唯一声明处，服务端
+  （`packages/cli/src/web/types.ts`）与客户端（`apps/web/src/api.ts`）都只做类型再导出/别名。
+  防重复守卫 `packages/cli/src/web/contract.test.ts`（源文本 + 编译期双向可赋值断言）。
+  2）不发布（用户 2026-09-30：「不需要单独发布出去，最开始只是想让它是一个通用的功能，而不是两块都各自写一遍」）：
+  `private: true`，`@skillbox/cli` 把它从 `dependencies` 降成 `devDependencies`，发布序列回到
+  `core → cli`。要断的边有两条，都断了：
+  - **运行时**：`assertNever` 是这个包里唯一的运行时导出，被 `interactive/session.ts` 值导入 ——
+    私有包留在发布物的 `import` 里不是类型警告，是用户进程启动就 `Cannot find package`。
+    搬到 `packages/cli/src/exhaustive.ts`（消费方只有它），shared 从此 types-only，并由
+    `packages/shared/src/index.test.ts` 钉住：`Object.keys(await import('./index.js'))` 必须为空。
+  - **类型面**：`dist/web/types.d.ts` 引用 `@skillbox/shared`，而公开入口经
+    `index → program → web/main`、`index → interactive/session` 两条路都走得到它。
+    所以 `@skillbox/cli` 不再发布类型：去掉 `types` 字段与 `exports` 的 `types` 条件，
+    `files` 排掉 `dist/**/*.d.ts(.map)`。实测打包前 258 个文件里 63 个是 `.d.ts`（其中还包含
+    `dist/fleet/format.test.d.ts` 这类测试产物），现在这些都不进 tarball。
+    代价说清楚：`import { … } from '@skillbox/cli'` 从此没有类型。全仓 grep 过，
+    **没有任何代码值导入或类型导入 `@skillbox/cli`**（只有 `scripts/*` 按包名引用、e2e 起子进程跑命令），
+    所以今天损失为 0；哪天要把它当库嵌进别的项目，那是 `docs/release-readiness.md` 里重新决定的事。
+    `pnpm pack:verify` 现在会失败而不是报告：tarball 里有 `.d.ts`、`package.json` 还写着 `types`、
+    或任何一个 `.js` 里出现私有 workspace 包名。`pnpm release:smoke` 只装 core + cli —— 那才是
+    「消费者装得上、跑得起来」的真正证明。
 
 ---
 
