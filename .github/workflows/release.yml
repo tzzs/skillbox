@@ -4,7 +4,8 @@ name: Release
 # tag (e.g. `v0.1.0`) or manually via workflow_dispatch. The apps/web SPA and
 # packages/testing are `private: true` and are skipped by `pnpm publish -r`.
 #
-# Publish order is shared → core → cli (pnpm publishes workspace deps first);
+# Publish order is core → shared → cli (pnpm publishes workspace deps first;
+# shared imports Core's domain types into the Web API contract);
 # cli's `prepublishOnly` runs the full root build so `dist/web` is present,
 # then pack:verify asserts the tarball contents before anything ships.
 
@@ -89,7 +90,7 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Publish (shared → core → cli)
+      - name: Publish (core → shared → cli)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Pass the workflow_dispatch input through env rather than

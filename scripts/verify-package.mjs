@@ -16,7 +16,7 @@
  *
  *   - "private": true   on the package (npm refuses to publish private packs)
  *   - workspace:* deps  (@skillbox/core, @skillbox/shared) must be published
- *                       as real versions in the order shared -> core -> cli
+ *                       as real versions in the order core -> shared -> cli
  *
  * These are *decisions*, not content defects: they do not fail the script,
  * they are reported so a release can make an informed call.

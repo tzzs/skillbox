@@ -36,7 +36,9 @@ automated by the repository:
 1. Confirm ownership of the `@skillbox` npm scope and the public package names.
 2. Choose the release version and replace the matching package versions.
 3. Remove `"private": true` only from packages being published, then publish
-   in dependency order: shared, core, web-server, CLI.
+   in dependency order: core, shared, web-server, CLI (`@skillbox/shared` holds the
+   Web API contract and is typed against Core's domain shapes, so it comes after
+   core, not before it).
 4. Run `npm publish --dry-run` with the release account before publishing.
 5. Record the supported Node version and complete the existing manual
    cross-platform acceptance in `docs/e2e-acceptance.md`.
