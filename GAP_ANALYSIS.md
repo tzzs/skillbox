@@ -142,7 +142,7 @@ CLI 未构建时套件自跳过并提示。
 - authorization timeout/cancel/retry、private remote auth failure 场景
 - 三平台 manual acceptance 证据（§6.3）
 
-### 2.4 安装路径看不见真正的 secret：两套扫描规则互为盲区（未修，需定策略）
+### 2.4 两套扫描规则互为盲区：边界已按「各管一段」写进输出，目录合并撤回（等你确认口径）
 
 同一件事有两个扫描器，规则集不同，而它们各自看不见的正是对方看得见的（`add` 走 `security/`，
 `sync` 走 `secret-scan/`）：
@@ -166,8 +166,14 @@ CLI 未构建时套件自跳过并提示。
 - (b) **明确分工并写进产品**：`security/` 只管「这个 skill 会让 agent 做什么」，secret 一律由
   发布前 `sync` 负责 —— 那 `add` 的输出必须改口径（不再声称扫过 secret），否则就是虚假承诺。
 
-倾向 (a)，因为本地优先的入口是 `add`。§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、
-文件读取）收敛成一处，规则集本身仍未动。
+~~倾向 (a)~~ —— **本轮改推荐 (b)，(a) 撤回**。理由是被一句质疑逼出来的：`add` 装的是**别人**的
+skill，扫它里面的密钥扫到的是**作者**泄漏的 key，用户既不能改也不能删，拦下来只会变成一行他无能为力的
+噪音；真正保护安装者的是「这个 skill 会让 agent 做什么」（`shell-exec`、`curl-bash-pipe`、
+`fs-destructive`、`ssh-credential-path`），那已经是 `security/` 的全部职责。而「别把自己的 key 推出去」
+是**出机器之前**的那一道（`sync`）该管的事，它已经管了。两边都不需要对方的规则集，需要的是各自把话说准 ——
+所以合并目录不解决问题，只会让 `add` 开始报一堆用户没法处置的命中。同理，`adopt` / `import`
+（把本机已有 skill 纳管）也**不该**新增密钥扫描：那些文件本来就在这台机器上，没有跨机器边界。
+§7.2 本轮已把两套的**基元**（2 MiB 上限、severity 排序、文件读取）收敛成一处，规则集本身刻意仍不合并。
 
 本轮先做掉不需要选边的那半：**我们自己的这道检查已改按它实际查的东西命名** ——
 `Risk: low — behaviour/risk-pattern review: … It reads behaviour (shell execution, network calls,
@@ -175,7 +181,7 @@ destructive writes, credential access), not committed secrets — those are scan
 交互标题、`add` 命令说明、install 事务的报错同批跟上。刻意**没改**的是注册表自报的
 `securityReviewed` / "reviewed" 徽章（那是 skills.sh 的说法，不是我们的扫描），也没有改任何 JSON 键名
 （`risk` / `securityRisk` / `INSTALL_SECURITY_BLOCKED` 等一律保留），因为改名就是破坏性 API 变更。
-目录合并本身仍待你定。
+目录合并**不做了**（除非你推翻上面这个推荐）：它不是「还没定」，而是这轮想清楚后认为不该做。
 
 已落地：`delete`/`merged`/`restore` 从所有 `allowedResolutions`、`isResolution` 校验与 Web 的
 `CONFLICT_RESOLUTIONS` / `api.ts` / `ConflictResolutionPage` 标签里删除，`ConflictResolution` 类型收窄到
@@ -377,7 +383,7 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
 
 仍缺：TUI 实时订阅 OperationRuntime journal（§4.4 残余）。
 
-### 3.6 任意写操作会把本地改动吸收进 lockfile，`modified` 只活到下一次写（未修）
+### 3.6 `local` 源的写操作会把本地改动吸收进 lockfile，`modified` 只活到下一次写（未修，只剩定义之争）
 
 `reconcile/engine.ts` 每次运行都用 `computeSkillIntegrity(sourcePath)`（磁盘现状）重写
 `skillbox.lock`（`writeLockfileIfChanged`），而 `enable` / `disable`（CLI 与 Web API 都是）
@@ -396,20 +402,30 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
 里同一件事表现为一行 `resolve warning（lockfile 重算）`。根因是 `local` 源的 integrity 语义
 没定下来：它到底指「导入时快照」还是「磁盘现状」，engine 取后者、`status` 的 `modified` 取前者。
 
-待定的是策略：
+**已落地的是「不谎报」这半条**：`reconcile/engine.ts` 那条 `INTEGRITY_MISMATCH` 现在把后果写进同一行
+—— 「locked integrity 已按仓库副本重算，这次本地改动成为基线」，`enable`/`disable`/`install`/`pull`/`sync`
+与交互菜单、Web 的 enable/disable 响应都会把它带到用户面前（复用已有的 `reconcile.problems` 通道，
+没有新加一条播报口）。
 
-- (a) reconcile 只在真正 materialize 了新内容时改写 integrity，本地改动保持 `modified`
-  —— 需要先把上面那个语义定下来；
-- (b) 维持吸收，但把提示改成可行动的（「本地改动已写入锁基线；要保留上游基线请先
-  `skillbox fork` / 用 `edit` 流程」），并让 Web 端把 `reconcile.problems` 显示出来。
+**本轮查证把这条的范围收窄了**（标题原先说「任意写操作」，说过头了）：吸收只发生在
+`source.type === 'local'` 的 skill 上。`engine.ts:151-177` 在这种情况下取
+`repositoryRoot/<source.path>` 作为 `sourcePath`，于是 `computeSkillIntegrity` 量的就是仓库副本本身，
+下一次写自然把它当基线。任何别的 source 走 `resolveRemoteSource`（`engine.ts:179-197`、`:336-358`），
+`sourcePath` 是 upstream 被 materialize 到 `<remoteRoot>/<plan.key>` 的那棵树，不是仓库副本 ——
+managed / forked / vendored 的锁基线始终是 upstream 基线，仓库里的改动会一直显示 `modified`。
 
-(b) 便宜、不改锁语义，可先做；(a) 才是让 `modified` 可信的那一步。
+所以剩下的是一个**定义问题**，而且只关于 `mode: local`：一个没有 upstream 的 skill，`modified`
+到底指什么。三个口径：
 
-**已落地的是「不谎报」这半条**（与选 (a) 还是 (b) 无关）：`reconcile/engine.ts` 那条
-`INTEGRITY_MISMATCH` 现在把后果写进同一行 —— 「locked integrity 已按仓库副本重算，这次本地改动成为
-基线」，`enable`/`disable`/`install`/`pull`/`sync` 与交互菜单、Web 的 enable/disable 响应都会把它带到
-用户面前（复用已有的 `reconcile.problems` 通道，没有新加一条播报口）。若最终选 (a)，这句话连同它背后的
-吸收行为一起消失。
+- 甲：维持现状（磁盘即基线），承认「本地 skill 的 `modified` 会在下一次写之后消失」是定义而不是 bug；
+  要做的只有把 `INTEGRITY_MISMATCH` 对 local 源降级成一行「锁基线已按磁盘更新」，别再报成不一致。
+- 乙：锁记的是「上一次被接受的基线」（导入或 sync 时），写操作不再重算 —— `modified` 从此可信，
+  代价是 enable/disable 之后那一行提示会常驻。
+- 丙：把「认了」变成显式动作（`skillbox accept <alias>`，或 `enable --absorb`），只有它改写锁基线。
+
+推荐 **乙 + 丙**：乙让「我还有没同步出去的本地改动」这个信号活下来（多机同步正需要它），
+丙给它一个明确的消解动作 —— 由人说「认了」，而不是被下一次写悄悄吃掉。若你选甲，本节改成
+「已定性，不修」，只做那条提示对 local 源的降级。
 
 ---
 
