@@ -41,6 +41,7 @@ import type {
   RuntimeConfig,
   SkillDiff,
   SkillService,
+  SyncBlocker,
 } from '@skillbox/core'
 
 /* ------------------------------------------------------------------ *
@@ -319,11 +320,24 @@ export interface ConflictSessionDto {
   conflicts: SyncConflictDto[]
 }
 
-/** The three states a sync can end in, flattened from Core's `SyncOutcome`. */
+/**
+ * The three states a sync can end in, flattened from Core's `SyncOutcome`.
+ *
+ * `reason` stays Core's `SyncBlocker` rather than a `string`: the server hands
+ * the route's `outcome.reason` straight through, and a client that types it as
+ * `string` cannot branch on *which* blocker stopped the sync — which is the
+ * difference between "retry" and "run `skillbox recover`".
+ */
 export type SyncOutcomeDto =
   | { kind: 'completed'; automaticallyMerged: number; retriedPushes: number; snapshotId?: string }
   | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
-  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
+  | {
+      kind: 'blocked'
+      reason: SyncBlocker
+      message: string
+      retryable: boolean
+      snapshotId?: string
+    }
 
 /** GitHub connection snapshot — read-only, never starts a device flow. */
 export interface SyncConnectionDto {

@@ -20,6 +20,7 @@ import type {
   SettingsPatch,
   SettingsResponse,
   SkillDiff,
+  SyncBlocker,
   SyncConflictDto,
   SyncOutcomeDto,
   SyncRollbackDto,
@@ -234,7 +235,13 @@ describe('web API contract holds its shape', () => {
     const recommended: ConflictSessionDto['conflicts'][number]['recommendedResolution'] = 'remote'
     // A rollback may name only Core's `CleanupStep` values.
     const step: SyncRollbackDto['failures'][number]['step'] = 'remove-worktree'
-    expect([resolution, conflictKind, recommended, step].length).toBe(4)
+    // So may a blocked sync name only Core's blockers: `reason` used to be
+    // `string` on the wire copy, which left the UI unable to tell
+    // "retry the push" apart from "a journal is stuck, run `skillbox recover`".
+    type BlockedOutcome = Extract<SyncOutcomeDto, { kind: 'blocked' }>
+    const blocker: Assert<SameShape<BlockedOutcome['reason'], SyncBlocker>> = true
+    const stuckJournal: BlockedOutcome['reason'] = 'recovery-required'
+    expect([resolution, conflictKind, recommended, step, blocker, stuckJournal].length).toBe(6)
   })
 
   it('fields the server really sends stay in the contract', () => {
