@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
- * Installs the three packed workspace packages into a fresh directory and
+ * Installs the packed publishable workspace packages into a fresh directory and
  * executes the installed `skillbox` binary. This is deliberately an npm
  * consumer test: it catches missing package files, broken bin metadata, and
  * unresolved workspace dependencies without publishing anything.
+ *
+ * Only `@skillbox/core` and `@skillbox/cli` are here. `@skillbox/shared` is
+ * `private: true` — the Web API contract, types only, never published — and
+ * listing it would let this pass while the registry had no such package: what
+ * matters is that the *installed* CLI resolves and runs without it.
  *
  * Run `pnpm build` first. The script only consumes the release artefacts; it
  * never substitutes source directories for packed dependencies.
@@ -15,7 +20,7 @@ import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const packages = ['@skillbox/shared', '@skillbox/core', '@skillbox/cli']
+const packages = ['@skillbox/core', '@skillbox/cli']
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const sandbox = await mkdtemp(join(tmpdir(), 'skillbox-pack-smoke-'))

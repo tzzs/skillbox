@@ -96,9 +96,6 @@ importers:
       '@skillbox/core':
         specifier: ^0.1.0
         version: link:../core
-      '@skillbox/shared':
-        specifier: ^0.1.0
-        version: link:../shared
       commander:
         specifier: ^13.1.0
         version: 13.1.0
@@ -106,6 +103,9 @@ importers:
         specifier: ^4.6.14
         version: 4.13.1
     devDependencies:
+      '@skillbox/shared':
+        specifier: workspace:^
+        version: link:../shared
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1
@@ -136,11 +136,10 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.14.5)(yaml@2.9.0)
 
   packages/shared:
-    dependencies:
+    devDependencies:
       '@skillbox/core':
         specifier: workspace:^
         version: link:../core
-    devDependencies:
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1

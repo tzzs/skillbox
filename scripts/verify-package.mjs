@@ -15,16 +15,25 @@
  * real `npm publish`:
  *
  *   - "private": true   on the package (npm refuses to publish private packs)
- *   - workspace:* deps  (@skillbox/core, @skillbox/shared) must be published
- *                       as real versions in the order core -> shared -> cli
+ *   - workspace:* deps  (@skillbox/core) must be published as a real version
+ *                       first: the publish order is core -> cli
  *
  * These are *decisions*, not content defects: they do not fail the script,
  * they are reported so a release can make an informed call.
  *
- * Exit codes: 0 when the tarball contents are complete, 1 otherwise.
+ * What *does* fail the script, beyond missing content, is the published surface
+ * being inconsistent with `@skillbox/shared` being `private: true`:
+ *
+ *   - no `.d.ts` in the tarball and no `"types"` advertised (the emitted
+ *     declarations import the private package, so shipping them would break
+ *     every consumer that type-checks against `@skillbox/cli`)
+ *   - no shipped JS that imports a private workspace package at runtime (that
+ *     is not a type warning, it is `Cannot find package` in the user's process)
+ *
+ * Exit codes: 0 when the tarball is publishable, 1 otherwise.
  */
 import { execFileSync } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
@@ -97,6 +106,77 @@ console.log(
 const kb = (listing.unpackedSize / 1024).toFixed(0)
 console.log(`packed size:       ${(listing.size / 1024).toFixed(1)} KiB`)
 console.log(`unpacked size:     ${kb} KiB (${listing.files.length} files)`)
+
+/* ---- published surface: `@skillbox/shared` is workspace-private ---- */
+
+/**
+ * Workspace packages npm will never see. `@skillbox/cli` may import their
+ * *types* while building (they are devDependencies here), but nothing it
+ * publishes — a `.d.ts` that mentions them, or a `.js` that imports them at
+ * runtime — can survive an install from the registry.
+ */
+async function privateWorkspacePackages() {
+  const names = []
+  for (const group of ['packages', 'apps']) {
+    for (const entry of await readdir(join(root, group), { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+      const manifest = JSON.parse(
+        await readFile(join(root, group, entry.name, 'package.json'), 'utf8'),
+      )
+      if (manifest.private === true && typeof manifest.name === 'string') {
+        names.push(manifest.name)
+      }
+    }
+  }
+  return names
+}
+
+const privatePackages = await privateWorkspacePackages()
+
+console.log('\npublished surface:')
+ok =
+  required(
+    'no .d.ts / .d.ts.map shipped — @skillbox/cli advertises no types',
+    ![...paths].some((p) => p.endsWith('.d.ts') || p.endsWith('.d.ts.map')),
+  ) && ok
+ok = required('package.json has no "types" field', cliPackage.types === undefined) && ok
+
+const referencing = []
+for (const packedPath of [...paths].filter((p) => p.endsWith('.js'))) {
+  const content = await readFile(join(cliDir, packedPath), 'utf8')
+  // An import, not a mention: `contract.test.ts` keeps '@skillbox/shared' as a
+  // string constant on purpose, and that would be a false alarm here.
+  const imports = /(?:from|import|require)\s*\(?\s*['"`](@skillbox\/[^'"`]+)/g
+  const hits = privatePackages.filter((name) => {
+    for (const match of content.matchAll(imports)) {
+      if (match[1] === name || match[1].startsWith(`${name}/`)) {
+        return true
+      }
+    }
+    return false
+  })
+  if (hits.length > 0) {
+    referencing.push(`${packedPath} → ${hits.join(', ')}`)
+  }
+}
+ok =
+  required(
+    `no shipped JS imports a private workspace package (${privatePackages.join(', ') || 'none'})`,
+    referencing.length === 0,
+  ) && ok
+for (const line of referencing) {
+  console.error(`     ${line}`)
+}
+
+if (!ok) {
+  console.error('\n✗  the published surface would break an npm install of @skillbox/cli.')
+  console.error('   A private workspace package cannot be referenced by anything shipped: keep its')
+  console.error('   use type-only (`import type`), and keep `.d.ts` out of the tarball until')
+  console.error('   either it gets published or those declarations stop referencing it.')
+  process.exit(1)
+}
 
 console.log('\npublish blockers (informational, not a content defect):')
 const workspaceDeps = Object.entries(cliPackage.dependencies ?? {})
