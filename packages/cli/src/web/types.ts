@@ -1,26 +1,15 @@
-import type {
-  AgentRegistry,
-  BackupRecord,
-  CleanupStep,
-  ConflictResolution,
-  DoctorReport,
-  FleetHostConfig,
-  FleetRunResult,
-  FleetService,
-  ReconcileResult,
-  RepositorySync,
-  RepositoryStatus,
-  RollbackResult,
-  RuntimeConfig,
-  RuntimeConfigService,
-  SkillDiff,
-  SkillService,
-  StatusService,
-  AdoptReport,
-} from '@skillbox/core'
-
 /**
- * V0.3 registry contract (M14.7). These shapes are the *web* front of the
+ * The Web layer's side of the API contract.
+ *
+ * Every *shape* the HTTP API exchanges — request bodies, response envelopes,
+ * error envelope — is declared once in `@skillbox/shared` (`src/web-api.ts`) and
+ * re-exported here, because `apps/web` consumes the same names from the same
+ * module. What stays in this file is server-only by nature: the Core service
+ * interfaces the routes delegate to, and the options/handles of the process
+ * that hosts the server. Adding a response type here instead of there is how the
+ * two sides drifted apart once already.
+ *
+ * V0.3 registry contract (M14.7): these shapes are the *web* front of the
  * Registry provider framework (agent 1: `packages/core/src/registry`) and the
  * Install/Updates layer (agent 2: `packages/core/src/install`). `services.ts`
  * wires every one of them to the real Core layer (`createSearchService`,
@@ -29,47 +18,115 @@ import type {
  * prints.
  */
 
-/** Aggregated risk level of a remote skill per the Security Scanner. */
-export type RegistryRisk = 'low' | 'medium' | 'high'
+import type {
+  AgentRegistry,
+  FleetService,
+  RepositorySync,
+  RuntimeConfigService,
+  SkillService,
+  StatusService,
+} from '@skillbox/core'
+import type {
+  InstallInput,
+  InstallResult,
+  LifecycleOperationResult,
+  MergeAction,
+  OutdatedSkill,
+  RegistrySearchResult,
+  RegistrySearchSort,
+  SkillDiff,
+} from '@skillbox/shared'
 
-/** A single Security Scanner finding attached to a registry result. */
-export interface RegistryFinding {
-  severity: 'info' | 'warning' | 'high'
-  /** Rule id that produced the finding, e.g. `network-access`. */
-  rule: string
-  /** Human readable explanation of the finding. */
-  message: string
-}
+export type {
+  AdoptReport,
+  AdoptResponse,
+  AgentAssignmentResponse,
+  AgentsResponse,
+  ApiErrorBody,
+  BackupRecord,
+  CleanupStep,
+  ConflictResolution,
+  ConflictResponse,
+  ConflictSessionDto,
+  ConflictType,
+  ConflictsResponse,
+  CreateSkillInput,
+  CreateSkillResponse,
+  CreatedSkill,
+  DoctorReport,
+  DoctorResponse,
+  FleetHostConfig,
+  FleetHostCreateRequest,
+  FleetHostPatchRequest,
+  FleetHostRemoveResponse,
+  FleetHostResponse,
+  FleetHostsResponse,
+  FleetOperationName,
+  FleetRunRequest,
+  FleetRunResponse,
+  FleetRunResult,
+  FleetSkillTarget,
+  HealthResponse,
+  InstallInput,
+  InstallResponse,
+  InstallResult,
+  InstallSecurity,
+  LibrarySettings,
+  LifecycleOperationResult,
+  LifecycleResultResponse,
+  LinkStrategy,
+  MergeAction,
+  OutdatedResponse,
+  OutdatedSkill,
+  ProbeResult,
+  ReconcileResponse,
+  ReconcileResult,
+  RegistryFinding,
+  RegistryRisk,
+  RegistrySearchResponse,
+  RegistrySearchResult,
+  RegistrySearchSort,
+  RemoveSkillResponse,
+  ResolveSyncConflictsInput,
+  ReconcileProblem,
+  RepositoryStatus,
+  RollbackListResponse,
+  RollbackRestoreResponse,
+  RollbackResult,
+  RuntimeConfig,
+  SaveSkillContentResponse,
+  SavedSkillContent,
+  SettingsPatch,
+  SettingsResponse,
+  SkillContent,
+  SkillContentResponse,
+  SkillDiff,
+  SkillDiffResponse,
+  SkillResponse,
+  SkillStatusEntry,
+  SkillsResponse,
+  StatusResponse,
+  SyncConflictDto,
+  SyncConnectionDto,
+  SyncDisconnectResponse,
+  SyncOutcomeDto,
+  SyncResponse,
+  SyncRollbackDto,
+  SyncRollbackFailureDto,
+  SyncSnapshotDto,
+  SyncSnapshotRestoreResponse,
+  SyncSnapshotsResponse,
+  SyncStatusResponse,
+} from '@skillbox/shared'
 
-/** One result of the aggregated registry search (GAP §3 Explore). */
-export interface RegistrySearchResult {
-  /** Skill name as shown to the user. */
-  name: string
-  /** Normalized source that can be passed back to install, e.g. `github:acme/react-skill`. */
-  source: string
-  /** Registry provider this result came from, e.g. `github` | `skills-sh` | `local`. */
-  provider: string
-  description?: string
-  version?: string
-  revision?: string
-  /** Download / use count used by the popularity sort. */
-  popularity?: number
-  trending?: boolean
-  official?: boolean
-  verified?: boolean
-  /** Whether the provider already ran a security review on this result. */
-  securityReviewed?: boolean
-  securityRisk?: RegistryRisk
-  /** Best-effort findings advertised by the provider (server scans at install time). */
-  securityFindings?: RegistryFinding[]
-  /** True when the same source is already installed in this repository. */
-  installed?: boolean
-}
+/* ------------------------------------------------------------------ *
+ * Core service contracts the routes delegate to (server-only)
+ * ------------------------------------------------------------------ */
 
 /** Options accepted by the registry search service. */
 export interface RegistrySearchOptions {
   provider?: string
-  sort?: 'popularity' | 'recently-updated'
+  sort?: RegistrySearchSort
   trending?: boolean
   official?: boolean
 }
@@ -79,57 +136,9 @@ export interface RegistrySearchService {
   search(query: string, options?: RegistrySearchOptions): Promise<RegistrySearchResult[]>
 }
 
-/** One row of the Updates page (M16.3). */
-export interface OutdatedSkill {
-  name: string
-  /** Manifest source of the installed skill, reused when updating it. */
-  source: string
-  /** Installed version or revision as shown on the Updates page. */
-  installed: string
-  /** Latest available version or revision. */
-  latest: string
-  /** Human readable list of what changed between installed and latest. */
-  changes: string[]
-  /** Aggregated risk of the latest revision, when a security review exists. */
-  securityRisk?: RegistryRisk
-  /** Agents the skill is currently enabled for (used to re-run install). */
-  agents: string[]
-}
-
 /** Outdated/updates computation service contract (agent 2). */
 export interface UpdatesService {
   outdated(): Promise<OutdatedSkill[]>
-}
-
-/** Security portion of an install result. */
-export interface InstallSecurity {
-  risk: RegistryRisk
-  scannedAt?: string
-  findings: RegistryFinding[]
-}
-
-/** Input of `POST /api/registry/install` (M15 remote install). */
-export interface InstallInput {
-  source: string
-  targetAgents: string[]
-  /** `safe` refuses high-risk installations; `all` allows them after explicit confirmation. */
-  allowPolicy: 'safe' | 'all'
-}
-
-/** Outcome of a remote install transaction (agent 2). */
-export interface InstallResult {
-  /** Skill alias written to the manifest + lockfile. */
-  name: string
-  source: string
-  revision?: string
-  /** Absolute path of the materialized skill directory. */
-  path: string
-  security: InstallSecurity
-  agents: string[]
-  /** True when the manifest changed on this install. */
-  manifestChanged: boolean
-  /** True when the lockfile changed on this install. */
-  lockfileChanged: boolean
 }
 
 /** Remote install transaction service contract (agent 2, M15.1). */
@@ -144,26 +153,6 @@ export interface InstallService {
 export interface DiffService {
   /** Computes the diff views of one skill against its upstream. */
   diffSkill(name: string): Promise<SkillDiff>
-}
-
-/** One lifecycle operation's outcome, rendered by the Web UI. */
-export interface LifecycleOperationResult {
-  name: string
-  action: 'forked' | 'vendored' | 'restored' | 'merged' | 'continued' | 'aborted'
-  /** Repo-relative path of the forked/vendored copy (when applicable). */
-  localPath?: string
-  /** Revision the skill is based on / restored to (when applicable). */
-  revision?: string
-  /** Files restored to the lockfile integrity (restore / merge abort). */
-  filesRestored?: number
-  /** Files merged (3-way merge). */
-  filesMerged?: number
-  /** Conflict hunks left in the content (0 = clean merge). */
-  changes?: number
-  /** Conflicts left after a merge / continue (empty = clean). */
-  conflicts?: Array<{ path: string; hunks: number; reason?: string }>
-  /** New base revision after a clean merge. */
-  baseRevision?: string
 }
 
 /**
@@ -181,7 +170,7 @@ export interface LifecycleService {
   /** Managed → restored upstream (M17.3): re-materialize the pinned revision. */
   restore(name: string): Promise<LifecycleOperationResult>
   /** 3-way merge (M20.6) / `--continue` / `--abort` of one skill. */
-  merge(name: string, action: 'merge' | 'continue' | 'abort'): Promise<LifecycleOperationResult>
+  merge(name: string, action: MergeAction): Promise<LifecycleOperationResult>
 }
 
 /**
@@ -220,267 +209,9 @@ export interface WebServices {
   homeRoot: string
 }
 
-/* ---- Multi-device sync (RepositorySync) DTOs ---- */
-
-export interface SyncConflictDto {
-  id: string
-  type: string
-  skillAlias?: string
-  path?: string
-  field?: string
-  basePreview?: string
-  localPreview?: string
-  remotePreview?: string
-  allowedResolutions: ConflictResolution[]
-  recommendedResolution?: ConflictResolution
-  destructive: boolean
-}
-
-export interface ConflictSessionDto {
-  id: string
-  createdAt: string
-  expiresAt: string
-  snapshotId: string
-  conflicts: SyncConflictDto[]
-}
-
-export type SyncOutcomeDto =
-  | { kind: 'completed'; automaticallyMerged: number; retriedPushes: number; snapshotId?: string }
-  | { kind: 'conflicts'; sessionId: string; conflictCount: number; snapshotId: string }
-  | { kind: 'blocked'; reason: string; message: string; retryable: boolean; snapshotId?: string }
-
-/** GitHub connection snapshot — read-only, never starts a device flow. */
-export interface SyncConnectionDto {
-  connected: boolean
-  login?: string
-  repository?: string
-}
-
-/** Success shape of `GET /api/sync/status` (idle when there's no open conflict session). */
-export interface SyncStatusResponse {
-  sync: { kind: 'idle' } | SyncOutcomeDto
-  connection: SyncConnectionDto
-}
-
-/** Success shape of `POST /api/sync` and `POST /api/conflicts/:id/resolve`. */
-export interface SyncResponse {
-  sync: SyncOutcomeDto
-}
-
-/** Success shape of `POST /api/sync/disconnect`. */
-export interface SyncDisconnectResponse {
-  disconnected: true
-}
-
-/** Success shape of `GET /api/conflicts`. */
-export interface ConflictsResponse {
-  conflicts: ConflictSessionDto[]
-}
-
-/** Success shape of `GET /api/conflicts/:id`. */
-export interface ConflictResponse {
-  conflict: ConflictSessionDto
-}
-
-/** One row of `GET /api/sync/snapshots` — a restorable sync checkpoint. */
-export interface SyncSnapshotDto {
-  id: string
-  createdAt: string
-  expiresAt: string
-  /** Short (8-char) pre-sync commit the checkpoint restores toward. */
-  revision: string
-  expired: boolean
-}
-
-/** Success shape of `GET /api/sync/snapshots`. */
-export interface SyncSnapshotsResponse {
-  snapshots: SyncSnapshotDto[]
-}
-
-/** Success shape of `GET /api/doctor` — the full diagnostics report + the active credential backend. */
-export interface DoctorResponse {
-  report: DoctorReport
-}
-
-/**
- * One sync cleanup step that failed while the transaction was rolling itself back
- * (GAP §4.6).  Wire copy of Core's `CleanupFailure`; see {@link SyncRollbackDto}
- * for why the shape is copied field by field instead of being imported.
- */
-export interface SyncRollbackFailureDto {
-  /** Which recovery step failed; the names come from Core's `CleanupStep` union. */
-  step: CleanupStep
-  /**
-   * Restore-point id or temporary-tree path the step was working on.  A server
-   * path, and deliberately the *only* path this envelope exposes — it is already
-   * in `message`, which every surface prints.
-   */
-  target: string
-  /** Deepest reason from the failure's `cause` chain, secret-scrubbed server-side. */
-  message: string
-  /**
-   * True only for `restore`: the working tree was left mid-transaction, which is
-   * the fact a UI should surface.  A false leak is clutter the next sync ignores.
-   */
-  blocking: boolean
-}
-
-/**
- * The rollback report a failed sync transaction attaches to the error it rethrows
- * (Core `RollbackReport`), exposed as data so the client can branch on
- * `restoreFailed` instead of string-parsing `message`.
- *
- * This is the *only* part of `error.context` the API exports, and it is copied
- * field by field rather than serialized wholesale: contexts across Core carry git
- * command lines with embedded credentials, repository paths and full
- * stdout/stderr dumps (see `git/git-client.ts`, and the fact that log output has
- * to pass through `logging/redact.ts` to be safe at all).  Anything else Core
- * starts putting in a context stays out of the response until it is whitelisted
- * here on purpose.
- */
-export interface SyncRollbackDto {
-  /** Restore point the transaction tried to roll back to. */
-  snapshotId: string
-  /** True when the pre-transaction working tree is still unrestored. */
-  restoreFailed: boolean
-  failures: SyncRollbackFailureDto[]
-}
-
-/** Unified error envelope required by M10.8. */
-export interface ApiErrorBody {
-  error: {
-    code: string
-    message: string
-    recoverable: boolean
-    /**
-     * Present only when a failed sync transaction could not finish rolling itself
-     * back.  Optional by design: `code`/`message`/`recoverable` are what every
-     * existing consumer reads, and the key is omitted (never `null`) otherwise.
-     */
-    rollback?: SyncRollbackDto
-  }
-}
-
-/** Success shape of `GET /api/health`. */
-export interface HealthResponse {
-  status: 'ok'
-  name: string
-  version: string
-  repository: string
-  home: string
-}
-
-/** Success shape of `GET /api/skills`. */
-export interface SkillsResponse {
-  skills: RepositoryStatus['skills']
-}
-
-/** Success shape of `GET /api/skills/:id`. */
-export interface SkillResponse {
-  skill: RepositoryStatus['skills'][number]
-}
-
-/** Success shape of `GET /api/agents`. */
-export interface AgentsResponse {
-  agents: Awaited<ReturnType<AgentRegistry['detectAll']>>
-}
-
-/** Success shape of `POST /api/reconcile`. */
-export interface ReconcileResponse {
-  reconcile: ReconcileResult
-}
-
-/** Success shape of `POST /api/library/adopt` (V0.5 personal library). */
-export interface AdoptResponse {
-  report: AdoptReport
-}
-
-/** Success shape of `GET /api/settings` / `PUT /api/settings`. */
-export interface SettingsResponse {
-  settings: RuntimeConfig
-}
-
-/** Success shape of `GET /api/registry/search`. */
-export interface RegistrySearchResponse {
-  results: RegistrySearchResult[]
-}
-
-/** Success shape of `GET /api/registry/outdated`. */
-export interface OutdatedResponse {
-  outdated: OutdatedSkill[]
-}
-
-/** Success shape of `POST /api/registry/install`. */
-export interface InstallResponse {
-  installed: InstallResult
-}
-
-/** Success shape of `GET /api/skills/:id/diff` (M19.5). */
-export interface SkillDiffResponse {
-  diff: SkillDiff
-}
-
-/** Success shape of `GET /api/rollbacks` (roadmap 2.4). */
-export interface RollbackListResponse {
-  rollbacks: BackupRecord[]
-}
-
-/** Success shape of `POST /api/rollbacks/:id/restore` (roadmap 2.4). */
-export interface RollbackRestoreResponse {
-  rollback: RollbackResult
-}
-
-/** Success shape of `GET /api/fleet/hosts`. */
-export interface FleetHostsResponse {
-  hosts: FleetHostConfig[]
-}
-
-/** Request body of `POST /api/fleet/hosts`. */
-export interface FleetHostCreateRequest {
-  name: string
-  host: string
-  user?: string
-  port?: number
-  identityFile?: string
-  remotePath?: string
-  skillboxBin?: string
-  tags?: string[]
-}
-
-/** Request body of `PATCH /api/fleet/hosts/:name` — every field replaces the current value. */
-export type FleetHostPatchRequest = Partial<FleetHostCreateRequest>
-
-/** Success shape of `POST /api/fleet/hosts` and `PATCH /api/fleet/hosts/:name`. */
-export interface FleetHostResponse {
-  host: FleetHostConfig
-}
-
-/** Success shape of `DELETE /api/fleet/hosts/:name`. */
-export interface FleetHostRemoveResponse {
-  removed: true
-}
-
-/** Request body of `POST /api/fleet/run`. */
-export interface FleetRunRequest {
-  operation: 'install' | 'update' | 'status' | 'remove' | 'enable' | 'disable' | 'sync'
-  hosts?: string[]
-  tags?: string[]
-  ssh?: string[]
-  concurrency?: number
-  dryRun?: boolean
-  /** Required for remove/enable/disable; optional for update (targets one skill). */
-  target?: {
-    name: string
-    agent?: string
-    deleteFiles?: boolean
-    yes?: boolean
-  }
-}
-
-/** Success shape of `POST /api/fleet/run`. */
-export interface FleetRunResponse {
-  result: FleetRunResult
-}
+/* ------------------------------------------------------------------ *
+ * Server host options (never cross the wire)
+ * ------------------------------------------------------------------ */
 
 /** Options accepted by {@link createWebApp}. */
 export interface WebAppOptions {

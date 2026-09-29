@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactElement, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Check, Code, Eye, GitCompare, Pencil, Plus, Trash2, X } from 'lucide-react'
 import type { AgentSummary, LifecycleOperationResult, MergeAction } from '../api.js'
@@ -588,8 +588,17 @@ function LifecycleCard({ skill }: { skill: { name: string; mode: string; status:
   )
 }
 
-/** Human summary of a lifecycle outcome (fork / vendor / restore / merge). */
-function LifecycleResultSummary({ result }: { result: LifecycleOperationResult }) {
+/**
+ * Human summary of a lifecycle outcome (fork / vendor / restore / merge).
+ *
+ * The declared return type is load-bearing: it makes this switch total over the
+ * contract's `LifecycleOperationResult['action']` union. Without it the
+ * inferred return type grows an `undefined`, a new action added on the server
+ * side renders nothing, and no build fails — which is exactly how the sync
+ * resolution vocabulary drifted out of step between the two copies of that
+ * contract.
+ */
+function LifecycleResultSummary({ result }: { result: LifecycleOperationResult }): ReactElement {
   switch (result.action) {
     case 'forked':
       return (

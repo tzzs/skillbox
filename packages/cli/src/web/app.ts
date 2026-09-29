@@ -24,10 +24,14 @@ import {
 import type {
   AdoptResponse,
   AgentsResponse,
+  AgentAssignmentResponse,
   ConflictResponse,
   ConflictsResponse,
+  CreateSkillInput,
+  CreateSkillResponse,
   SyncSnapshotDto,
   SyncSnapshotsResponse,
+  SyncSnapshotRestoreResponse,
   FleetHostCreateRequest,
   FleetHostPatchRequest,
   FleetHostRemoveResponse,
@@ -37,17 +41,25 @@ import type {
   DoctorResponse,
   HealthResponse,
   InstallResponse,
-  LifecycleOperationResult,
+  LifecycleResultResponse,
+  LinkStrategy,
+  MergeAction,
   OutdatedResponse,
   ReconcileResponse,
   RegistrySearchOptions,
   RegistrySearchResponse,
+  RemoveSkillResponse,
+  ResolveSyncConflictsInput,
   RollbackListResponse,
   RollbackRestoreResponse,
+  SaveSkillContentResponse,
+  SettingsPatch,
   SettingsResponse,
+  SkillContentResponse,
   SkillDiffResponse,
   SkillResponse,
   SkillsResponse,
+  StatusResponse,
   SyncConnectionDto,
   SyncDisconnectResponse,
   SyncResponse,
@@ -132,7 +144,9 @@ export function createWebApp(options: WebAppOptions): Hono {
   app.get('/api/skills/:id/content', async (c) => {
     const id = c.req.param('id')
     const doc = await services.skills.readSkillMarkdown({ name: id })
-    return c.json({ skill: { name: doc.name, path: doc.path, markdown: doc.markdown } })
+    return c.json<SkillContentResponse>({
+      skill: { name: doc.name, path: doc.path, markdown: doc.markdown },
+    })
   })
 
   /**
@@ -166,7 +180,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get('/api/status', async (c) => {
     const report = await getCachedStatus()
-    return c.json(report)
+    return c.json<StatusResponse>(report)
   })
 
   app.get('/api/settings', async (c) => {
@@ -208,12 +222,12 @@ export function createWebApp(options: WebAppOptions): Hono {
       const body = await requireJsonBody(c)
       const name = stringField(body, 'name')
       const description = optionalStringField(body, 'description')
-      const input: { name: string; description?: string } = { name }
+      const input: CreateSkillInput = { name }
       if (description !== undefined) {
         input.description = description
       }
       const created = await services.skills.createSkill(input)
-      return c.json({ created }, 201)
+      return c.json<CreateSkillResponse>({ created }, 201)
     })
   })
 
@@ -223,7 +237,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       const body = await requireJsonBody(c)
       const content = stringField(body, 'content')
       const saved = await services.skills.writeSkillMarkdown({ name: id, content })
-      return c.json({ saved })
+      return c.json<SaveSkillContentResponse>({ saved })
     })
   })
 
@@ -231,7 +245,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const id = c.req.param('id')
       const removed = await services.skills.removeSkill({ name: id })
-      return c.json({ removed })
+      return c.json<RemoveSkillResponse>({ removed })
     })
   })
 
@@ -241,7 +255,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       const body = await requireJsonBody(c)
       const agent = stringField(body, 'agent')
       const assignment = await services.skills.enableSkill({ name: id, agent })
-      return c.json({ assignment })
+      return c.json<AgentAssignmentResponse>({ assignment })
     })
   })
 
@@ -251,7 +265,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       const body = await requireJsonBody(c)
       const agent = stringField(body, 'agent')
       const assignment = await services.skills.disableSkill({ name: id, agent })
-      return c.json({ assignment })
+      return c.json<AgentAssignmentResponse>({ assignment })
     })
   })
 
@@ -299,7 +313,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const id = c.req.param('id')
       const result = await services.lifecycle.fork(id)
-      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+      return c.json<LifecycleResultResponse>({ result }, 201)
     })
   })
 
@@ -311,7 +325,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const id = c.req.param('id')
       const result = await services.lifecycle.vendor(id)
-      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+      return c.json<LifecycleResultResponse>({ result }, 201)
     })
   })
 
@@ -324,7 +338,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const id = c.req.param('id')
       const result = await services.lifecycle.restore(id)
-      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+      return c.json<LifecycleResultResponse>({ result }, 201)
     })
   })
 
@@ -336,10 +350,10 @@ export function createWebApp(options: WebAppOptions): Hono {
     return mutation(services, async () => {
       const id = c.req.param('id')
       const body = await requireJsonBody(c)
-      const action =
+      const action: MergeAction =
         body['action'] === 'continue' || body['action'] === 'abort' ? body['action'] : 'merge'
       const result = await services.lifecycle.merge(id, action)
-      return c.json<{ result: LifecycleOperationResult }>({ result }, 201)
+      return c.json<LifecycleResultResponse>({ result }, 201)
     })
   })
 
@@ -508,7 +522,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.post('/api/sync/snapshots/:id/restore', async (c) => {
     await services.sync.restoreSnapshot(c.req.param('id'))
-    return c.json({ restored: true })
+    return c.json<SyncSnapshotRestoreResponse>({ restored: true })
   })
 
   /** Restorable sync checkpoints (live first, newest → oldest; expired last). */
@@ -898,7 +912,7 @@ const CONFLICT_RESOLUTIONS: readonly ConflictResolution[] = ['local', 'remote', 
 /** Validates `body.resolutions`: a non-empty map of conflict id → resolution choice. */
 function requireResolutionsField(
   body: Record<string, unknown>,
-): Record<string, ConflictResolution> {
+): ResolveSyncConflictsInput['resolutions'] {
   const value = body['resolutions']
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new WebApiError('INVALID_REQUEST', 'Field "resolutions" must be an object')
@@ -907,7 +921,7 @@ function requireResolutionsField(
   if (entries.length === 0) {
     throw new WebApiError('INVALID_REQUEST', 'Field "resolutions" must not be empty')
   }
-  const resolutions: Record<string, ConflictResolution> = {}
+  const resolutions: ResolveSyncConflictsInput['resolutions'] = {}
   for (const [conflictId, resolution] of entries) {
     const offered = CONFLICT_RESOLUTIONS.find((choice) => choice === resolution)
     if (offered === undefined) {
@@ -997,20 +1011,7 @@ function toStatusCode(status: number): ContentfulStatusCode {
 
 /* ---- /api/settings helpers (GAP 1.2) ---- */
 
-type LinkStrategy = 'auto' | 'symlink' | 'junction' | 'copy'
-
 const LINK_STRATEGIES: readonly LinkStrategy[] = ['auto', 'symlink', 'junction', 'copy']
-
-interface SettingsWebPatch {
-  linkStrategy?: LinkStrategy
-  web?: { port?: number; host?: string; open?: boolean }
-  agents?: Record<string, { path?: string; skillDirectories?: string[] }>
-  library?: {
-    autoAdopt?: boolean
-    ignoreAgents?: string[]
-    ignoreSkills?: string[]
-  }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -1021,12 +1022,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `PUT /api/settings`. Only linkStrategy / web / agents / library are accepted;
  * unknown or malformed fields produce an `INVALID_REQUEST` envelope.
  */
-function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
+function parseSettingsPatch(body: Record<string, unknown>): SettingsPatch {
   if (!isRecord(body.settings)) {
     throw new WebApiError('INVALID_REQUEST', 'Body field "settings" must be a JSON object')
   }
   const raw = body.settings
-  const patch: SettingsWebPatch = {}
+  const patch: SettingsPatch = {}
 
   if (raw.linkStrategy !== undefined) {
     const value = raw.linkStrategy
@@ -1043,7 +1044,7 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
     if (!isRecord(raw.web)) {
       throw new WebApiError('INVALID_REQUEST', 'Field "web" must be an object')
     }
-    const web: SettingsWebPatch['web'] = {}
+    const web: SettingsPatch['web'] = {}
     if (raw.web.port !== undefined) {
       if (
         typeof raw.web.port !== 'number' ||
@@ -1077,7 +1078,7 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
     if (!isRecord(raw.agents)) {
       throw new WebApiError('INVALID_REQUEST', 'Field "agents" must be an object')
     }
-    const agents: NonNullable<SettingsWebPatch['agents']> = {}
+    const agents: NonNullable<SettingsPatch['agents']> = {}
     for (const [agentId, value] of Object.entries(raw.agents)) {
       if (value === undefined) {
         continue
@@ -1125,7 +1126,7 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
     if (!isRecord(raw.library)) {
       throw new WebApiError('INVALID_REQUEST', 'Field "library" must be an object')
     }
-    const library: SettingsWebPatch['library'] = {}
+    const library: SettingsPatch['library'] = {}
     if (raw.library.autoAdopt !== undefined) {
       if (typeof raw.library.autoAdopt !== 'boolean') {
         throw new WebApiError('INVALID_REQUEST', 'Field "library.autoAdopt" must be a boolean')
@@ -1162,7 +1163,7 @@ function parseSettingsPatch(body: Record<string, unknown>): SettingsWebPatch {
  * Only the fields the client sent are touched, so untouched settings (e.g. a
  * manually configured `repository`) survive an update.
  */
-function mergeSettings(current: RuntimeConfig, patch: SettingsWebPatch): RuntimeConfig {
+function mergeSettings(current: RuntimeConfig, patch: SettingsPatch): RuntimeConfig {
   const next: RuntimeConfig = { ...current }
   if (patch.linkStrategy !== undefined) {
     next.linkStrategy = patch.linkStrategy
