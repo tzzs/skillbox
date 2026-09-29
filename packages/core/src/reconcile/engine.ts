@@ -269,18 +269,33 @@ export async function reconcile(options: ReconcileOptions): Promise<ReconcileRes
     }
     report.integrityValid = lockedIntegrity === undefined || lockedIntegrity === integrity
     if (lockedIntegrity !== undefined && lockedIntegrity !== integrity) {
+      // This run is about to rewrite the lock from `integrity` (see
+      // `writeLockfileIfChanged`), so the entry has to say which side won —
+      // and the two sides are different stories. `local` sources take
+      // `sourcePath` from the repository copy (`engine.ts:151-177`), so the
+      // user's edit is becoming the baseline *by definition* (GAP §3.6,
+      // settled 2026-09-30: 本地即最新). Any other source resolves through
+      // `resolveRemoteSource`, whose `sourcePath` is the upstream tree under
+      // `<remoteRoot>/<plan.key>` — so what moved is the upstream, and the
+      // repository copy was never measured.
+      //
+      // `INTEGRITY_MISMATCH` is deliberately *not* used here: that code is the
+      // refusal two parties genuinely disagree (install's download did not
+      // match, restore's pinned content diverged) and it maps to
+      // ExitCode.CONFLICT. A lock recording the content it just reconciled is a
+      // notice, not a conflict, and a notice that reads like one is how this
+      // line got distrusted.
+      const localSource = skill.source.type === 'local'
       problems.push({
-        code: ErrorCode.INTEGRITY_MISMATCH,
+        code: ErrorCode.LOCKFILE_BASELINE_UPDATED,
         alias,
-        // Naming the disagreement is not enough: this run rewrites the lock
-        // from the current disk content (see `writeLockfileIfChanged` below),
-        // so the local change stops being a deviation and becomes the
-        // baseline. Say so, in the same entry, so every surface that renders
-        // `problems` — CLI, interactive menu, Web API, sync resolve step —
-        // carries it without a second channel (GAP §3.6 honesty part).
-        message:
-          `Locked integrity ${lockedIntegrity} differs from repository ${integrity}; ` +
-          'the locked integrity was recomputed from the repository copy — this local change is now the baseline.',
+        message: localSource
+          ? `Locked integrity ${lockedIntegrity} differs from the repository copy ${integrity}; ` +
+            'this skill has no upstream, so your repository copy is the baseline and the lock now records it. ' +
+            'Nothing was overwritten.'
+          : `Locked integrity ${lockedIntegrity} differs from the resolved upstream content ${integrity}; ` +
+            'the upstream this source tracks has moved, so the lock now records upstream. ' +
+            'Your own edits are not part of that: they stay in the repository copy and still show as modified.',
       })
     }
     skills.push(report)

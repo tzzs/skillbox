@@ -383,7 +383,7 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
 
 仍缺：TUI 实时订阅 OperationRuntime journal（§4.4 残余）。
 
-### 3.6 `local` 源的写操作会把本地改动吸收进 lockfile，`modified` 只活到下一次写（未修，只剩定义之争）
+### 3.6 ✅ 已定：`local` 源「仓库副本即最新」，锁重算不再伪装成冲突（2026-09-30）
 
 `reconcile/engine.ts` 每次运行都用 `computeSkillIntegrity(sourcePath)`（磁盘现状）重写
 `skillbox.lock`（`writeLockfileIfChanged`），而 `enable` / `disable`（CLI 与 Web API 都是）
@@ -397,35 +397,31 @@ Core install/reconcile 已通过 typed Event Bus 发出阶段/完成/失败事�
 | 再 `status`                 | `demo local ready` —— 那行改动成了新基线                                                                                         |
 
 所以它不是「完全静默」：CLI 看得到一行 mismatch，Web API 把它放进 `reconcile.problems`。
-问题是那一行讲的是「锁与磁盘不一致」，而不是「不一致即将被抹平、你的改动将成为新基线」；
-`apps/web` 根本没有渲染 `reconcile.problems` 的地方（也没有调用 enable/disable），sync 流水线
-里同一件事表现为一行 `resolve warning（lockfile 重算）`。根因是 `local` 源的 integrity 语义
-没定下来：它到底指「导入时快照」还是「磁盘现状」，engine 取后者、`status` 的 `modified` 取前者。
+问题是那一行讲的是「锁与磁盘不一致」，而不是「不一致即将被抹平、你的改动将成为新基线」。根因是
+`local` 源的 integrity 语义没定下来：它到底指「导入时快照」还是「磁盘现状」，engine 取后者、
+`status` 的 `modified` 取前者。
 
-**已落地的是「不谎报」这半条**：`reconcile/engine.ts` 那条 `INTEGRITY_MISMATCH` 现在把后果写进同一行
-—— 「locked integrity 已按仓库副本重算，这次本地改动成为基线」，`enable`/`disable`/`install`/`pull`/`sync`
-与交互菜单、Web 的 enable/disable 响应都会把它带到用户面前（复用已有的 `reconcile.problems` 通道，
-没有新加一条播报口）。
-
-**本轮查证把这条的范围收窄了**（标题原先说「任意写操作」，说过头了）：吸收只发生在
+**本轮查证把这条的范围收窄了**（原先说「任意写操作」，说过头了）：吸收只发生在
 `source.type === 'local'` 的 skill 上。`engine.ts:151-177` 在这种情况下取
 `repositoryRoot/<source.path>` 作为 `sourcePath`，于是 `computeSkillIntegrity` 量的就是仓库副本本身，
 下一次写自然把它当基线。任何别的 source 走 `resolveRemoteSource`（`engine.ts:179-197`、`:336-358`），
 `sourcePath` 是 upstream 被 materialize 到 `<remoteRoot>/<plan.key>` 的那棵树，不是仓库副本 ——
 managed / forked / vendored 的锁基线始终是 upstream 基线，仓库里的改动会一直显示 `modified`。
 
-所以剩下的是一个**定义问题**，而且只关于 `mode: local`：一个没有 upstream 的 skill，`modified`
-到底指什么。三个口径：
+**口径已定（用户 2026-09-30）：本地配置下承认「本地即最新」**，也就是三选里的**甲**。
+于是剩下的只是把那行提示改准，本轮落地：
 
-- 甲：维持现状（磁盘即基线），承认「本地 skill 的 `modified` 会在下一次写之后消失」是定义而不是 bug；
-  要做的只有把 `INTEGRITY_MISMATCH` 对 local 源降级成一行「锁基线已按磁盘更新」，别再报成不一致。
-- 乙：锁记的是「上一次被接受的基线」（导入或 sync 时），写操作不再重算 —— `modified` 从此可信，
-  代价是 enable/disable 之后那一行提示会常驻。
-- 丙：把「认了」变成显式动作（`skillbox accept <alias>`，或 `enable --absorb`），只有它改写锁基线。
-
-推荐 **乙 + 丙**：乙让「我还有没同步出去的本地改动」这个信号活下来（多机同步正需要它），
-丙给它一个明确的消解动作 —— 由人说「认了」，而不是被下一次写悄悄吃掉。若你选甲，本节改成
-「已定性，不修」，只做那条提示对 local 源的降级。
+- 新增错误码 `LOCKFILE_BASELINE_UPDATED`，reconcile 改写锁基线时用它，**不再**借用
+  `INTEGRITY_MISMATCH`。后者留给两方真分歧、且会 `ExitCode.CONFLICT` 的场合（install 下载与预期不符、
+  restore 的 pinned 内容已偏离）。一行「锁记下了它刚刚物化的内容」被写成冲突，是这条提示失去可信度的原因。
+- 消息按源的形状分开写，因为它们是两件不同的事：local → 「这个 skill 没有 upstream，你的仓库副本就是
+  基线，锁现在记它；**没有覆盖任何东西**」；其它 → 「upstream 动了（你跟踪的 ref 前进了），锁现在记
+  upstream；**你自己的改动不在这件事里**，它们还在仓库副本里，仍然显示 `modified`」。
+- 为什么需要第二条：实测 `engine.test.ts` 里「remote 前进」那一跑，旧文案把 upstream 的位移写成
+  「this local change is now the baseline」—— 而那棵树的 hash 从来没量过仓库副本。同一句话在 local
+  上是解释，在 remote 上是假话。现在两边各自说对的那一半，测试各钉一条。
+- `modified` 的寿命因此是**定义**而不是 bug：本地 skill 的下一次写会把它并入基线。需要长期保留差异时走
+  `fork`/`edit` 流程（那边锁的是 upstream 基线，不受影响）。
 
 ---
 
