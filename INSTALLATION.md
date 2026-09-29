@@ -139,12 +139,11 @@ Skillbox web UI: http://127.0.0.1:43821
 
 ### 3.3 已知边界（本地 tgz 的 workspace 依赖）
 
-`@skillbox/cli` 当前依赖 `@skillbox/core` 与 `@skillbox/shared`（同为 workspace 包）。在**发布到 npm 之前**，这些依赖以 `workspace:*` 形式存在，`npm install <本地tgz>` 可能报 `Unsupported URL Type "workspace:"`。这是预期的本地开发形态 —— 发布时必须：
+`@skillbox/cli` 运行时只依赖 `@skillbox/core`（同为 workspace 包，发布前以 `^0.1.0` 形式声明）。`@skillbox/shared` 是 Web API 的契约类型，`private: true` 且只作为 **devDependency** 存在 —— 它不进消费者装到的依赖树，`@skillbox/cli` 也不发布 `.d.ts`，所以没有任何发布物指向它。装本地 tgz 时如果仍看到 `Unsupported URL Type "workspace:"`，说明某个包的依赖还写着 workspace 协议没被 `pnpm pack` 改写，那是缺陷而不是本地形态。
 
-1. 移除各 package 的 `"private": true`（`npm publish` 会拒绝 private 包）；
-2. 把 `workspace:*` 依赖发布为真实版本（`^0.1.0`）或完成后按序 publish `shared → core → cli`。
+发布时的顺序只有一个：**core → cli**（`pnpm publish -r` 自己按依赖序走，四个 `private: true` 的包 —— shared、testing、apps/web、仓库根 —— 自动跳过）。
 
-这些约束在 `scripts/verify-package.mjs` 输出中如实标注。
+上面两条不是提醒，是门禁：`pnpm pack:verify` 会在 tarball 里出现 `.d.ts`、`package.json` 仍声明 `types`、或任何 `.js` 里出现私有 workspace 包名时**直接失败**；`pnpm release:smoke` 只装 core + cli 并跑 `skillbox --help`，装不上或跑不起来同样红。
 
 ## 4. 升级说明
 
